@@ -36,6 +36,14 @@ subscription, no telemetry.**
 |---|---|
 | ![Library](assets/screenshot-library.png) | ![Slideshow](assets/screenshot-slideshow.png) |
 
+| Settings | About |
+|---|---|
+| ![Settings](assets/screenshot-settings.png) | ![About](assets/screenshot-about.png) |
+
+Dark theme:
+
+![Dark theme](assets/screenshot-library-dark.png)
+
 ## Platforms
 
 | Platform | Status | How the wallpaper is set |

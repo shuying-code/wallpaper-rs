@@ -37,6 +37,14 @@
 |---|---|
 | ![壁纸库](assets/screenshot-library.png) | ![轮播](assets/screenshot-slideshow.png) |
 
+| 设置 | 关于 |
+|---|---|
+| ![设置](assets/screenshot-settings.png) | ![关于](assets/screenshot-about.png) |
+
+深色主题：
+
+![深色主题](assets/screenshot-library-dark.png)
+
 ## 支持的平台
 
 | 平台 | 状态 | 设置壁纸的实现 |
