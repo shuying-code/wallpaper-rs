@@ -51,6 +51,124 @@ pub fn set_wallpaper(path: &Path, fit: Fit) -> Result<(), String> {
     Err("当前平台暂不支持设置壁纸".to_string())
 }
 
+/// Set the **lock screen** image (best-effort, platform-specific).
+///
+/// - Windows: writes `PersonalizationCSP` under HKEY_LOCAL_MACHINE (needs admin).
+/// - Ubuntu / GNOME (Linux): `org.gnome.desktop.screensaver picture-uri`.
+/// - macOS: the lock screen wallpaper follows the system; not separately settable.
+pub fn set_lock_screen(path: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        return windows_lock(path);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = path;
+        return Err("macOS 锁屏壁纸跟随系统，暂不支持单独设置".to_string());
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        return linux_lock(path);
+    }
+    #[allow(unreachable_code)]
+    Err("当前平台暂不支持设置锁屏壁纸".to_string())
+}
+
+#[cfg(windows)]
+fn windows_lock(path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    let subkey: Vec<u16> = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\PersonalizationCSP"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut hkey: isize = 0;
+    let rc = unsafe {
+        RegCreateKeyExW(
+            HKEY_LOCAL_MACHINE,
+            subkey.as_ptr(),
+            0,
+            std::ptr::null(),
+            0,
+            KEY_SET_VALUE,
+            std::ptr::null_mut(),
+            &mut hkey,
+            std::ptr::null_mut(),
+        )
+    };
+    if rc != 0 {
+        return Err(format!(
+            "写入锁屏设置失败，需要以管理员身份运行 (code {rc})"
+        ));
+    }
+    let pwide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let set_sz = |name: &str, data: &[u16]| -> i32 {
+        let nw: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe {
+            RegSetValueExW(
+                hkey,
+                nw.as_ptr(),
+                0,
+                REG_SZ,
+                data.as_ptr() as *const u8,
+                (data.len() * 2) as u32,
+            )
+        }
+    };
+    let mut last = 0;
+    last |= set_sz("LockScreenImagePath", &pwide);
+    last |= set_sz("LockScreenImageUrl", &pwide);
+    // LockScreenImageStatus = 1 (DWORD)
+    {
+        let nw: Vec<u16> = "LockScreenImageStatus"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let val: u32 = 1;
+        let rc2 = unsafe {
+            RegSetValueExW(
+                hkey,
+                nw.as_ptr(),
+                0,
+                REG_DWORD,
+                &val as *const u32 as *const u8,
+                4,
+            )
+        };
+        last |= rc2;
+    }
+    unsafe {
+        RegCloseKey(hkey);
+    }
+    if last != 0 {
+        Err(format!("写入锁屏注册表失败 (code {last})"))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn linux_lock(path: &Path) -> Result<(), String> {
+    let uri = format!("file://{}", path.display());
+    let mut ok = false;
+    for key in ["picture-uri", "picture-uri-dark"] {
+        let s = std::process::Command::new("gsettings")
+            .args(["set", "org.gnome.desktop.screensaver", key, &uri])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        ok |= s;
+    }
+    if ok {
+        Ok(())
+    } else {
+        Err("Ubuntu / GNOME 需要 gsettings 才能设置锁屏壁纸".to_string())
+    }
+}
+
 #[cfg(windows)]
 fn windows_impl(path: &Path, fit: Fit) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
@@ -98,9 +216,13 @@ const SPIF_SENDCHANGE: u32 = 0x0002;
 #[cfg(windows)]
 const HKEY_CURRENT_USER: isize = 0x80000001u32 as i32 as isize;
 #[cfg(windows)]
+const HKEY_LOCAL_MACHINE: isize = 0x80000002u32 as i32 as isize;
+#[cfg(windows)]
 const KEY_SET_VALUE: u32 = 0x0002;
 #[cfg(windows)]
 const REG_SZ: u32 = 1;
+#[cfg(windows)]
+const REG_DWORD: u32 = 4;
 
 #[cfg(windows)]
 #[link(name = "user32")]
@@ -130,6 +252,17 @@ extern "system" {
         dw_type: u32,
         lp_data: *const u8,
         cb_data: u32,
+    ) -> i32;
+    fn RegCreateKeyExW(
+        h_key: isize,
+        lp_sub_key: *const u16,
+        reserved: u32,
+        lp_class: *const u16,
+        dw_options: u32,
+        sam_desired: u32,
+        lp_security_attributes: *mut std::ffi::c_void,
+        phk_result: *mut isize,
+        lpdw_disposition: *mut u32,
     ) -> i32;
     fn RegCloseKey(h_key: isize) -> i32;
 }

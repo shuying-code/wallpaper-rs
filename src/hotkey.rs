@@ -1,24 +1,46 @@
 //! Global hotkey (Ctrl+Alt+W) and background ticker helpers.
 //!
-//! The hotkey is registered on a dedicated thread with its own message loop so
-//! it works regardless of which app has focus. A global flag is set on press and
-//! the UI thread toggles window visibility.
+//! Windows uses `RegisterHotKey` on a dedicated message-loop thread. macOS and
+//! Linux (X11) use the cross-platform `global-hotkey` crate (registered on the
+//! main thread, which macOS requires). A global flag is set on press and the UI
+//! thread toggles window visibility.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::atomic::AtomicI32;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-#[derive(Clone)]
+#[cfg(not(windows))]
+use global_hotkey::hotkey::{Code, HotKey, Modifiers};
+
 pub struct Hotkey {
     toggle: Arc<AtomicBool>,
     registered: Arc<AtomicBool>,
     err: Arc<AtomicI32>,
     chosen: Arc<AtomicI32>,
+    /// id of the hotkey that actually registered (non-Windows path); -1 if none.
+    #[cfg(not(windows))]
+    gh_id: i32,
+    /// Kept alive for the lifetime of the app so the registration persists.
+    #[cfg(not(windows))]
+    _manager: Option<global_hotkey::GlobalHotKeyManager>,
 }
 
 impl Hotkey {
     /// Returns true once if the hotkey was pressed since the last call.
     pub fn take_toggle(&self) -> bool {
+        // Non-Windows: drain the global-hotkey event channel for a matching press.
+        #[cfg(not(windows))]
+        {
+            if self.gh_id >= 0 {
+                while let Ok(ev) = global_hotkey::GlobalHotKeyEvent::receiver().try_recv() {
+                    if ev.state() == global_hotkey::HotKeyState::Pressed
+                        && ev.id() as i32 == self.gh_id
+                    {
+                        self.toggle.store(true, Ordering::SeqCst);
+                    }
+                }
+            }
+        }
         self.toggle.swap(false, Ordering::SeqCst)
     }
     pub fn is_registered(&self) -> bool {
@@ -84,13 +106,61 @@ pub fn start(ctx: eframe::egui::Context) -> Hotkey {
                 }
             }
         });
+        Hotkey {
+            toggle,
+            registered,
+            err,
+            chosen,
+        }
     }
     #[cfg(not(windows))]
     {
         let _ = ctx;
+        // Must be created on the main thread (macOS requirement). eframe calls
+        // App::new on the main thread, so this is safe.
+        let mut manager = None;
+        let mut reg = false;
+        let mut ch: i32 = -1;
+        let mut ghid: i32 = -1;
+        let mut errc: i32 = 0;
+        match global_hotkey::GlobalHotKeyManager::new() {
+            Ok(m) => {
+                let cands: [(Modifiers, Code, i32); 3] = [
+                    (Modifiers::CONTROL | Modifiers::ALT, Code::KeyW, 0),
+                    (
+                        Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT,
+                        Code::KeyW,
+                        1,
+                    ),
+                    (Modifiers::CONTROL | Modifiers::ALT, Code::F9, 2),
+                ];
+                for (mods, code, idx) in cands {
+                    let hk = HotKey::new(Some(mods), code);
+                    if m.register(hk).is_ok() {
+                        ghid = hk.id() as i32;
+                        ch = idx;
+                        reg = true;
+                        break;
+                    }
+                }
+                manager = Some(m);
+            }
+            Err(_) => {
+                errc = -1;
+            }
+        }
+        registered.store(reg, Ordering::SeqCst);
+        err.store(errc, Ordering::SeqCst);
+        chosen.store(ch, Ordering::SeqCst);
+        Hotkey {
+            toggle,
+            registered,
+            err,
+            chosen,
+            gh_id: ghid,
+            _manager: manager,
+        }
     }
-
-    Hotkey { toggle, registered, err, chosen }
 }
 
 #[cfg(windows)]

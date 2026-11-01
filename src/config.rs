@@ -44,6 +44,20 @@ pub struct Config {
     /// Minimize to background on close (continues running) instead of exiting.
     #[serde(default = "default_true")]
     pub close_to_background: bool,
+    /// Online daily wallpaper (Bing) auto-fetch + set on launch/day.
+    #[serde(default)]
+    pub daily_online: bool,
+    /// When fetching an online wallpaper, also apply it to the desktop.
+    #[serde(default = "default_true")]
+    pub online_auto_set: bool,
+    /// Local "了解有关此图片信息" feedback counters.
+    #[serde(default)]
+    pub online_likes: i64,
+    #[serde(default)]
+    pub online_dislikes: i64,
+    /// Last date (YYYYMMDD) an online daily wallpaper was applied (for daily rotation).
+    #[serde(default)]
+    pub last_online_date: String,
 }
 
 fn default_shift_interval() -> u64 {
@@ -74,6 +88,11 @@ impl Default for Config {
             shift_interval_secs: 60,
             shift_max_px: 8,
             close_to_background: true,
+            daily_online: false,
+            online_auto_set: true,
+            online_likes: 0,
+            online_dislikes: 0,
+            last_online_date: String::new(),
         }
     }
 }

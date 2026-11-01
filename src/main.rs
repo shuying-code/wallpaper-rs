@@ -6,6 +6,7 @@ mod burnin;
 mod config;
 mod diskscan;
 mod hotkey;
+mod online;
 mod theme;
 mod thumbs;
 mod wallpaper;

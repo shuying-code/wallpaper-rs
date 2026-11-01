@@ -18,6 +18,19 @@ subscription, no telemetry.**
 
 ---
 
+## Download
+
+Get the latest build from the [latest Release](https://github.com/shuying-code/wallpaper-rs/releases/latest):
+
+| Platform | Download |
+|---|---|
+| Windows (x64) | [wallpaper-rs-windows-x64.zip](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-windows-x64.zip) |
+| macOS (Universal, Intel + Apple Silicon) | [wallpaper-rs-macos-universal.tar.gz](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-macos-universal.tar.gz) |
+| Linux / Ubuntu (x64) | [wallpaper-rs-linux-x64.tar.gz](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-linux-x64.tar.gz) |
+| All versions | [Releases page](https://github.com/shuying-code/wallpaper-rs/releases/latest) |
+
+You can also click the download links in the in-app **About** page.
+
 ## Features
 
 - **Library**: scan a local folder (optionally recursive) and browse thumbnails in a grid, with filename search.
@@ -31,6 +44,9 @@ subscription, no telemetry.**
 - **Full-disk scan**: background scan of all drives for images (skips system/cache dirs, bounded).
 - **Resident + global hotkey**: close-to-background keeps rotation running; `Ctrl+Alt+W` toggles minimize/restore (auto-fallback if taken).
 - **Display aware**: detects monitor count and primary resolution; HiDPI handled by the OS; applies to all monitors.
+- **Online daily wallpaper**: fetch the Bing daily image (`cn.bing.com`, reachable in China) with "Learn about this picture", like / dislike, previous / next, set as desktop / lock screen, and daily auto-rotate.
+- **Lock screen**: also set the current wallpaper as the system lock screen (Windows `PersonalizationCSP`; Ubuntu/GNOME `gsettings` lock-screen `picture-uri`; macOS lock screen follows the system wallpaper).
+- **Cross-platform global hotkey**: Windows `RegisterHotKey`; macOS / Linux(X11) via `global-hotkey`; toggle minimize/restore.
 - **Keyboard shortcuts**: `←` previous, `→` next.
 - **Single binary, pure Rust**: no WebView or runtime; embedded CJK font, no missing-glyph boxes.
 

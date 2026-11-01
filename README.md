@@ -17,6 +17,19 @@
 
 ---
 
+## 下载
+
+前往 [最新 Release](https://github.com/shuying-code/wallpaper-rs/releases/latest) 下载对应平台安装包：
+
+| 平台 | 下载 |
+|---|---|
+| Windows (x64) | [wallpaper-rs-windows-x64.zip](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-windows-x64.zip) |
+| macOS (Universal, Intel+M 芯片) | [wallpaper-rs-macos-universal.tar.gz](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-macos-universal.tar.gz) |
+| Linux / Ubuntu (x64) | [wallpaper-rs-linux-x64.tar.gz](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-linux-x64.tar.gz) |
+| 全部版本 | [Releases 页面](https://github.com/shuying-code/wallpaper-rs/releases/latest) |
+
+在应用内「关于」页也可直接点击下载。
+
 ## 功能
 
 - **壁纸库**：从本地文件夹批量扫描图片（可含子文件夹），网格缩略图浏览，按文件名搜索过滤。
@@ -30,6 +43,9 @@
 - **全盘扫描**：后台扫描全部磁盘的图片并载入壁纸库（跳过系统目录、限量收集）。
 - **常驻后台 + 全局快捷键**：关闭可最小化到后台继续运行，`Ctrl+Alt+W` 一键最小化 / 唤回（被占用时自动回退）。
 - **显示适配**：检测显示器数量与主屏分辨率，高 DPI 自动适配，壁纸应用到所有显示器。
+- **在线每日壁纸**：联网获取 Bing 每日壁纸（`cn.bing.com`，国内可直接访问），支持「了解有关此图片信息」、点赞 / 踩、上一张 / 下一张、设为桌面 / 锁屏，以及每日自动更换。
+- **锁屏壁纸**：把当前壁纸同步设为系统锁屏（Windows `PersonalizationCSP`、Ubuntu/GNOME `gsettings` 锁屏 `picture-uri`；macOS 锁屏跟随系统壁纸）。
+- **跨平台全局快捷键**：Windows `RegisterHotKey`，macOS / Linux(X11) 使用 `global-hotkey`，一键最小化 / 唤回。
 - **键盘快捷键**：`←` 上一张，`→` 下一张。
 - **单文件、纯 Rust**：无需 WebView 或运行时，双击即用；内嵌中文字体，无缺字方框。
 
@@ -55,9 +71,11 @@
 |---|---|---|
 | Windows x64 | ✅ 已构建验证 | `SystemParametersInfoW` + 注册表 `Control Panel\Desktop` |
 | macOS | ✅ 源码支持 | `osascript` 调用 System Events 设置桌面图片 |
-| Linux | ✅ 源码支持 | GNOME `gsettings`，或回退到 `feh` |
+| Linux / Ubuntu | ✅ 源码支持 | GNOME/Ubuntu `gsettings`（含 `picture-options`），或回退到 `feh` |
 
 三大平台共用同一套源码；配置文件写入各平台的标准目录（见下）。
+
+> 说明：全局快捷键在 Linux 上依赖 X11；Wayland 会话下系统不允许应用抢占全局热键，此时「关闭最小化到后台」不生效（会直接退出）。macOS / Linux 的锁屏：Ubuntu 用 `gsettings` 设置，macOS 锁屏壁纸跟随系统。
 
 ## 配置文件位置
 

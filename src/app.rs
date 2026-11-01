@@ -25,6 +25,7 @@ const TEX_CAP: usize = 300;
 enum Tab {
     Library,
     Slideshow,
+    Online,
     Settings,
     About,
 }
@@ -62,6 +63,11 @@ struct Snapshot {
     shift_iv: u64,
     shift_max: u32,
     close_bg: bool,
+    daily_online: bool,
+    online_auto_set: bool,
+    online_likes: i64,
+    online_dislikes: i64,
+    last_online_date: String,
 }
 
 impl Snapshot {
@@ -81,6 +87,11 @@ impl Snapshot {
             shift_iv: c.shift_interval_secs,
             shift_max: c.shift_max_px,
             close_bg: c.close_to_background,
+            daily_online: c.daily_online,
+            online_auto_set: c.online_auto_set,
+            online_likes: c.online_likes,
+            online_dislikes: c.online_dislikes,
+            last_online_date: c.last_online_date.clone(),
         }
     }
 }
@@ -108,6 +119,14 @@ pub struct App {
     force_quit: bool,
     monitors: usize,
     primary_res: (i32, i32),
+    // Online daily wallpaper (Bing) state.
+    online_rx: Option<Receiver<Result<crate::online::OnlineImage, String>>>,
+    online_loading: bool,
+    online_img: Option<crate::online::OnlineImage>,
+    online_tex: Option<TextureHandle>,
+    online_idx: u32,
+    online_boot_checked: bool,
+    last_online_auto: Instant,
 }
 
 impl App {
@@ -136,12 +155,20 @@ impl App {
             force_quit: false,
             monitors: wallpaper::monitor_count(),
             primary_res: wallpaper::primary_resolution(),
+            online_rx: None,
+            online_loading: false,
+            online_img: None,
+            online_tex: None,
+            online_idx: 0,
+            online_boot_checked: false,
+            last_online_auto: Instant::now(),
         };
         // Optional deep-link to a tab, e.g. `wallpaper-rs --tab settings`.
         if let Some(pos) = std::env::args().position(|a| a == "--tab") {
             if let Some(name) = std::env::args().nth(pos + 1) {
                 app.tab = match name.to_ascii_lowercase().as_str() {
                     "slideshow" => Tab::Slideshow,
+                    "online" => Tab::Online,
                     "settings" => Tab::Settings,
                     "about" => Tab::About,
                     _ => Tab::Library,
@@ -388,6 +415,259 @@ impl App {
         self.tex_order.retain(|k| self.tex_cache.contains_key(k));
     }
 
+    // ---- Online daily wallpaper (Bing) ------------------------------------
+    fn start_online_fetch(&mut self, idx: u32) {
+        if self.online_loading {
+            return;
+        }
+        self.online_loading = true;
+        self.online_idx = idx;
+        self.status = format!("正在获取在线壁纸（第 {} 张）…", idx + 1);
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.online_rx = Some(rx);
+        let cache = config_dir().join("online");
+        std::thread::spawn(move || {
+            let r = crate::online::fetch(idx, &cache);
+            let _ = tx.send(r);
+        });
+    }
+
+    fn apply_online_wallpaper(&mut self) {
+        let (path, title) = match &self.online_img {
+            Some(img) => (img.path.clone(), img.title.clone()),
+            None => {
+                self.status = "请先获取在线壁纸".to_string();
+                return;
+            }
+        };
+        match wallpaper::set_wallpaper(&path, self.cfg.fit) {
+            Ok(_) => self.status = format!("已设为桌面壁纸：{title}"),
+            Err(e) => self.status = format!("设置失败：{e}"),
+        }
+    }
+
+    fn set_lock_from_current(&mut self) {
+        let Some(path) = self.current_path() else {
+            self.status = "请先选择一张壁纸".to_string();
+            return;
+        };
+        match wallpaper::set_lock_screen(&path) {
+            Ok(_) => self.status = "已设置锁屏壁纸".to_string(),
+            Err(e) => self.status = format!("锁屏设置失败：{e}"),
+        }
+    }
+
+    fn set_lock_from_online(&mut self) {
+        let Some(img) = &self.online_img else {
+            self.status = "请先获取在线壁纸".to_string();
+            return;
+        };
+        let path = img.path.clone();
+        match wallpaper::set_lock_screen(&path) {
+            Ok(_) => self.status = "已设置锁屏壁纸".to_string(),
+            Err(e) => self.status = format!("锁屏设置失败：{e}"),
+        }
+    }
+
+    fn ui_online(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("每日壁纸 · 在线")
+                    .size(20.0)
+                    .strong()
+                    .color(theme::text()),
+            );
+            ui.add_space(8.0);
+            chip(ui, "Bing · cn.bing.com", theme::accent_soft(), theme::accent());
+        });
+        ui.add_space(2.0);
+        ui.label(
+            RichText::new(
+                "联网获取 Bing 每日壁纸（cn.bing.com，国内可直接访问）。可设为桌面 / 锁屏、赞或踩、切换上一张/下一张，并支持每日自动更换。",
+            )
+            .size(11.5)
+            .color(theme::subtext()),
+        );
+        ui.add_space(12.0);
+
+        // Toolbar ----------------------------------------------------------
+        egui::Frame::none()
+            .fill(theme::card())
+            .stroke(Stroke::new(1.0_f32, theme::border()))
+            .rounding(Rounding::same(14.0))
+            .inner_margin(egui::Margin::symmetric(16.0, 12.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if primary_button(ui, "获取今日壁纸").clicked() {
+                        self.start_online_fetch(0);
+                    }
+                    if ghost_button(ui, "‹ 上一张").clicked() {
+                        let i = self.online_idx.saturating_sub(1);
+                        self.start_online_fetch(i);
+                    }
+                    if ghost_button(ui, "下一张 ›").clicked() {
+                        let i = (self.online_idx + 1).min(7);
+                        self.start_online_fetch(i);
+                    }
+                    if self.online_loading {
+                        chip(ui, "获取中…", theme::accent_soft(), theme::accent());
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let mut d = self.cfg.daily_online;
+                        if ui.checkbox(&mut d, "自动每日换壁纸").changed() {
+                            self.cfg.daily_online = d;
+                            if d {
+                                self.online_boot_checked = true;
+                                if self.online_img.is_none() {
+                                    self.start_online_fetch(0);
+                                }
+                            }
+                        }
+                        let mut a = self.cfg.online_auto_set;
+                        if ui.checkbox(&mut a, "获取后自动设为桌面").changed() {
+                            self.cfg.online_auto_set = a;
+                        }
+                    });
+                });
+            });
+        ui.add_space(12.0);
+
+        // Preview + info card ---------------------------------------------
+        let tex_id = self.online_tex.as_ref().map(|t| t.id());
+        let tex_size = self.online_tex.as_ref().map(|t| t.size());
+        let info = self.online_img.as_ref().map(|i| {
+            (
+                i.title.clone(),
+                i.copyright.clone(),
+                i.date.clone(),
+                i.url.clone(),
+            )
+        });
+
+        egui::Frame::none()
+            .fill(theme::card())
+            .stroke(Stroke::new(1.0_f32, theme::border()))
+            .rounding(Rounding::same(16.0))
+            .shadow(egui::epaint::Shadow {
+                offset: egui::vec2(0.0, 4.0),
+                blur: 16.0,
+                spread: 0.0,
+                color: theme::shadow(),
+            })
+            .inner_margin(egui::Margin::symmetric(16.0, 16.0))
+            .show(ui, |ui| {
+                let w = ui.available_width();
+                let h = (ui.available_height() * 0.5).clamp(180.0, 420.0);
+                let (rect, _) =
+                    ui.allocate_exact_size(Vec2::new(w, h), egui::Sense::hover());
+                {
+                    let p = ui.painter();
+                    p.rect_filled(rect, Rounding::same(10.0), theme::extreme());
+                    match (tex_id, tex_size) {
+                        (Some(id), Some(ts)) => {
+                            let tw = ts[0] as f32;
+                            let th = ts[1] as f32;
+                            if tw > 0.0 && th > 0.0 {
+                                let s = (rect.width() / tw).min(rect.height() / th);
+                                let size = Vec2::new(tw * s, th * s);
+                                let ir = egui::Rect::from_center_size(rect.center(), size);
+                                p.image(
+                                    id,
+                                    ir,
+                                    egui::Rect::from_min_max(
+                                        egui::pos2(0.0, 0.0),
+                                        egui::pos2(1.0, 1.0),
+                                    ),
+                                    Color32::WHITE,
+                                );
+                            }
+                        }
+                        _ => {
+                            let txt = if self.online_loading {
+                                "正在联网获取…"
+                            } else {
+                                "点击「获取今日壁纸」开始"
+                            };
+                            p.text(
+                                rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                txt,
+                                egui::FontId::proportional(14.0),
+                                theme::subtext(),
+                            );
+                        }
+                    }
+                }
+                ui.add_space(12.0);
+
+                // "了解有关此图片信息" info panel.
+                egui::Frame::none()
+                    .fill(theme::extreme())
+                    .rounding(Rounding::same(10.0))
+                    .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            chip(
+                                ui,
+                                "🔎 了解有关此图片信息",
+                                theme::accent_soft(),
+                                theme::accent(),
+                            );
+                            if let Some((title, _c, date, _u)) = &info {
+                                ui.label(
+                                    RichText::new(title).size(13.5).strong().color(theme::text()),
+                                );
+                                if !date.is_empty() {
+                                    ui.label(
+                                        RichText::new(date).size(11.0).color(theme::subtext()),
+                                    );
+                                }
+                            } else {
+                                ui.label(
+                                    RichText::new("暂无图片信息")
+                                        .size(12.0)
+                                        .color(theme::subtext()),
+                                );
+                            }
+                        });
+                        if let Some((_t, copyright, _d, _u)) = &info {
+                            if !copyright.is_empty() {
+                                ui.add_space(4.0);
+                                ui.label(
+                                    RichText::new(copyright)
+                                        .size(11.0)
+                                        .color(theme::subtext()),
+                                );
+                            }
+                        }
+                    });
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if primary_button(ui, "设为桌面壁纸").clicked() {
+                        self.apply_online_wallpaper();
+                    }
+                    if ghost_button(ui, "设为锁屏").clicked() {
+                        self.set_lock_from_online();
+                    }
+                    if let Some((_t, _c, _d, url)) = &info {
+                        if ghost_button(ui, "打开图片页面").clicked() {
+                            open_url(url);
+                        }
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ghost_button(ui, &format!("👎 {}", self.cfg.online_dislikes)).clicked() {
+                            self.cfg.online_dislikes += 1;
+                            self.status = "已记录：不喜欢这张".to_string();
+                        }
+                        if ghost_button(ui, &format!("👍 {}", self.cfg.online_likes)).clicked() {
+                            self.cfg.online_likes += 1;
+                            self.status = "已记录：喜欢这张".to_string();
+                        }
+                    });
+                });
+            });
+    }
+
     // ---- UI sections ------------------------------------------------------
     fn draw_header(&self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("hdr")
@@ -487,6 +767,10 @@ impl App {
                     self.tab = Tab::Slideshow;
                 }
                 ui.add_space(3.0);
+                if nav_button(ui, "🌐", "每日壁纸", self.tab == Tab::Online) {
+                    self.tab = Tab::Online;
+                }
+                ui.add_space(3.0);
                 if nav_button(ui, "⚙", "设置", self.tab == Tab::Settings) {
                     self.tab = Tab::Settings;
                 }
@@ -525,6 +809,11 @@ impl App {
                 match self.tab {
                     Tab::Library => self.ui_library(ui, actions),
                     Tab::Slideshow => self.ui_slideshow(ui, actions),
+                    Tab::Online => {
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| self.ui_online(ui));
+                    }
                     Tab::Settings => {
                         egui::ScrollArea::vertical()
                             .auto_shrink([false, false])
@@ -1374,6 +1663,40 @@ impl App {
             });
         ui.add_space(12.0);
 
+        // Lock screen -------------------------------------------------------
+        egui::Frame::none()
+            .fill(theme::card())
+            .stroke(Stroke::new(1.0_f32, theme::border()))
+            .rounding(Rounding::same(14.0))
+            .shadow(egui::epaint::Shadow {
+                offset: egui::vec2(0.0, 3.0),
+                blur: 12.0,
+                spread: 0.0,
+                color: theme::shadow(),
+            })
+            .inner_margin(egui::Margin::symmetric(18.0, 16.0))
+            .show(ui, |ui| {
+                section_header(ui, "锁屏壁纸");
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("把当前壁纸同时设为系统锁屏。Windows 通过 PersonalizationCSP（需以管理员身份运行）；Ubuntu / GNOME 通过 gsettings 设置锁屏 picture-uri；macOS 锁屏跟随系统壁纸。")
+                        .size(11.5)
+                        .color(theme::subtext()),
+                );
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if primary_button(ui, "将当前壁纸设为锁屏").clicked() {
+                        self.set_lock_from_current();
+                    }
+                    ui.label(
+                        RichText::new("当前壁纸会同步应用到锁屏")
+                            .size(11.0)
+                            .color(theme::subtext()),
+                    );
+                });
+            });
+        ui.add_space(12.0);
+
         // Config file -------------------------------------------------------
         egui::Frame::none()
             .fill(theme::card())
@@ -1509,6 +1832,56 @@ impl App {
                     }
                 });
             });
+        ui.add_space(18.0);
+        egui::Frame::none()
+            .fill(theme::card())
+            .stroke(Stroke::new(1.0_f32, theme::border()))
+            .rounding(Rounding::same(14.0))
+            .shadow(egui::epaint::Shadow {
+                offset: egui::vec2(0.0, 3.0),
+                blur: 12.0,
+                spread: 0.0,
+                color: theme::shadow(),
+            })
+            .inner_margin(egui::Margin::symmetric(20.0, 16.0))
+            .show(ui, |ui| {
+                section_header(ui, "下载（各平台）");
+                ui.add_space(10.0);
+                ui.label(
+                    RichText::new("下载最新版安装包（点击「下载」在浏览器打开）：")
+                        .size(12.0)
+                        .color(theme::text()),
+                );
+                ui.add_space(6.0);
+                let links = [
+                    (
+                        "Windows (x64) · .zip",
+                        "https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-windows-x64.zip",
+                    ),
+                    (
+                        "macOS (Universal) · .tar.gz",
+                        "https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-macos-universal.tar.gz",
+                    ),
+                    (
+                        "Linux / Ubuntu (x64) · .tar.gz",
+                        "https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-linux-x64.tar.gz",
+                    ),
+                    (
+                        "全部版本 · Release 页面",
+                        "https://github.com/shuying-code/wallpaper-rs/releases/latest",
+                    ),
+                ];
+                for (label, url) in links {
+                    ui.horizontal(|ui| {
+                        if ghost_button(ui, "⬇ 下载").clicked() {
+                            open_url(url);
+                        }
+                        ui.label(RichText::new(label).size(12.0).color(theme::accent()));
+                        ui.label(RichText::new(url).size(10.0).color(theme::subtext()));
+                    });
+                    ui.add_space(4.0);
+                }
+            });
     }
 }
 
@@ -1575,6 +1948,48 @@ impl eframe::App for App {
                 Ok(_) => "已执行防烧屏像素位移".to_string(),
                 Err(e) => format!("像素位移失败：{e}"),
             };
+        }
+
+        // Poll background online-wallpaper fetch.
+        let online_result = self.online_rx.as_ref().and_then(|rx| rx.try_recv().ok());
+        if let Some(res) = online_result {
+            self.online_rx = None;
+            self.online_loading = false;
+            match res {
+                Ok(img) => {
+                    if let Some(t) = crate::thumbs::load_image(&img.path, 1400) {
+                        let ci = ColorImage::from_rgba_unmultiplied([t.w, t.h], &t.rgba);
+                        let tex = ctx.load_texture(
+                            format!("online:{}", img.path.display()),
+                            ci,
+                            egui::TextureOptions::LINEAR,
+                        );
+                        self.online_tex = Some(tex);
+                    } else {
+                        self.online_tex = None;
+                    }
+                    self.cfg.last_online_date = img.date.clone();
+                    self.status = format!("已获取在线壁纸：{}", img.title);
+                    self.online_img = Some(img);
+                    if self.cfg.online_auto_set {
+                        self.apply_online_wallpaper();
+                    }
+                }
+                Err(e) => {
+                    self.status = format!("在线壁纸获取失败：{e}");
+                }
+            }
+        }
+
+        // Daily online wallpaper: bootstrap on launch, then refresh every 24h.
+        if self.cfg.daily_online && !self.online_loading {
+            if !self.online_boot_checked {
+                self.online_boot_checked = true;
+                self.start_online_fetch(0);
+            } else if self.last_online_auto.elapsed() >= Duration::from_secs(86_400) {
+                self.last_online_auto = Instant::now();
+                self.start_online_fetch(0);
+            }
         }
 
         // OLED burn-in guard scheduling: micro-shift on an interval.
@@ -1892,6 +2307,24 @@ fn open_path(path: &Path) {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+    }
+}
+
+/// Open a URL in the system default browser.
+fn open_url(url: &str) {
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(url).spawn();
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
     }
 }
 

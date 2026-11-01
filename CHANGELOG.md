@@ -2,6 +2,25 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.5.0] - 2026-11-01
+
+### 新增
+- **在线每日壁纸（Bing）**：新增「每日壁纸」页，联网获取 Bing 每日壁纸（`cn.bing.com`，国内可直接访问），带「了解有关此图片信息」信息面板、点赞 / 踩、上一张 / 下一张、设为桌面 / 锁屏、每日自动更换（获取后可选是否自动设为桌面）。支持离线缓存到配置目录 `online/`。
+- **锁屏壁纸**：设置页新增「锁屏壁纸」卡片，可将当前壁纸设为系统锁屏。Windows 通过 `PersonalizationCSP`（HKEY_LOCAL_MACHINE，需管理员），Ubuntu/GNOME 通过 `gsettings` 设置锁屏 `picture-uri`（含深色）。
+- **跨平台全局快捷键**：macOS / Linux(X11) 使用 `global-hotkey` 实现全局热键（Windows 继续用 `RegisterHotKey`），一键最小化 / 唤回；自动候选回退。
+- **Ubuntu 支持完善**：明确 Ubuntu/GNOME 的桌面与锁屏设置方式，README 增补说明与 Wayland 限制。
+- **下载入口**：README（中/英）与「关于」页新增各平台安装包下载跳转链接（Windows / macOS Universal / Linux-Ubuntu）。
+
+### 变更
+- 依赖新增 `ureq`（HTTPS 拉取，rustls）；`global-hotkey`（仅非 Windows 目标）。
+- 配置新增 `daily_online` / `online_auto_set` / `online_likes` / `online_dislikes` / `last_online_date`（均向后兼容，旧配置自动补默认）。
+- 侧边栏新增「每日壁纸」入口；`--tab` 支持 `online`。
+
+### 测试与验证
+- 单测 10 项通过 + 1 项联网测试（`#[ignore]`，实测从 `cn.bing.com` 成功拉取「林间迷雾」316 KB）。
+- GUI 截图验证：每日壁纸页（Bing 图 + 了解此图片信息 + 赞踩 + 自动每日）、设置页锁屏卡片、关于页各平台下载链接。
+- macOS / Linux 由 CI（`macos-latest` / `ubuntu-latest`）编译验证（`ureq`→`rustls`→`ring` 需要目标平台 C 编译器，故无法从 Windows 交叉 `cargo check`）。
+
 ## [0.4.1] - 2026-11-01
 
 基于 **6 轮不同角度的测试**（配置持久化、全盘扫描、缩略图与内存、OLED 位移、热键与常驻后台、跨平台与显示）驱动的一轮修复。
