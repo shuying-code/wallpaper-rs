@@ -16,6 +16,10 @@ const CELL_W: f32 = 176.0;
 const IMG_H: f32 = 100.0;
 const GAP: f32 = 10.0;
 const CARD_PAD: f32 = 8.0;
+/// Upper bound on decoded thumbnail textures kept in RAM/VRAM. Cards that
+/// scroll far out of view are evicted (and re-requested when visible again) so
+/// a 3000-image full-disk scan can't pin ~1.4 GB of textures.
+const TEX_CAP: usize = 300;
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum Tab {
@@ -38,6 +42,7 @@ enum Action {
     ScanAllDisks,
     ShiftOnce,
     Minimize,
+    Quit,
 }
 
 /// Snapshot of the persisted config, used to detect changes and autosave.
@@ -89,6 +94,8 @@ pub struct App {
     tab: Tab,
     thumb: Thumbnailer,
     tex_cache: HashMap<PathBuf, Option<TextureHandle>>,
+    /// Insertion order of `tex_cache` keys, used for bounded eviction.
+    tex_order: Vec<PathBuf>,
     preview: Option<(PathBuf, TextureHandle)>,
     applied_theme: usize,
     hotkey: crate::hotkey::Hotkey,
@@ -98,6 +105,7 @@ pub struct App {
     shifting: bool,
     last_shift: Instant,
     window_hidden: bool,
+    force_quit: bool,
     monitors: usize,
     primary_res: (i32, i32),
 }
@@ -116,6 +124,7 @@ impl App {
             tab: Tab::Library,
             thumb: Thumbnailer::new(),
             tex_cache: HashMap::new(),
+            tex_order: Vec::new(),
             preview: None,
             hotkey: crate::hotkey::start(cc.egui_ctx.clone()),
             scan_rx: None,
@@ -124,9 +133,21 @@ impl App {
             shifting: false,
             last_shift: Instant::now(),
             window_hidden: false,
+            force_quit: false,
             monitors: wallpaper::monitor_count(),
             primary_res: wallpaper::primary_resolution(),
         };
+        // Optional deep-link to a tab, e.g. `wallpaper-rs --tab settings`.
+        if let Some(pos) = std::env::args().position(|a| a == "--tab") {
+            if let Some(name) = std::env::args().nth(pos + 1) {
+                app.tab = match name.to_ascii_lowercase().as_str() {
+                    "slideshow" => Tab::Slideshow,
+                    "settings" => Tab::Settings,
+                    "about" => Tab::About,
+                    _ => Tab::Library,
+                };
+            }
+        }
         // Keep timers (slideshow / OLED shift) ticking even while minimized.
         {
             let c = cc.egui_ctx.clone();
@@ -143,6 +164,7 @@ impl App {
         self.images.clear();
         self.thumb.reset();
         self.tex_cache.clear();
+        self.tex_order.clear();
         self.preview = None;
         self.current = None;
         if let Some(folder) = self.cfg.folder.clone() {
@@ -301,6 +323,12 @@ impl App {
                     self.window_hidden = true;
                     self.status = "已最小化到后台（用全局快捷键唤醒）".to_string();
                 }
+                Action::Quit => {
+                    // Explicit quit always exits, even if close-to-background is on.
+                    self.force_quit = true;
+                    self.cfg.save();
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
             }
         }
     }
@@ -334,11 +362,30 @@ impl App {
         let out_dir = config_dir();
         std::thread::spawn(move || {
             let mut rng = rand::thread_rng();
-            let dx = rng.gen_range(-maxp..=maxp);
+            let mut dx = rng.gen_range(-maxp..=maxp);
             let dy = rng.gen_range(-maxp..=maxp);
+            // Avoid a no-op shift of (0,0) so a shift tick always moves pixels.
+            if dx == 0 && dy == 0 {
+                dx = maxp.max(1);
+            }
             let r = crate::burnin::apply_shift(&path, fit, dx, dy, &out_dir);
             let _ = tx.send(r);
         });
+    }
+
+    /// Keep the thumbnail texture cache bounded so scanning thousands of images
+    /// cannot exhaust VRAM/RAM. Evicted paths are forgotten by the thumbnailer
+    /// so they are re-decoded if they scroll back into view.
+    fn enforce_tex_cap(&mut self) {
+        let plan = evict_plan(&self.tex_order, TEX_CAP);
+        if plan.is_empty() {
+            return;
+        }
+        for k in &plan {
+            self.tex_cache.remove(k);
+            self.thumb.forget(k);
+        }
+        self.tex_order.retain(|k| self.tex_cache.contains_key(k));
     }
 
     // ---- UI sections ------------------------------------------------------
@@ -595,10 +642,6 @@ impl App {
             .cloned()
             .collect();
 
-        for p in &paths {
-            self.thumb.request(p);
-        }
-
         let current_path = self.current_path();
         let avail = ui.available_width();
         let item_w = CELL_W + CARD_PAD * 2.0;
@@ -657,7 +700,7 @@ impl App {
     }
 
     fn draw_card(
-        &self,
+        &mut self,
         ui: &mut egui::Ui,
         path: &Path,
         current: Option<&Path>,
@@ -686,6 +729,14 @@ impl App {
                     ui.set_max_width(CELL_W);
                     let (rect, resp) =
                         ui.allocate_exact_size(Vec2::new(CELL_W, IMG_H), egui::Sense::click());
+                    // Lazy-load: only decode thumbnails for cards actually on
+                    // screen (or about to be), not all 3000 scanned files.
+                    if ui.is_rect_visible(rect)
+                        && !self.tex_cache.contains_key(path)
+                        && !self.thumb.is_requested(path)
+                    {
+                        self.thumb.request(path);
+                    }
                     {
                         let painter = ui.painter();
                         painter.rect_filled(rect, Rounding::same(9.0), theme::extreme());
@@ -1270,8 +1321,11 @@ impl App {
                 ui.separator();
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    setting_label(ui, "立即最小化", "收进任务栏，后台继续运行");
+                    setting_label(ui, "最小化 / 退出", "最小化到后台继续运行，或彻底退出应用");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ghost_button(ui, "退出应用").clicked() {
+                            actions.push(Action::Quit);
+                        }
                         if ghost_button(ui, "最小化到后台").clicked() {
                             actions.push(Action::Minimize);
                         }
@@ -1296,12 +1350,16 @@ impl App {
                 section_header(ui, "显示与兼容");
                 ui.add_space(10.0);
                 let (pw, ph) = self.primary_res;
+                let res_txt = if pw > 0 && ph > 0 {
+                    format!("主屏 {}×{}", pw, ph)
+                } else {
+                    "主屏分辨率未知".to_string()
+                };
                 ui.label(
                     RichText::new(format!(
-                        "检测到 {} 台显示器 · 主屏 {}×{} · 当前主题 {}",
+                        "检测到 {} 台显示器 · {} · 当前主题 {}",
                         self.monitors,
-                        pw,
-                        ph,
+                        res_txt,
                         if self.cfg.theme == 1 { "深色" } else { "浅色" }
                     ))
                     .size(12.0)
@@ -1477,10 +1535,12 @@ impl eframe::App for App {
 
         // Close-to-background: keep running (wallpaper rotation / OLED shift) when
         // the window is closed, provided the global hotkey is available to restore.
-        if ctx.input(|i| i.viewport().close_requested())
-            && self.cfg.close_to_background
-            && self.hotkey.is_registered()
-        {
+        if should_background_on_close(
+            ctx.input(|i| i.viewport().close_requested()),
+            self.cfg.close_to_background,
+            self.hotkey.is_registered(),
+            self.force_quit,
+        ) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
             self.window_hidden = true;
@@ -1494,6 +1554,7 @@ impl eframe::App for App {
             self.scanning = false;
             self.thumb.reset();
             self.tex_cache.clear();
+            self.tex_order.clear();
             self.preview = None;
             self.images = found;
             self.current = if self.images.is_empty() { None } else { Some(0) };
@@ -1537,13 +1598,20 @@ impl eframe::App for App {
                         img,
                         egui::TextureOptions::LINEAR,
                     );
+                    if !self.tex_cache.contains_key(&p) {
+                        self.tex_order.push(p.clone());
+                    }
                     self.tex_cache.insert(p, Some(tex));
                 }
                 None => {
+                    if !self.tex_cache.contains_key(&p) {
+                        self.tex_order.push(p.clone());
+                    }
                     self.tex_cache.insert(p, None);
                 }
             }
         }
+        self.enforce_tex_cap();
 
         // keyboard shortcuts
         if self.images.len() > 1 {
@@ -1824,5 +1892,58 @@ fn open_path(path: &Path) {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+    }
+}
+
+/// Decide whether a window-close should be swallowed into the background.
+/// Explicit quit (`force_quit`) and an unregistered hotkey both fall through to
+/// a real exit so the user can never get stuck with an un-closable window.
+fn should_background_on_close(
+    close_requested: bool,
+    close_to_background: bool,
+    hotkey_ok: bool,
+    force_quit: bool,
+) -> bool {
+    close_requested && close_to_background && hotkey_ok && !force_quit
+}
+
+/// Return the oldest keys that must be dropped so `order` fits within `cap`.
+fn evict_plan(order: &[PathBuf], cap: usize) -> Vec<PathBuf> {
+    if order.len() <= cap {
+        return Vec::new();
+    }
+    order[..order.len() - cap].to_vec()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{evict_plan, should_background_on_close};
+    use std::path::PathBuf;
+
+    #[test]
+    fn close_logic_matrix() {
+        // Normal close with everything enabled -> background.
+        assert!(should_background_on_close(true, true, true, false));
+        // Explicit quit always exits.
+        assert!(!should_background_on_close(true, true, true, true));
+        // Hotkey unavailable -> must exit (can't restore otherwise).
+        assert!(!should_background_on_close(true, true, false, false));
+        // Setting off -> exit.
+        assert!(!should_background_on_close(true, false, true, false));
+        // No close request -> nothing to do.
+        assert!(!should_background_on_close(false, true, true, false));
+    }
+
+    #[test]
+    fn eviction_is_bounded_and_oldest_first() {
+        let order: Vec<PathBuf> = (0..10).map(|i| PathBuf::from(format!("{i}.png"))).collect();
+        // Under cap -> nothing evicted.
+        assert!(evict_plan(&order, 10).is_empty());
+        assert!(evict_plan(&order, 20).is_empty());
+        // Over cap -> drop the oldest (len - cap) entries.
+        let plan = evict_plan(&order, 7);
+        assert_eq!(plan.len(), 3);
+        assert_eq!(plan[0], PathBuf::from("0.png"));
+        assert_eq!(plan[2], PathBuf::from("2.png"));
     }
 }

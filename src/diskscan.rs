@@ -109,3 +109,42 @@ fn is_image(p: &Path) -> bool {
         None => false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn walk_filters_size_extension_and_skip_dirs() {
+        let root = std::env::temp_dir().join("wp_diskscan_test");
+        let _ = std::fs::remove_dir_all(&root);
+        let big = vec![0u8; (MIN_BYTES + 1024) as usize];
+        let small = vec![0u8; 512];
+
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules")).unwrap();
+        std::fs::write(root.join("a.png"), &big).unwrap(); // found
+        std::fs::write(root.join("tiny.png"), &small).unwrap(); // too small -> skip
+        std::fs::write(root.join("notes.txt"), &big).unwrap(); // not image -> skip
+        std::fs::write(root.join("sub").join("b.jpg"), &big).unwrap(); // recursive -> found
+        std::fs::write(root.join("node_modules").join("c.png"), &big).unwrap(); // skipped dir
+
+        let mut found = Vec::new();
+        let mut visited = 0u64;
+        walk(&root, &mut found, &mut visited);
+        found.sort();
+
+        let names: Vec<String> = found
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert!(names.contains(&"a.png".to_string()), "root image should be found");
+        assert!(names.contains(&"b.jpg".to_string()), "nested image should be found");
+        assert!(!names.contains(&"tiny.png".to_string()), "undersized file skipped");
+        assert!(!names.contains(&"notes.txt".to_string()), "non-image skipped");
+        assert!(!names.contains(&"c.png".to_string()), "node_modules must be skipped");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}

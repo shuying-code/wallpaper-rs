@@ -112,16 +112,115 @@ pub fn config_path() -> PathBuf {
 
 impl Config {
     pub fn load() -> Self {
-        std::fs::read_to_string(config_path())
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
+        // Prefer the live file; fall back to the last-known-good backup if the
+        // live file is missing or was left corrupt by an interrupted write.
+        parse_file(&config_path())
+            .or_else(|| parse_file(&config_path().with_extension("json.bak")))
             .unwrap_or_default()
     }
 
     pub fn save(&self) {
         let _ = std::fs::create_dir_all(config_dir());
-        if let Ok(s) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(config_path(), s);
+        let Ok(s) = serde_json::to_string_pretty(self) else {
+            return;
+        };
+        let path = config_path();
+        // Roll the current good file to `.bak` before overwriting.
+        if path.exists() {
+            let _ = std::fs::copy(&path, path.with_extension("json.bak"));
         }
+        // Atomic write: temp file in the same dir, then rename over the target.
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, s.as_bytes()).is_ok() {
+            if std::fs::rename(&tmp, &path).is_err() {
+                let _ = std::fs::remove_file(&tmp);
+            }
+        }
+    }
+}
+
+fn parse_file(p: &std::path::Path) -> Option<Config> {
+    std::fs::read_to_string(p)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A config written by an older version (no OLED / background fields) must
+    /// still load, keeping the user's data and filling new fields with defaults.
+    #[test]
+    fn legacy_config_loads_with_defaults() {
+        let legacy = r#"{
+            "folder": "C:\\pics",
+            "recursive": true,
+            "mode": "Slideshow",
+            "interval_secs": 30,
+            "shuffle": true,
+            "fit": "Fill",
+            "theme": 1,
+            "last_path": "C:\\pics\\a.png",
+            "running": false,
+            "search": "cat"
+        }"#;
+        let c: Config = serde_json::from_str(legacy).expect("legacy config should parse");
+        assert_eq!(c.interval_secs, 30);
+        assert!(c.shuffle);
+        assert_eq!(c.theme, 1);
+        assert_eq!(c.folder.as_deref(), Some(std::path::Path::new("C:\\pics")));
+        // New-in-0.4 fields fall back to defaults.
+        assert!(!c.oled_guard);
+        assert_eq!(c.shift_interval_secs, 60);
+        assert_eq!(c.shift_max_px, 8);
+        assert!(c.close_to_background);
+        assert!(!c.autostart);
+    }
+
+    #[test]
+    fn unknown_fields_are_ignored() {
+        let with_extra = r#"{"folder":null,"recursive":true,"mode":"Fixed",
+            "interval_secs":60,"shuffle":false,"fit":"Fill","theme":0,
+            "last_path":null,"running":false,"search":"","future_field":123}"#;
+        let c: Config = serde_json::from_str(with_extra).expect("unknown fields tolerated");
+        assert_eq!(c.mode, Mode::Fixed);
+    }
+
+    /// Atomic save writes config.json; reloading it preserves values; a second
+    /// save rolls the previous file to `.bak`. Uses a temp APPDATA so the real
+    /// user config is never touched.
+    #[test]
+    fn save_writes_atomically_and_keeps_backup() {
+        let dir = std::env::temp_dir().join(format!("wp_cfg_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = std::env::var_os("APPDATA");
+        std::env::set_var("APPDATA", &dir);
+
+        let mut c = Config::default();
+        c.interval_secs = 123;
+        c.close_to_background = false;
+        c.folder = Some(std::path::PathBuf::from("X:/pics"));
+        c.save();
+
+        let p = config_path();
+        assert!(p.exists(), "config.json should be written");
+        assert!(!p.with_extension("json.tmp").exists(), "temp file cleaned up");
+        let loaded = Config::load();
+        assert_eq!(loaded.interval_secs, 123);
+        assert!(!loaded.close_to_background);
+        assert_eq!(loaded.folder.as_deref(), Some(std::path::Path::new("X:/pics")));
+
+        // Second save rolls the first good file into .bak.
+        c.interval_secs = 456;
+        c.save();
+        assert!(p.with_extension("json.bak").exists(), "backup should exist");
+        assert_eq!(Config::load().interval_secs, 456);
+
+        match old {
+            Some(v) => std::env::set_var("APPDATA", v),
+            None => std::env::remove_var("APPDATA"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

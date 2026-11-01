@@ -41,3 +41,56 @@ pub fn apply_shift(path: &Path, fit: Fit, dx: i64, dy: i64, out_dir: &Path) -> R
     shifted_copy(path, dx, dy, &out)?;
     wallpaper::set_wallpaper(&out, fit)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_src(dir: &Path) -> PathBuf {
+        // 4x4 image; R = x*10+y encodes the coordinate so we can verify mapping.
+        let mut img = image::RgbaImage::new(4, 4);
+        for (x, y, p) in img.enumerate_pixels_mut() {
+            *p = image::Rgba([(x * 10 + y) as u8, 0, 0, 255]);
+        }
+        let p = dir.join("src.png");
+        img.save(&p).unwrap();
+        p
+    }
+
+    #[test]
+    fn shift_maps_pixels_and_clamps_edges() {
+        let dir = std::env::temp_dir().join("wp_burnin_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = make_src(&dir);
+        let dst = dir.join("dst.png");
+
+        // Shift content right by 1 (dx=+1): out(x) = src(x-1), clamped at left.
+        shifted_copy(&src, 1, 0, &dst).unwrap();
+        let out = image::open(&dst).unwrap().to_rgba8();
+        assert_eq!(out.dimensions(), (4, 4));
+        let red = |x: u32, y: u32| out.get_pixel(x, y)[0];
+        // x=0 clamps to src(0); x=1..3 copy src(x-1).
+        assert_eq!(red(0, 0), 0); // src(0,0)=0
+        assert_eq!(red(1, 0), 0); // src(0,0)=0
+        assert_eq!(red(2, 0), 10); // src(1,0)=10
+        assert_eq!(red(3, 0), 20); // src(2,0)=20
+    }
+
+    #[test]
+    fn shift_down_maps_rows() {
+        let dir = std::env::temp_dir().join("wp_burnin_test2");
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = make_src(&dir);
+        let dst = dir.join("dst.png");
+
+        // Shift content down by 1 (dy=+1): out(y) = src(y-1), clamped at top.
+        shifted_copy(&src, 0, 1, &dst).unwrap();
+        let out = image::open(&dst).unwrap().to_rgba8();
+        let red = |x: u32, y: u32| out.get_pixel(x, y)[0];
+        // Column x=0: R = y so out(0,0)=0 (clamp), out(0,1)=0, out(0,2)=1...
+        assert_eq!(red(0, 0), 0);
+        assert_eq!(red(0, 1), 0);
+        assert_eq!(red(0, 2), 1);
+        assert_eq!(red(0, 3), 2);
+    }
+}
