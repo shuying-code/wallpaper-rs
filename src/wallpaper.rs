@@ -241,3 +241,41 @@ fn linux_impl(path: &Path, fit: Fit) -> Result<(), String> {
         Err("Linux 需要 GNOME(gsettings) 或 feh 才能设置壁纸".to_string())
     }
 }
+
+// ---- Display / monitor info ------------------------------------------------
+
+#[cfg(windows)]
+#[link(name = "user32")]
+extern "system" {
+    fn GetSystemMetrics(n_index: i32) -> i32;
+}
+
+/// Number of monitors currently attached (best-effort).
+pub fn monitor_count() -> usize {
+    #[cfg(windows)]
+    {
+        // SM_CMONITORS = 80
+        let n = unsafe { GetSystemMetrics(80) };
+        if n > 0 {
+            n as usize
+        } else {
+            1
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        1
+    }
+}
+
+/// Primary display resolution in physical pixels (best-effort; 0,0 if unknown).
+pub fn primary_resolution() -> (i32, i32) {
+    #[cfg(windows)]
+    {
+        unsafe { (GetSystemMetrics(0), GetSystemMetrics(1)) }
+    }
+    #[cfg(not(windows))]
+    {
+        (0, 0)
+    }
+}

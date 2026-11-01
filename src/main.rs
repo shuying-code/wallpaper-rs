@@ -2,7 +2,10 @@
 
 mod app;
 mod autostart;
+mod burnin;
 mod config;
+mod diskscan;
+mod hotkey;
 mod theme;
 mod thumbs;
 mod wallpaper;
@@ -55,8 +58,42 @@ fn selftest() -> i32 {
         println!("[FAIL] image decoder");
         ok = false;
     }
+    // OLED burn-in pixel-shift smoke test.
+    {
+        let src = std::env::temp_dir().join("wp_shift_src.png");
+        let dst = std::env::temp_dir().join("wp_shift_dst.png");
+        let mut img = image::RgbaImage::new(8, 8);
+        for (x, y, p) in img.enumerate_pixels_mut() {
+            *p = image::Rgba([x as u8, y as u8, 0, 255]);
+        }
+        let _ = img.save(&src);
+        match burnin::shifted_copy(&src, 1, 1, &dst) {
+            Ok(_) => match image::open(&dst) {
+                Ok(i) if i.width() == 8 && i.height() == 8 => {
+                    println!("[PASS] burnin pixel shift")
+                }
+                _ => {
+                    println!("[FAIL] burnin pixel shift (size)");
+                    ok = false;
+                }
+            },
+            Err(e) => {
+                println!("[FAIL] burnin pixel shift: {e}");
+                ok = false;
+            }
+        }
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&dst);
+    }
     println!("[INFO] config dir: {}", config::config_dir().display());
     println!("[INFO] platform: {}", std::env::consts::OS);
+    let (pw, ph) = wallpaper::primary_resolution();
+    println!(
+        "[INFO] monitors: {} primary: {}x{}",
+        wallpaper::monitor_count(),
+        pw,
+        ph
+    );
     if ok {
         0
     } else {

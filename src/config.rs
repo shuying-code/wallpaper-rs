@@ -32,6 +32,28 @@ pub struct Config {
     /// Launch the app automatically at login (Windows Run key / LaunchAgent / autostart .desktop).
     #[serde(default)]
     pub autostart: bool,
+    /// OLED burn-in guard: periodically micro-shift the wallpaper.
+    #[serde(default)]
+    pub oled_guard: bool,
+    /// How often (seconds) to micro-shift while the OLED guard is on.
+    #[serde(default = "default_shift_interval")]
+    pub shift_interval_secs: u64,
+    /// Maximum micro-shift in pixels.
+    #[serde(default = "default_shift_max")]
+    pub shift_max_px: u32,
+    /// Minimize to background on close (continues running) instead of exiting.
+    #[serde(default = "default_true")]
+    pub close_to_background: bool,
+}
+
+fn default_shift_interval() -> u64 {
+    60
+}
+fn default_shift_max() -> u32 {
+    8
+}
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Config {
@@ -48,6 +70,10 @@ impl Default for Config {
             running: false,
             search: String::new(),
             autostart: false,
+            oled_guard: false,
+            shift_interval_secs: 60,
+            shift_max_px: 8,
+            close_to_background: true,
         }
     }
 }

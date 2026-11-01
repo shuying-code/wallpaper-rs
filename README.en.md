@@ -27,6 +27,10 @@ subscription, no telemetry.**
 - **Theme**: light / dark toggle with instant restyle.
 - **Persistent config**: folder, mode, interval, fit, theme and last wallpaper are saved locally.
 - **Launch at login**: one toggle — Windows `Run` key, macOS `LaunchAgent`, Linux autostart `.desktop`.
+- **OLED burn-in guard**: micro-shift the wallpaper every few seconds/minutes (adjustable interval & amplitude) to spread pixel load.
+- **Full-disk scan**: background scan of all drives for images (skips system/cache dirs, bounded).
+- **Resident + global hotkey**: close-to-background keeps rotation running; `Ctrl+Alt+W` toggles minimize/restore (auto-fallback if taken).
+- **Display aware**: detects monitor count and primary resolution; HiDPI handled by the OS; applies to all monitors.
 - **Keyboard shortcuts**: `←` previous, `→` next.
 - **Single binary, pure Rust**: no WebView or runtime; embedded CJK font, no missing-glyph boxes.
 

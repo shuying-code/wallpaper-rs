@@ -9,6 +9,7 @@ use egui::{Color32, ColorImage, RichText, Rounding, Stroke, TextureHandle, Vec2}
 use rand::Rng;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 const CELL_W: f32 = 176.0;
@@ -34,6 +35,49 @@ enum Action {
     OpenFolder,
     OpenConfig,
     Save,
+    ScanAllDisks,
+    ShiftOnce,
+    Minimize,
+}
+
+/// Snapshot of the persisted config, used to detect changes and autosave.
+#[derive(PartialEq)]
+struct Snapshot {
+    mode: Mode,
+    interval: u64,
+    shuffle: bool,
+    fit: Fit,
+    theme: usize,
+    recursive: bool,
+    running: bool,
+    search: String,
+    folder: Option<PathBuf>,
+    last_path: Option<PathBuf>,
+    oled: bool,
+    shift_iv: u64,
+    shift_max: u32,
+    close_bg: bool,
+}
+
+impl Snapshot {
+    fn of(c: &Config) -> Self {
+        Self {
+            mode: c.mode,
+            interval: c.interval_secs,
+            shuffle: c.shuffle,
+            fit: c.fit,
+            theme: c.theme,
+            recursive: c.recursive,
+            running: c.running,
+            search: c.search.clone(),
+            folder: c.folder.clone(),
+            last_path: c.last_path.clone(),
+            oled: c.oled_guard,
+            shift_iv: c.shift_interval_secs,
+            shift_max: c.shift_max_px,
+            close_bg: c.close_to_background,
+        }
+    }
 }
 
 pub struct App {
@@ -47,6 +91,15 @@ pub struct App {
     tex_cache: HashMap<PathBuf, Option<TextureHandle>>,
     preview: Option<(PathBuf, TextureHandle)>,
     applied_theme: usize,
+    hotkey: crate::hotkey::Hotkey,
+    scan_rx: Option<Receiver<Vec<PathBuf>>>,
+    scanning: bool,
+    shift_rx: Option<Receiver<Result<(), String>>>,
+    shifting: bool,
+    last_shift: Instant,
+    window_hidden: bool,
+    monitors: usize,
+    primary_res: (i32, i32),
 }
 
 impl App {
@@ -64,7 +117,24 @@ impl App {
             thumb: Thumbnailer::new(),
             tex_cache: HashMap::new(),
             preview: None,
+            hotkey: crate::hotkey::start(cc.egui_ctx.clone()),
+            scan_rx: None,
+            scanning: false,
+            shift_rx: None,
+            shifting: false,
+            last_shift: Instant::now(),
+            window_hidden: false,
+            monitors: wallpaper::monitor_count(),
+            primary_res: wallpaper::primary_resolution(),
         };
+        // Keep timers (slideshow / OLED shift) ticking even while minimized.
+        {
+            let c = cc.egui_ctx.clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(Duration::from_secs(1));
+                c.request_repaint();
+            });
+        }
         app.scan();
         app
     }
@@ -224,8 +294,51 @@ impl App {
                     self.cfg.save();
                     self.status = "配置已保存".to_string();
                 }
+                Action::ScanAllDisks => self.start_full_scan(),
+                Action::ShiftOnce => self.spawn_shift(),
+                Action::Minimize => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                    self.window_hidden = true;
+                    self.status = "已最小化到后台（用全局快捷键唤醒）".to_string();
+                }
             }
         }
+    }
+
+    fn start_full_scan(&mut self) {
+        if self.scanning {
+            return;
+        }
+        self.scanning = true;
+        self.scan_rx = Some(crate::diskscan::start());
+        self.status = "正在全盘扫描图片…（后台进行，完成后自动载入）".to_string();
+    }
+
+    fn spawn_shift(&mut self) {
+        if self.shifting {
+            return;
+        }
+        let path = match self.current_path() {
+            Some(p) => p,
+            None => {
+                self.status = "请先选择一张壁纸再执行位移".to_string();
+                return;
+            }
+        };
+        self.shifting = true;
+        self.last_shift = Instant::now();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.shift_rx = Some(rx);
+        let maxp = self.cfg.shift_max_px.max(1) as i64;
+        let fit = self.cfg.fit;
+        let out_dir = config_dir();
+        std::thread::spawn(move || {
+            let mut rng = rand::thread_rng();
+            let dx = rng.gen_range(-maxp..=maxp);
+            let dy = rng.gen_range(-maxp..=maxp);
+            let r = crate::burnin::apply_shift(&path, fit, dx, dy, &out_dir);
+            let _ = tx.send(r);
+        });
     }
 
     // ---- UI sections ------------------------------------------------------
@@ -365,8 +478,16 @@ impl App {
                 match self.tab {
                     Tab::Library => self.ui_library(ui, actions),
                     Tab::Slideshow => self.ui_slideshow(ui, actions),
-                    Tab::Settings => self.ui_settings(ui, actions),
-                    Tab::About => self.ui_about(ui),
+                    Tab::Settings => {
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| self.ui_settings(ui, actions));
+                    }
+                    Tab::About => {
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| self.ui_about(ui));
+                    }
                 }
             });
     }
@@ -408,6 +529,9 @@ impl App {
                         if primary_button(ui, "选择文件夹…").clicked() {
                             actions.push(Action::PickFolder);
                         }
+                        if ghost_button(ui, "全盘扫描").clicked() {
+                            actions.push(Action::ScanAllDisks);
+                        }
                         if ghost_button(ui, "重新扫描").clicked() {
                             actions.push(Action::Rescan);
                         }
@@ -445,6 +569,10 @@ impl App {
                         theme::accent_soft(),
                         theme::accent(),
                     );
+                    if self.scanning {
+                        ui.add_space(6.0);
+                        chip(ui, "扫描中…", theme::accent_soft(), theme::accent());
+                    }
                 });
             });
         ui.add_space(12.0);
@@ -1018,6 +1146,176 @@ impl App {
             });
         ui.add_space(12.0);
 
+        // OLED burn-in guard ------------------------------------------------
+        egui::Frame::none()
+            .fill(theme::card())
+            .stroke(Stroke::new(1.0_f32, theme::border()))
+            .rounding(Rounding::same(14.0))
+            .shadow(egui::epaint::Shadow {
+                offset: egui::vec2(0.0, 3.0),
+                blur: 12.0,
+                spread: 0.0,
+                color: theme::shadow(),
+            })
+            .inner_margin(egui::Margin::symmetric(18.0, 16.0))
+            .show(ui, |ui| {
+                section_header(ui, "OLED 防烧屏");
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("长时间显示同一张壁纸，OLED 屏幕上的固定元素（任务栏、时钟、图标）可能留下残影甚至烧屏。开启守护后会定期把壁纸微移几个像素，让像素负载均摊。")
+                        .size(11.5)
+                        .color(theme::subtext()),
+                );
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    setting_label(ui, "防烧屏守护", "定期微移壁纸，缓解残影 / 烧屏");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let mut g = self.cfg.oled_guard;
+                        if ui.checkbox(&mut g, "").changed() {
+                            self.cfg.oled_guard = g;
+                            if g {
+                                self.last_shift = Instant::now();
+                            }
+                        }
+                    });
+                });
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    setting_label(ui, "位移间隔", "每隔多久微移一次（秒）");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_enabled(
+                            self.cfg.oled_guard,
+                            egui::DragValue::new(&mut self.cfg.shift_interval_secs)
+                                .range(10..=3600)
+                                .suffix(" 秒"),
+                        );
+                    });
+                });
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    setting_label(ui, "最大位移", "单次最大偏移像素（1–30）");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_enabled(
+                            self.cfg.oled_guard,
+                            egui::DragValue::new(&mut self.cfg.shift_max_px)
+                                .range(1..=30)
+                                .suffix(" px"),
+                        );
+                    });
+                });
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if primary_button(ui, "立即位移一次").clicked() {
+                        actions.push(Action::ShiftOnce);
+                    }
+                    ui.label(
+                        RichText::new("建议同时开启轮播并缩短间隔，防烧屏效果更好。")
+                            .size(11.0)
+                            .color(theme::subtext()),
+                    );
+                });
+            });
+        ui.add_space(12.0);
+
+        // Resident & hotkey -------------------------------------------------
+        egui::Frame::none()
+            .fill(theme::card())
+            .stroke(Stroke::new(1.0_f32, theme::border()))
+            .rounding(Rounding::same(14.0))
+            .shadow(egui::epaint::Shadow {
+                offset: egui::vec2(0.0, 3.0),
+                blur: 12.0,
+                spread: 0.0,
+                color: theme::shadow(),
+            })
+            .inner_margin(egui::Margin::symmetric(18.0, 16.0))
+            .show(ui, |ui| {
+                section_header(ui, "常驻后台与快捷键");
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    setting_label(ui, "关闭时最小化到后台", "关闭窗口不退出，轮播 / 防烧屏继续运行");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let mut cb = self.cfg.close_to_background;
+                        if ui.checkbox(&mut cb, "").changed() {
+                            self.cfg.close_to_background = cb;
+                        }
+                    });
+                });
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(8.0);
+                let reg = self.hotkey.is_registered();
+                ui.horizontal(|ui| {
+                    let desc = if reg {
+                        format!("{}：最小化 / 唤回窗口", self.hotkey.label())
+                    } else {
+                        "注册失败：快捷键可能被其它软件占用".to_string()
+                    };
+                    setting_label(ui, "全局快捷键", &desc);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if reg {
+                            let txt = format!("已注册 · {}", self.hotkey.label());
+                            chip(ui, &txt, theme::accent_soft(), theme::ok());
+                        } else {
+                            let txt = format!("注册失败 (code {})", self.hotkey.error_code());
+                            chip(ui, &txt, theme::extreme(), theme::subtext());
+                        }
+                    });
+                });
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    setting_label(ui, "立即最小化", "收进任务栏，后台继续运行");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ghost_button(ui, "最小化到后台").clicked() {
+                            actions.push(Action::Minimize);
+                        }
+                    });
+                });
+            });
+        ui.add_space(12.0);
+
+        // Display & compatibility -------------------------------------------
+        egui::Frame::none()
+            .fill(theme::card())
+            .stroke(Stroke::new(1.0_f32, theme::border()))
+            .rounding(Rounding::same(14.0))
+            .shadow(egui::epaint::Shadow {
+                offset: egui::vec2(0.0, 3.0),
+                blur: 12.0,
+                spread: 0.0,
+                color: theme::shadow(),
+            })
+            .inner_margin(egui::Margin::symmetric(18.0, 16.0))
+            .show(ui, |ui| {
+                section_header(ui, "显示与兼容");
+                ui.add_space(10.0);
+                let (pw, ph) = self.primary_res;
+                ui.label(
+                    RichText::new(format!(
+                        "检测到 {} 台显示器 · 主屏 {}×{} · 当前主题 {}",
+                        self.monitors,
+                        pw,
+                        ph,
+                        if self.cfg.theme == 1 { "深色" } else { "浅色" }
+                    ))
+                    .size(12.0)
+                    .color(theme::text()),
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new("壁纸将应用到所有显示器（Windows 通过系统 API）。高 DPI 缩放由系统自动适配。")
+                        .size(11.0)
+                        .color(theme::subtext()),
+                );
+            });
+        ui.add_space(12.0);
+
         // Config file -------------------------------------------------------
         egui::Frame::none()
             .fill(theme::card())
@@ -1163,18 +1461,71 @@ impl eframe::App for App {
             self.applied_theme = self.cfg.theme;
         }
 
-        let snap = (
-            self.cfg.mode,
-            self.cfg.interval_secs,
-            self.cfg.shuffle,
-            self.cfg.fit,
-            self.cfg.theme,
-            self.cfg.recursive,
-            self.cfg.running,
-            self.cfg.search.clone(),
-            self.cfg.folder.clone(),
-            self.cfg.last_path.clone(),
-        );
+        // Global hotkey: toggle minimize / restore.
+        if self.hotkey.take_toggle() {
+            if self.window_hidden {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                self.window_hidden = false;
+                self.status = "已唤回窗口".to_string();
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                self.window_hidden = true;
+                self.status = "已最小化到后台（用全局快捷键唤醒）".to_string();
+            }
+        }
+
+        // Close-to-background: keep running (wallpaper rotation / OLED shift) when
+        // the window is closed, provided the global hotkey is available to restore.
+        if ctx.input(|i| i.viewport().close_requested())
+            && self.cfg.close_to_background
+            && self.hotkey.is_registered()
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            self.window_hidden = true;
+            self.status = "已最小化到后台继续运行（用全局快捷键唤醒）".to_string();
+        }
+
+        // Poll background full-disk scan.
+        let scan_result = self.scan_rx.as_ref().and_then(|rx| rx.try_recv().ok());
+        if let Some(found) = scan_result {
+            self.scan_rx = None;
+            self.scanning = false;
+            self.thumb.reset();
+            self.tex_cache.clear();
+            self.preview = None;
+            self.images = found;
+            self.current = if self.images.is_empty() { None } else { Some(0) };
+            self.status = if self.images.is_empty() {
+                "全盘扫描完成，但未找到图片".to_string()
+            } else {
+                format!("全盘扫描完成：共 {} 张图片", self.images.len())
+            };
+            self.last_switch = Instant::now();
+        }
+
+        // Poll background OLED pixel-shift.
+        let shift_result = self.shift_rx.as_ref().and_then(|rx| rx.try_recv().ok());
+        if let Some(res) = shift_result {
+            self.shift_rx = None;
+            self.shifting = false;
+            self.status = match res {
+                Ok(_) => "已执行防烧屏像素位移".to_string(),
+                Err(e) => format!("像素位移失败：{e}"),
+            };
+        }
+
+        // OLED burn-in guard scheduling: micro-shift on an interval.
+        if self.cfg.oled_guard
+            && !self.shifting
+            && !self.images.is_empty()
+            && self.last_shift.elapsed().as_secs() >= self.cfg.shift_interval_secs.max(10)
+        {
+            self.spawn_shift();
+        }
+
+        let snap = Snapshot::of(&self.cfg);
 
         // drain finished thumbnails
         for (p, t) in self.thumb.poll() {
@@ -1234,18 +1585,7 @@ impl eframe::App for App {
         self.draw_center(ctx, &mut actions);
         self.apply(ctx, actions);
 
-        let snap2 = (
-            self.cfg.mode,
-            self.cfg.interval_secs,
-            self.cfg.shuffle,
-            self.cfg.fit,
-            self.cfg.theme,
-            self.cfg.recursive,
-            self.cfg.running,
-            self.cfg.search.clone(),
-            self.cfg.folder.clone(),
-            self.cfg.last_path.clone(),
-        );
+        let snap2 = Snapshot::of(&self.cfg);
         if snap != snap2 {
             self.cfg.save();
         }
@@ -1260,6 +1600,14 @@ impl eframe::App for App {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(&self.status).size(12.0).color(theme::subtext()));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let hint = if self.hotkey.is_registered() {
+                            format!("{} 后台 / 唤回", self.hotkey.label())
+                        } else {
+                            "全局快捷键不可用".to_string()
+                        };
+                        ui.label(RichText::new(hint).size(11.0).color(theme::subtext()));
+                    });
                 });
             });
     }
