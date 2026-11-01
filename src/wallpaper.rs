@@ -183,13 +183,16 @@ fn windows_impl(path: &Path, fit: Fit) -> Result<(), String> {
     };
     set_reg_sz("WallpaperStyle", style)?;
     set_reg_sz("TileWallpaper", tile)?;
+    // Explicitly persist the wallpaper path; some shells/COM surfaces only pick
+    // up the change immediately when this value is present alongside SPI.
+    let _ = set_reg_sz("WallPaper", &path.to_string_lossy());
 
     let wide: Vec<u16> = path
         .as_os_str()
         .encode_wide()
         .chain(std::iter::once(0))
         .collect();
-    let ok = unsafe {
+    let call = || unsafe {
         SystemParametersInfoW(
             SPI_SETDESKWALLPAPER,
             0,
@@ -197,6 +200,13 @@ fn windows_impl(path: &Path, fit: Fit) -> Result<(), String> {
             SPIF_UPDATEINIFILE | SPIF_SENDCHANGE,
         )
     };
+    let mut ok = call();
+    // If the readback doesn't match yet, nudge once more (some configurations
+    // need a second call before the desktop repaints immediately).
+    if ok != 0 && !same_path(current_wallpaper().as_deref(), path) {
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        ok = call();
+    }
     if ok == 0 {
         Err(format!(
             "SystemParametersInfoW 失败：{}",
@@ -208,7 +218,96 @@ fn windows_impl(path: &Path, fit: Fit) -> Result<(), String> {
 }
 
 #[cfg(windows)]
+fn same_path(a: Option<&Path>, b: &Path) -> bool {
+    match a {
+        Some(p) => p.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy()),
+        None => false,
+    }
+}
+
+/// Known third-party programs that take over the desktop wallpaper. If one is
+/// running it can override a wallpaper we set (the registry/SPI changes but the
+/// user sees no visual change). Returned as friendly display names.
+pub fn conflicting_wallpaper_managers() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        const SIGS: &[(&str, &str)] = &[
+            ("aura wallpaper", "华硕 Aura Wallpaper"),
+            ("wallpaper engine", "Wallpaper Engine"),
+            ("wallpaper32", "Wallpaper Engine"),
+            ("wallpaper64", "Wallpaper Engine"),
+            ("dynamic theme", "Dynamic Theme"),
+            ("deskscapes", "DeskScapes"),
+            ("lively", "Lively Wallpaper"),
+            ("upupoo", "UPUPOO / 火萤"),
+        ];
+        let mut out: Vec<String> = Vec::new();
+        unsafe {
+            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snap as isize == -1 {
+                return out;
+            }
+            let mut e: ProcessEntry32W = std::mem::zeroed();
+            e.dw_size = std::mem::size_of::<ProcessEntry32W>() as u32;
+            if Process32FirstW(snap, &mut e) != 0 {
+                loop {
+                    let len = e
+                        .sz_exe_file
+                        .iter()
+                        .position(|&c| c == 0)
+                        .unwrap_or(e.sz_exe_file.len());
+                    let name = String::from_utf16_lossy(&e.sz_exe_file[..len]).to_ascii_lowercase();
+                    for (key, disp) in SIGS {
+                        if name.contains(key) && !out.iter().any(|x| x == disp) {
+                            out.push((*disp).to_string());
+                        }
+                    }
+                    if Process32NextW(snap, &mut e) == 0 {
+                        break;
+                    }
+                }
+            }
+            CloseHandle(snap);
+        }
+        out
+    }
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
+}
+
+#[cfg(windows)]
+const TH32CS_SNAPPROCESS: u32 = 0x0000_0002;
+
+#[cfg(windows)]
+#[repr(C)]
+struct ProcessEntry32W {
+    dw_size: u32,
+    cnt_usage: u32,
+    th32_process_id: u32,
+    th32_default_heap_id: usize,
+    th32_module_id: u32,
+    cnt_threads: u32,
+    th32_parent_process_id: u32,
+    pc_pri_class_base: i32,
+    dw_flags: u32,
+    sz_exe_file: [u16; 260],
+}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    fn CreateToolhelp32Snapshot(dw_flags: u32, th32_process_id: u32) -> *mut std::ffi::c_void;
+    fn Process32FirstW(h_snapshot: *mut std::ffi::c_void, lppe: *mut ProcessEntry32W) -> i32;
+    fn Process32NextW(h_snapshot: *mut std::ffi::c_void, lppe: *mut ProcessEntry32W) -> i32;
+    fn CloseHandle(h_object: *mut std::ffi::c_void) -> i32;
+}
+
+#[cfg(windows)]
 const SPI_SETDESKWALLPAPER: u32 = 0x0014;
+#[cfg(windows)]
+const SPI_GETDESKWALLPAPER: u32 = 0x0073;
 #[cfg(windows)]
 const SPIF_UPDATEINIFILE: u32 = 0x0001;
 #[cfg(windows)]
@@ -410,5 +509,35 @@ pub fn primary_resolution() -> (i32, i32) {
     #[cfg(not(windows))]
     {
         (0, 0)
+    }
+}
+
+/// Path of the current desktop wallpaper (best-effort; Windows only).
+pub fn current_wallpaper() -> Option<std::path::PathBuf> {
+    #[cfg(windows)]
+    {
+        let mut buf = vec![0u16; 1024];
+        let ok = unsafe {
+            SystemParametersInfoW(
+                SPI_GETDESKWALLPAPER,
+                buf.len() as u32,
+                buf.as_mut_ptr() as *mut std::ffi::c_void,
+                0,
+            )
+        };
+        if ok == 0 {
+            return None;
+        }
+        let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        let s = String::from_utf16_lossy(&buf[..len]);
+        if s.is_empty() {
+            None
+        } else {
+            Some(std::path::PathBuf::from(s))
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        None
     }
 }

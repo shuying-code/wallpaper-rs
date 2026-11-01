@@ -7,6 +7,33 @@ use std::thread;
 
 pub const THUMB_MAX: u32 = 340;
 
+// A "wallpaper-grade" image: at least 1280×720 and landscape-ish (aspect ≥ 1.2).
+pub const MIN_WALLPAPER_W: u32 = 1280;
+pub const MIN_WALLPAPER_H: u32 = 720;
+
+/// Read only the image header to get (width, height) cheaply (no full decode).
+pub fn image_dimensions(path: &Path) -> Option<(u32, u32)> {
+    image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
+}
+
+/// Whether an image of size (w,h) is suitable as a desktop wallpaper.
+pub fn wallpaper_suitable(w: u32, h: u32) -> bool {
+    w >= MIN_WALLPAPER_W && h >= MIN_WALLPAPER_H && (w as u64) * 10 >= (h as u64) * 12
+}
+
+/// Convenience: is this file a wallpaper-grade image (reads only the header)?
+pub fn is_wallpaper_file(path: &Path) -> bool {
+    match image_dimensions(path) {
+        Some((w, h)) => wallpaper_suitable(w, h),
+        None => false,
+    }
+}
+
 pub struct Thumb {
     pub w: usize,
     pub h: usize,
@@ -107,5 +134,29 @@ mod tests {
         assert!(t.is_requested(p));
         t.forget(p);
         assert!(!t.is_requested(p));
+    }
+
+    #[test]
+    fn wallpaper_suitability_rules() {
+        assert!(wallpaper_suitable(1920, 1080));
+        assert!(wallpaper_suitable(3840, 2160));
+        assert!(wallpaper_suitable(1280, 720));
+        assert!(!wallpaper_suitable(256, 256)); // icon
+        assert!(!wallpaper_suitable(800, 1400)); // portrait doc thumb
+        assert!(!wallpaper_suitable(1024, 768)); // below min width
+        assert!(!wallpaper_suitable(1080, 1920)); // portrait
+    }
+
+    #[test]
+    fn is_wallpaper_file_by_header() {
+        let dir = std::env::temp_dir().join("wp_suit_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let big = dir.join("big.png");
+        let small = dir.join("icon.png");
+        image::RgbaImage::new(1920, 1080).save(&big).unwrap();
+        image::RgbaImage::new(64, 64).save(&small).unwrap();
+        assert!(is_wallpaper_file(&big), "1920x1080 should qualify");
+        assert!(!is_wallpaper_file(&small), "64x64 icon should be filtered");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

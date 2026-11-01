@@ -22,6 +22,35 @@ fn main() -> eframe::Result<()> {
         println!("wallpaper-rs {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+    // Diagnostics: print / set the current desktop wallpaper (Windows).
+    if args.iter().any(|a| a == "--getwp") {
+        match wallpaper::current_wallpaper() {
+            Some(p) => println!("{}", p.display()),
+            None => println!("(unknown)"),
+        }
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--managers") {
+        let m = wallpaper::conflicting_wallpaper_managers();
+        if m.is_empty() {
+            println!("none");
+        } else {
+            for x in m {
+                println!("{x}");
+            }
+        }
+        return Ok(());
+    }
+    if let Some(pos) = args.iter().position(|a| a == "--apply") {
+        if let Some(p) = args.get(pos + 1) {
+            match wallpaper::set_wallpaper(std::path::Path::new(p), wallpaper::Fit::Fill) {
+                Ok(_) => println!("APPLY OK"),
+                Err(e) => println!("APPLY ERR: {e}"),
+            }
+            println!("READBACK: {:?}", wallpaper::current_wallpaper());
+            return Ok(());
+        }
+    }
 
     let native = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

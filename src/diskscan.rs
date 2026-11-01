@@ -28,7 +28,9 @@ const SKIP_DIRS: &[&str] = &[
     "config.msi",
 ];
 
-pub fn start() -> Receiver<Vec<PathBuf>> {
+/// Start a background scan. When `wallpaper_only` is true, only wallpaper-grade
+/// images (see [`crate::thumbs::wallpaper_suitable`]) are returned.
+pub fn start(wallpaper_only: bool) -> Receiver<Vec<PathBuf>> {
     let (tx, rx) = channel();
     std::thread::spawn(move || {
         let mut found: Vec<PathBuf> = Vec::new();
@@ -41,6 +43,9 @@ pub fn start() -> Receiver<Vec<PathBuf>> {
         }
         found.sort();
         found.dedup();
+        if wallpaper_only {
+            found.retain(|p| crate::thumbs::is_wallpaper_file(p));
+        }
         let _ = tx.send(found);
     });
     rx

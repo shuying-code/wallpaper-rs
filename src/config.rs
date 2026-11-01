@@ -58,6 +58,9 @@ pub struct Config {
     /// Last date (YYYYMMDD) an online daily wallpaper was applied (for daily rotation).
     #[serde(default)]
     pub last_online_date: String,
+    /// Only load wallpaper-grade images (≥1280×720, landscape) into the library.
+    #[serde(default = "default_true")]
+    pub wallpaper_only: bool,
 }
 
 fn default_shift_interval() -> u64 {
@@ -93,6 +96,7 @@ impl Default for Config {
             online_likes: 0,
             online_dislikes: 0,
             last_online_date: String::new(),
+            wallpaper_only: true,
         }
     }
 }

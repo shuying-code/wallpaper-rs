@@ -44,6 +44,7 @@ enum Action {
     ShiftOnce,
     Minimize,
     Quit,
+    ReapplyCurrent,
 }
 
 /// Snapshot of the persisted config, used to detect changes and autosave.
@@ -68,6 +69,7 @@ struct Snapshot {
     online_likes: i64,
     online_dislikes: i64,
     last_online_date: String,
+    wallpaper_only: bool,
 }
 
 impl Snapshot {
@@ -92,6 +94,7 @@ impl Snapshot {
             online_likes: c.online_likes,
             online_dislikes: c.online_dislikes,
             last_online_date: c.last_online_date.clone(),
+            wallpaper_only: c.wallpaper_only,
         }
     }
 }
@@ -127,6 +130,7 @@ pub struct App {
     online_idx: u32,
     online_boot_checked: bool,
     last_online_auto: Instant,
+    wallpaper_managers: Vec<String>,
 }
 
 impl App {
@@ -162,6 +166,7 @@ impl App {
             online_idx: 0,
             online_boot_checked: false,
             last_online_auto: Instant::now(),
+            wallpaper_managers: wallpaper::conflicting_wallpaper_managers(),
         };
         // Optional deep-link to a tab, e.g. `wallpaper-rs --tab settings`.
         if let Some(pos) = std::env::args().position(|a| a == "--tab") {
@@ -199,6 +204,9 @@ impl App {
                 let mut files = Vec::new();
                 collect_images(&folder, self.cfg.recursive, &mut files);
                 files.sort();
+                if self.cfg.wallpaper_only {
+                    files.retain(|p| crate::thumbs::is_wallpaper_file(p));
+                }
                 self.images = files;
             }
         }
@@ -356,6 +364,13 @@ impl App {
                     self.cfg.save();
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
+                Action::ReapplyCurrent => {
+                    if let Some(i) = self.current {
+                        // Re-apply the current wallpaper so a display-mode change
+                        // takes effect immediately, without waiting for the next switch.
+                        self.set_current(ctx, i);
+                    }
+                }
             }
         }
     }
@@ -365,8 +380,12 @@ impl App {
             return;
         }
         self.scanning = true;
-        self.scan_rx = Some(crate::diskscan::start());
-        self.status = "正在全盘扫描图片…（后台进行，完成后自动载入）".to_string();
+        self.scan_rx = Some(crate::diskscan::start(self.cfg.wallpaper_only));
+        self.status = if self.cfg.wallpaper_only {
+            "正在全盘扫描壁纸（仅载入 ≥1280×720 横屏）…".to_string()
+        } else {
+            "正在全盘扫描图片…（后台进行，完成后自动载入）".to_string()
+        };
     }
 
     fn spawn_shift(&mut self) {
@@ -489,6 +508,24 @@ impl App {
             .color(theme::subtext()),
         );
         ui.add_space(12.0);
+
+        if !self.wallpaper_managers.is_empty() {
+            egui::Frame::none()
+                .fill(theme::accent_soft())
+                .rounding(Rounding::same(10.0))
+                .inner_margin(egui::Margin::symmetric(12.0, 8.0))
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "⚠ 检测到可能在接管桌面壁纸的程序：{}。若点击「设为桌面壁纸」后桌面没有变化，请退出该程序（例如华硕 Armoury Crate 的 Aura 壁纸功能）后重试。",
+                            self.wallpaper_managers.join("、")
+                        ))
+                        .size(11.5)
+                        .color(theme::accent()),
+                    );
+                });
+            ui.add_space(10.0);
+        }
 
         // Toolbar ----------------------------------------------------------
         egui::Frame::none()
@@ -881,6 +918,16 @@ impl App {
                     let mut rc = self.cfg.recursive;
                     if ui.checkbox(&mut rc, "包含子文件夹").changed() {
                         self.cfg.recursive = rc;
+                        actions.push(Action::Rescan);
+                    }
+                    ui.add_space(10.0);
+                    let mut wo = self.cfg.wallpaper_only;
+                    if ui
+                        .checkbox(&mut wo, "仅壁纸尺寸(≥1280×720)")
+                        .on_hover_text("过滤掉图标、小图、竖图等不适合做壁纸的图片")
+                        .changed()
+                    {
+                        self.cfg.wallpaper_only = wo;
                         actions.push(Action::Rescan);
                     }
                     ui.add_space(10.0);
@@ -1411,6 +1458,7 @@ impl App {
                 ui.horizontal(|ui| {
                     setting_label(ui, "显示方式", "填充 / 适应 / 拉伸 / 居中 / 平铺");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let before_fit = self.cfg.fit;
                         egui::ComboBox::from_id_salt("fit_combo")
                             .selected_text(self.cfg.fit.label())
                             .width(200.0)
@@ -1419,6 +1467,10 @@ impl App {
                                     ui.selectable_value(&mut self.cfg.fit, f, f.label());
                                 }
                             });
+                        if self.cfg.fit != before_fit {
+                            // Apply immediately to the current wallpaper.
+                            actions.push(Action::ReapplyCurrent);
+                        }
                     });
                 });
                 ui.add_space(8.0);
@@ -1932,9 +1984,17 @@ impl eframe::App for App {
             self.images = found;
             self.current = if self.images.is_empty() { None } else { Some(0) };
             self.status = if self.images.is_empty() {
-                "全盘扫描完成，但未找到图片".to_string()
+                "全盘扫描完成，但未找到符合条件的壁纸".to_string()
             } else {
-                format!("全盘扫描完成：共 {} 张图片", self.images.len())
+                format!(
+                    "全盘扫描完成：符合壁纸要求 {} 张{}",
+                    self.images.len(),
+                    if self.cfg.wallpaper_only {
+                        "（已过滤图标/小图/竖图等）"
+                    } else {
+                        ""
+                    }
+                )
             };
             self.last_switch = Instant::now();
         }
