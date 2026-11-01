@@ -31,8 +31,8 @@ impl Fit {
     }
 }
 
-/// Set the desktop wallpaper to `path`. On Windows `fit` also controls the
-/// display style; macOS/Linux apply the image (OS default scaling).
+/// Set the desktop wallpaper to `path`. `fit` controls the display style on
+/// Windows (registry) and Linux (GNOME `picture-options`); macOS applies the image.
 pub fn set_wallpaper(path: &Path, fit: Fit) -> Result<(), String> {
     #[cfg(windows)]
     {
@@ -45,8 +45,7 @@ pub fn set_wallpaper(path: &Path, fit: Fit) -> Result<(), String> {
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        let _ = fit;
-        return linux_impl(path);
+        return linux_impl(path, fit);
     }
     #[allow(unreachable_code)]
     Err("当前平台暂不支持设置壁纸".to_string())
@@ -196,7 +195,7 @@ fn macos_impl(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-fn linux_impl(path: &Path) -> Result<(), String> {
+fn linux_impl(path: &Path, fit: Fit) -> Result<(), String> {
     let uri = format!("file://{}", path.display());
     let set = |key: &str| -> bool {
         std::process::Command::new("gsettings")
@@ -205,7 +204,29 @@ fn linux_impl(path: &Path) -> Result<(), String> {
             .map(|s| s.success())
             .unwrap_or(false)
     };
+    // GNOME picture-options: none | wallpaper(tile) | centered | scaled(fit) |
+    // stretched | zoom(fill) | spanned
+    let option = match fit {
+        Fit::Fill => "zoom",
+        Fit::Fit => "scaled",
+        Fit::Stretch => "stretched",
+        Fit::Center => "centered",
+        Fit::Tile => "wallpaper",
+    };
+    let set_option = || -> bool {
+        std::process::Command::new("gsettings")
+            .args([
+                "set",
+                "org.gnome.desktop.background",
+                "picture-options",
+                option,
+            ])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
     if set("picture-uri") || set("picture-uri-dark") {
+        let _ = set_option();
         return Ok(());
     }
     let feh = std::process::Command::new("feh")

@@ -1,6 +1,7 @@
 //! wallpaper-rs — cross-platform desktop wallpaper app (fixed or slideshow).
 
 mod app;
+mod autostart;
 mod config;
 mod theme;
 mod thumbs;

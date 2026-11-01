@@ -2,6 +2,16 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.2.0] - 2026-11-01
+
+### 新增
+- **开机自动启动**开关：Windows 写入 `HKCU\...\Run` 注册表，macOS 写入 `~/Library/LaunchAgents`，Linux 写入 `~/.config/autostart`。
+- **Linux 显示方式**支持：通过 GNOME `picture-options` 实现填充 / 适应 / 拉伸 / 居中 / 平铺。
+
+### 变更
+- 设置页「显示方式」标注更新为 Windows / Linux 生效，并补充开机自启说明。
+- 配置文件新增 `autostart` 字段（缺省 `false`，向后兼容）。
+
 ## [0.1.0] - 2026-11-01
 
 ### 新增

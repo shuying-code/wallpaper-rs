@@ -28,6 +28,7 @@ de sesión, sin suscripción, sin telemetría.**
 - **Configuración persistente**: carpeta, modo, intervalo, visualización, tema y último fondo.
 - **Atajos**: `←` anterior, `→` siguiente.
 - **Un solo binario, Rust puro**: sin WebView ni runtime, fuente CJK integrada.
+- **Inicio automático**: un interruptor — registro Run (Windows), LaunchAgent (macOS), autostart (Linux).
 
 ## Pantallas
 

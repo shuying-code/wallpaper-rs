@@ -28,6 +28,7 @@ Abo, keine Telemetrie.**
 - **Persistente Konfiguration**: Ordner, Modus, Intervall, Anzeige, Theme, letztes Bild.
 - **Tastenkürzel**: `←` zurück, `→` weiter.
 - **Einzelne Binärdatei, reines Rust**: keine WebView/Runtime, CJK-Schrift eingebettet.
+- **Autostart bei Anmeldung**: ein Schalter — Run-Registrierung (Windows), LaunchAgent (macOS), autostart (Linux).
 
 ## Ansichten
 

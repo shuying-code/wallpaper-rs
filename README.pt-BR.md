@@ -28,6 +28,7 @@ assinatura, sem telemetria.**
 - **Configuração persistente**: pasta, modo, intervalo, exibição, tema e último papel.
 - **Atalhos**: `←` anterior, `→` próximo.
 - **Binário único, Rust puro**: sem WebView nem runtime, fonte CJK embutida.
+- **Iniciar com o sistema**: um interruptor — registro Run (Windows), LaunchAgent (macOS), autostart (Linux).
 
 ## Telas
 

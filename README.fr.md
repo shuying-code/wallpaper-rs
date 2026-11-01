@@ -28,6 +28,7 @@ aucune télémétrie.**
 - **Config persistante** : dossier, mode, intervalle, affichage, thème et dernier fond.
 - **Raccourcis** : `←` précédent, `→` suivant.
 - **Binaire unique, Rust pur** : pas de WebView ni runtime, police CJK intégrée.
+- **Lancement à la connexion** : un interrupteur — registre Run (Windows), LaunchAgent (macOS), autostart (Linux).
 
 ## Écrans
 

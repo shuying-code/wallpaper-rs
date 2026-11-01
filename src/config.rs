@@ -29,6 +29,9 @@ pub struct Config {
     pub last_path: Option<PathBuf>,
     pub running: bool,
     pub search: String,
+    /// Launch the app automatically at login (Windows Run key / LaunchAgent / autostart .desktop).
+    #[serde(default)]
+    pub autostart: bool,
 }
 
 impl Default for Config {
@@ -44,6 +47,7 @@ impl Default for Config {
             last_path: None,
             running: false,
             search: String::new(),
+            autostart: false,
         }
     }
 }

@@ -23,9 +23,10 @@ subscription, no telemetry.**
 - **Library**: scan a local folder (optionally recursive) and browse thumbnails in a grid, with filename search.
 - **Fixed wallpaper**: click a thumbnail or "Set as wallpaper" to apply instantly.
 - **Slideshow**: auto-change on an interval, sequential or random, with a progress bar showing time to the next change.
-- **Display mode**: Fill / Fit / Stretch / Center / Tile (applied via the Windows registry desktop style).
+- **Display mode**: Fill / Fit / Stretch / Center / Tile (Windows registry; Linux via GNOME `picture-options`).
 - **Theme**: light / dark toggle with instant restyle.
 - **Persistent config**: folder, mode, interval, fit, theme and last wallpaper are saved locally.
+- **Launch at login**: one toggle — Windows `Run` key, macOS `LaunchAgent`, Linux autostart `.desktop`.
 - **Keyboard shortcuts**: `←` previous, `→` next.
 - **Single binary, pure Rust**: no WebView or runtime; embedded CJK font, no missing-glyph boxes.
 

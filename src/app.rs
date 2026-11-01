@@ -692,7 +692,7 @@ impl App {
             .rounding(Rounding::same(10.0))
             .inner_margin(egui::Margin::same(14.0))
             .show(ui, |ui| {
-                ui.label(RichText::new("显示方式（Windows 生效）").size(13.0).strong().color(theme::text()));
+                ui.label(RichText::new("显示方式（Windows / Linux 生效）").size(13.0).strong().color(theme::text()));
                 egui::ComboBox::from_id_salt("fit_combo")
                     .selected_text(self.cfg.fit.label())
                     .width(220.0)
@@ -711,6 +711,25 @@ impl App {
                 let mut rc = self.cfg.recursive;
                 if ui.checkbox(&mut rc, "扫描时包含子文件夹").changed() {
                     self.cfg.recursive = rc;
+                }
+                ui.add_space(10.0);
+                let mut auto = self.cfg.autostart;
+                if ui.checkbox(&mut auto, "开机自动启动").changed() {
+                    match crate::autostart::set_enabled(auto) {
+                        Ok(_) => {
+                            self.cfg.autostart = auto;
+                            self.status = if auto {
+                                "已开启开机自启".to_string()
+                            } else {
+                                "已关闭开机自启".to_string()
+                            };
+                        }
+                        Err(e) => {
+                            // Revert the checkbox so UI reflects the real state.
+                            self.cfg.autostart = !auto;
+                            self.status = format!("开机自启设置失败：{e}");
+                        }
+                    }
                 }
             });
         ui.add_space(10.0);
@@ -738,7 +757,7 @@ impl App {
             });
         ui.add_space(10.0);
         ui.label(
-            RichText::new("提示：Windows 使用系统 API 设置壁纸并写入显示方式；macOS 通过 System Events；Linux 使用 GNOME(gsettings) 或 feh。")
+            RichText::new("提示：Windows 使用系统 API 设置壁纸并写入显示方式；Linux 使用 GNOME(gsettings，含 picture-options) 或 feh；macOS 通过 System Events。开机自启在 Windows 写入 Run 注册表、macOS 写入 LaunchAgent、Linux 写入 autostart .desktop。")
                 .size(12.0)
                 .color(theme::subtext()),
         );
