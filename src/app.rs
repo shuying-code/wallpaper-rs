@@ -80,6 +80,7 @@ struct Snapshot {
     online_dislikes: i64,
     last_online_date: String,
     wallpaper_only: bool,
+    slideshow: Vec<PathBuf>,
 }
 
 impl Snapshot {
@@ -104,6 +105,7 @@ impl Snapshot {
             online_dislikes: c.online_dislikes,
             last_online_date: c.last_online_date.clone(),
             wallpaper_only: c.wallpaper_only,
+            slideshow: c.slideshow.clone(),
         }
     }
 }
@@ -311,16 +313,67 @@ impl App {
         }
     }
 
+    /// The set of images the slideshow cycles through. When the user has curated
+    /// a playlist (`cfg.slideshow`, i.e. added / removed specific pictures) use
+    /// it; otherwise fall back to every image in the library. Missing files are
+    /// skipped so a deleted picture never wedges the rotation.
+    fn slide_paths(&self) -> Vec<PathBuf> {
+        let base = if self.cfg.slideshow.is_empty() {
+            self.images.clone()
+        } else {
+            self.cfg.slideshow.clone()
+        };
+        base.into_iter().filter(|p| p.is_file()).collect()
+    }
+
+    /// Whether `path` is part of the slideshow (accounting for the "empty means
+    /// all library images" default).
+    fn in_playlist(&self, path: &Path) -> bool {
+        if self.cfg.slideshow.is_empty() {
+            self.images.iter().any(|p| p == path)
+        } else {
+            self.cfg.slideshow.iter().any(|p| p == path)
+        }
+    }
+
+    /// Add `path` to the slideshow playlist. Adding to an empty (="all") playlist
+    /// first materialises the current library so the implicit membership is kept.
+    fn add_to_playlist(&mut self, path: &Path) {
+        if self.cfg.slideshow.is_empty() {
+            self.cfg.slideshow = self.images.clone();
+        }
+        if !self.cfg.slideshow.iter().any(|p| p == path) {
+            self.cfg.slideshow.push(path.to_path_buf());
+        }
+        self.status = "已加入轮播清单".to_string();
+    }
+
+    /// Remove `path` from the slideshow playlist, materialising the "all" default
+    /// first so removing one picture keeps the rest.
+    fn remove_from_playlist(&mut self, path: &Path) {
+        if self.cfg.slideshow.is_empty() {
+            self.cfg.slideshow = self.images.clone();
+        }
+        self.cfg.slideshow.retain(|p| p != path);
+        self.status = "已从轮播清单移除".to_string();
+    }
+
     fn set_current(&mut self, ctx: &egui::Context, i: usize) {
         if self.images.is_empty() {
             return;
         }
         let i = i % self.images.len();
         let path = self.images[i].clone();
-        self.current = Some(i);
-        self.cfg.last_path = Some(path.clone());
-        self.load_preview(ctx, &path);
-        match wallpaper::set_wallpaper(&path, self.cfg.fit) {
+        self.apply_path(ctx, &path);
+    }
+
+    /// Apply a specific picture as the current wallpaper (used by both the
+    /// library "set wallpaper" action and the slideshow rotation).
+    fn apply_path(&mut self, ctx: &egui::Context, path: &Path) {
+        self.current = self.images.iter().position(|p| p == path);
+        self.cfg.last_path = Some(path.to_path_buf());
+        self.load_preview(ctx, path);
+        match wallpaper::set_wallpaper(path, self.cfg.fit) {
             Ok(_) => {
                 let name = path
                     .file_name()
@@ -334,55 +387,74 @@ impl App {
     }
 
     fn advance(&mut self, ctx: &egui::Context) {
-        if self.images.is_empty() {
+        let list = self.slide_paths();
+        if list.is_empty() {
             return;
         }
-        let n = self.images.len();
+        let cur = self.current_path();
         let next = if self.cfg.shuffle {
-            let mut k = rand::thread_rng().gen_range(0..n);
-            if n > 1 {
-                while Some(k) == self.current {
-                    k = rand::thread_rng().gen_range(0..n);
+            let mut k = rand::thread_rng().gen_range(0..list.len());
+            if list.len() > 1 {
+                while list.get(k) == cur.as_ref() {
+                    k = rand::thread_rng().gen_range(0..list.len());
                 }
             }
             k
         } else {
-            match self.current {
-                Some(c) => (c + 1) % n,
+            match cur.and_then(|p| list.iter().position(|x| *x == p)) {
+                Some(c) => (c + 1) % list.len(),
                 None => 0,
             }
         };
-        self.set_current(ctx, next);
+        let path = list[next].clone();
+        self.apply_path(ctx, &path);
     }
 
     fn step_back(&mut self, ctx: &egui::Context) {
-        if self.images.is_empty() {
+        let list = self.slide_paths();
+        if list.is_empty() {
             return;
         }
-        let n = self.images.len();
-        let prev = match self.current {
-            Some(c) => (c + n - 1) % n,
+        let cur = self.current_path();
+        let prev = match cur.and_then(|p| list.iter().position(|x| *x == p)) {
+            Some(c) => (c + list.len() - 1) % list.len(),
             None => 0,
         };
-        self.set_current(ctx, prev);
+        let path = list[prev].clone();
+        self.apply_path(ctx, &path);
     }
 
     fn random_pick(&mut self, ctx: &egui::Context) {
-        if self.images.is_empty() {
+        let list = self.slide_paths();
+        if list.is_empty() {
             return;
         }
-        let n = self.images.len();
-        let mut k = rand::thread_rng().gen_range(0..n);
-        if n > 1 {
-            while Some(k) == self.current {
-                k = rand::thread_rng().gen_range(0..n);
+        let cur = self.current_path();
+        let mut k = rand::thread_rng().gen_range(0..list.len());
+        if list.len() > 1 {
+            while list.get(k) == cur.as_ref() {
+                k = rand::thread_rng().gen_range(0..list.len());
             }
         }
-        self.set_current(ctx, k);
+        let path = list[k].clone();
+        self.apply_path(ctx, &path);
     }
 
     fn current_path(&self) -> Option<PathBuf> {
-        self.current.and_then(|i| self.images.get(i)).cloned()
+        self.current
+            .and_then(|i| self.images.get(i))
+            .cloned()
+            .or_else(|| self.cfg.last_path.clone())
+    }
+
+    /// Cheap count of the pictures the slideshow will cycle (avoids cloning the
+    /// whole list every frame; file existence is checked when actually rotating).
+    fn slide_count(&self) -> usize {
+        if self.cfg.slideshow.is_empty() {
+            self.images.len()
+        } else {
+            self.cfg.slideshow.len()
+        }
     }
 
     fn apply(&mut self, ctx: &egui::Context, actions: Vec<Action>) {
@@ -866,6 +938,25 @@ impl App {
                     }
                     if ghost_button(ui, "设为锁屏").clicked() {
                         self.set_lock_from_online();
+                    }
+                    // Add / remove the fetched daily wallpaper from the slideshow.
+                    if let Some(opath) = self.online_img.as_ref().map(|i| i.path.clone()) {
+                        let in_pl = self.in_playlist(&opath);
+                        let lbl = if in_pl { "移出轮播" } else { "+ 加入轮播" };
+                        if ghost_button(ui, lbl)
+                            .on_hover_text(if in_pl {
+                                "从轮播清单移除这张每日壁纸"
+                            } else {
+                                "把这张每日壁纸加入轮播清单"
+                            })
+                            .clicked()
+                        {
+                            if in_pl {
+                                self.remove_from_playlist(&opath);
+                            } else {
+                                self.add_to_playlist(&opath);
+                            }
+                        }
                     }
                     if let Some((_t, _c, _d, url)) = &info {
                         if ghost_button(ui, "打开图片页面").clicked() {
@@ -1627,6 +1718,22 @@ impl App {
                                 Color32::WHITE,
                             );
                         }
+                        // Playlist badge, top-left (only when a custom playlist
+                        // exists, so the default "all library" stays uncluttered).
+                        if !self.cfg.slideshow.is_empty() && self.in_playlist(path) {
+                            let badge = egui::Rect::from_min_size(
+                                egui::pos2(rect.left() + 8.0, rect.top() + 8.0),
+                                Vec2::new(50.0, 20.0),
+                            );
+                            painter.rect_filled(badge, Rounding::same(10.0), theme::accent());
+                            painter.text(
+                                badge.center(),
+                                egui::Align2::CENTER_CENTER,
+                                "🎞 轮播",
+                                egui::FontId::proportional(10.5),
+                                Color32::WHITE,
+                            );
+                        }
                     }
                     if resp.hovered() {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -1646,7 +1753,7 @@ impl App {
                             .color(theme::text()),
                     ));
                     ui.add_space(4.0);
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         let ext = path
                             .extension()
                             .and_then(|s| s.to_str())
@@ -1673,6 +1780,32 @@ impl App {
                         {
                             actions.push(Action::SetPath(path.to_path_buf()));
                         }
+                        // Add / remove this picture from the slideshow playlist.
+                        let in_pl = self.in_playlist(path);
+                        let (lbl, fill, col) = if in_pl {
+                            ("移出轮播", theme::extreme(), theme::subtext())
+                        } else {
+                            ("+ 轮播", theme::accent_soft(), theme::accent())
+                        };
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new(lbl).size(11.0).color(col))
+                                    .fill(fill)
+                                    .rounding(Rounding::same(7.0)),
+                            )
+                            .on_hover_text(if in_pl {
+                                "从轮播清单移除"
+                            } else {
+                                "加入轮播清单"
+                            })
+                            .clicked()
+                        {
+                            if in_pl {
+                                self.remove_from_playlist(path);
+                            } else {
+                                self.add_to_playlist(path);
+                            }
+                        }
                     });
                 });
             });
@@ -1687,7 +1820,13 @@ impl App {
     }
 
     fn ui_slideshow(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        let cur = self.current_path();
+        // Prefer the previewed picture so an online/daily wallpaper (not in the
+        // library index) still shows here as the "current" slideshow image.
+        let cur = self
+            .preview
+            .as_ref()
+            .map(|(p, _)| p.clone())
+            .or_else(|| self.current_path());
         let w = ui.available_width();
         let h = (ui.available_height() * 0.56).clamp(200.0, 460.0);
 
@@ -1921,6 +2060,152 @@ impl App {
                     );
                 }
             });
+        ui.add_space(12.0);
+        self.draw_slideshow_playlist(ui, actions);
+    }
+
+    /// "轮播清单" panel: shows the pictures the slideshow will cycle and lets the
+    /// operator remove them or reset to the whole library.
+    fn draw_slideshow_playlist(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let using_all = self.cfg.slideshow.is_empty();
+        let stored = if using_all {
+            self.images.clone()
+        } else {
+            self.cfg.slideshow.clone()
+        };
+        let n = stored.len();
+        let mut to_remove: Option<PathBuf> = None;
+        egui::Frame::none()
+            .fill(theme::card())
+            .stroke(Stroke::new(1.0_f32, theme::border()))
+            .rounding(Rounding::same(14.0))
+            .shadow(egui::epaint::Shadow {
+                offset: egui::vec2(0.0, 3.0),
+                blur: 12.0,
+                spread: 0.0,
+                color: theme::shadow(),
+            })
+            .inner_margin(egui::Margin::symmetric(16.0, 14.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("轮播清单")
+                            .size(14.0)
+                            .strong()
+                            .color(theme::text()),
+                    );
+                    chip(ui, &format!("{n} 张"), theme::accent_soft(), theme::accent());
+                    if using_all {
+                        chip(ui, "默认 · 全部壁纸库", theme::extreme(), theme::subtext());
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if !using_all && ghost_button(ui, "恢复为全部壁纸库").clicked() {
+                            self.cfg.slideshow.clear();
+                            self.status = "轮播已恢复为全部壁纸库".to_string();
+                        }
+                    });
+                });
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(if using_all {
+                        "尚未自定义清单：当前轮播壁纸库全部图片。可在「壁纸库」或「每日壁纸」点「加入轮播 / 移出轮播」来自定义。"
+                    } else {
+                        "以下图片将按顺序（或随机）轮播；点「移除」可从清单去掉，「设为当前」立即切换。"
+                    })
+                    .size(11.5)
+                    .color(theme::subtext()),
+                );
+                ui.add_space(10.0);
+                if stored.is_empty() {
+                    ui.label(
+                        RichText::new("清单为空，请到「壁纸库」或「每日壁纸」添加图片。")
+                            .size(12.0)
+                            .color(theme::subtext()),
+                    );
+                    return;
+                }
+                // Cap rows rendered for very large lists; the rest stay in the
+                // rotation but are managed via the library cards.
+                let cap = stored.len().min(400);
+                egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                    for path in stored.iter().take(cap) {
+                        ui.horizontal(|ui| {
+                            let (rect, resp) = ui.allocate_exact_size(
+                                Vec2::new(64.0, 40.0),
+                                egui::Sense::click(),
+                            );
+                            if ui.is_rect_visible(rect)
+                                && !self.tex_cache.contains_key(path)
+                                && !self.thumb.is_requested(path)
+                            {
+                                self.thumb.request(path);
+                            }
+                            {
+                                let painter = ui.painter();
+                                painter.rect_filled(rect, Rounding::same(6.0), theme::extreme());
+                                if let Some(Some(tex)) = self.tex_cache.get(path) {
+                                    let ts = tex.size();
+                                    let (tw, th) = (ts[0] as f32, ts[1] as f32);
+                                    if tw > 0.0 && th > 0.0 {
+                                        let s = (rect.width() / tw).min(rect.height() / th);
+                                        let ir = egui::Rect::from_center_size(
+                                            rect.center(),
+                                            Vec2::new(tw * s, th * s),
+                                        );
+                                        painter.image(
+                                            tex.id(),
+                                            ir,
+                                            egui::Rect::from_min_max(
+                                                egui::pos2(0.0, 0.0),
+                                                egui::pos2(1.0, 1.0),
+                                            ),
+                                            Color32::WHITE,
+                                        );
+                                    }
+                                }
+                            }
+                            if resp.clicked() {
+                                actions.push(Action::SetPath(path.clone()));
+                            }
+                            let name = path
+                                .file_name()
+                                .map(|s| s.to_string_lossy().to_string())
+                                .unwrap_or_default();
+                            ui.add_space(8.0);
+                            ui.add(egui::Label::new(
+                                RichText::new(ellipsis(&name, 30))
+                                    .size(12.0)
+                                    .color(theme::text()),
+                            ));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ghost_button(ui, "移除").clicked() {
+                                        to_remove = Some(path.clone());
+                                    }
+                                    if ghost_button(ui, "设为当前").clicked() {
+                                        actions.push(Action::SetPath(path.clone()));
+                                    }
+                                },
+                            );
+                        });
+                        ui.add_space(4.0);
+                    }
+                    if stored.len() > cap {
+                        ui.label(
+                            RichText::new(format!(
+                                "仅显示前 {cap} 张（共 {} 张），其余仍在轮播；可在壁纸库卡片上管理。",
+                                stored.len()
+                            ))
+                            .size(11.0)
+                            .color(theme::subtext()),
+                        );
+                    }
+                });
+            });
+        if let Some(p) = to_remove {
+            self.remove_from_playlist(&p);
+        }
     }
 
     fn ui_settings(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
@@ -2557,7 +2842,7 @@ impl eframe::App for App {
         self.enforce_tex_cap();
 
         // keyboard shortcuts
-        if self.images.len() > 1 {
+        if self.slide_count() > 1 {
             let (right, left) = ctx.input(|i| {
                 (
                     i.key_pressed(egui::Key::ArrowRight),
@@ -2579,7 +2864,7 @@ impl eframe::App for App {
         }
 
         // slideshow ticking
-        if self.cfg.mode == Mode::Slideshow && self.cfg.running && !self.images.is_empty() {
+        if self.cfg.mode == Mode::Slideshow && self.cfg.running && self.slide_count() > 0 {
             let iv = Duration::from_secs(self.cfg.interval_secs.max(1));
             if self.last_switch.elapsed() >= iv {
                 self.advance(ctx);

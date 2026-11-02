@@ -59,6 +59,10 @@ pub struct Config {
     /// Only load wallpaper-grade images (≥1280×720, landscape) into the library.
     #[serde(default = "default_true")]
     pub wallpaper_only: bool,
+    /// Explicit slideshow playlist (absolute paths, from the library and/or the
+    /// online daily wallpaper). Empty means "cycle through the whole library".
+    #[serde(default)]
+    pub slideshow: Vec<PathBuf>,
 }
 
 fn default_true() -> bool {
@@ -88,6 +92,7 @@ impl Default for Config {
             online_dislikes: 0,
             last_online_date: String::new(),
             wallpaper_only: true,
+            slideshow: Vec::new(),
         }
     }
 }
