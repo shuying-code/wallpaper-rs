@@ -445,10 +445,9 @@ impl App {
                 }
                 Action::DismissPermissions => self.permission_issues.clear(),
                 Action::Quit => {
-                    // Explicit quit always exits, even if hide-to-tray is on.
-                    self.force_quit = true;
-                    self.cfg.save();
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    // Explicit quit always truly ends the process, even if
+                    // hide-to-tray is on or the window is currently hidden.
+                    self.hard_exit();
                 }
                 Action::ReapplyCurrent => {
                     if let Some(i) = self.current {
@@ -509,15 +508,35 @@ impl App {
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            // Centre roughly on the current monitor (macOS / Linux).
+            let info = ctx.input(|i| {
+                let vp = i.viewport();
+                (vp.monitor_size, vp.outer_rect.map(|r| r.size()))
+            });
+            if let (Some(mon), Some(size)) = info {
+                let pos = egui::pos2(
+                    ((mon.x - size.x).max(0.0)) * 0.5,
+                    ((mon.y - size.y).max(0.0)) * 0.5,
+                );
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
         let _ = ctx;
         self.window_hidden = false;
     }
 
-    /// Keep the thumbnail texture cache bounded so scanning thousands of images
-    /// cannot exhaust VRAM/RAM. Evicted paths are forgotten by the thumbnailer
-    /// so they are re-decoded if they scroll back into view.
+    /// Really terminate the background process (used by the tray "Quit" item and
+    /// the in-app Quit button). Saves config and removes the tray icon first so
+    /// no stale notification-area icon is left behind, then exits the process.
+    fn hard_exit(&mut self) -> ! {
+        self.force_quit = true;
+        self.cfg.save();
+        // Dropping the tray icon sends Shell_NotifyIcon(NIM_DELETE).
+        self.tray = None;
+        std::process::exit(0)
+    }
+
     /// Handle an incoming screenshot result and advance the shot plan. Returns
     /// `true` when the whole run is finished (the app then closes).
     fn shot_pre(&mut self, ctx: &egui::Context) -> bool {
@@ -581,6 +600,9 @@ impl App {
         }
     }
 
+    /// Keep the thumbnail texture cache bounded so scanning thousands of images
+    /// cannot exhaust VRAM/RAM. Evicted paths are forgotten by the thumbnailer
+    /// so they are re-decoded if they scroll back into view.
     fn enforce_tex_cap(&mut self) {
         let plan = evict_plan(&self.tex_order, TEX_CAP);
         if plan.is_empty() {
@@ -2405,9 +2427,9 @@ impl eframe::App for App {
                 crate::tray::TrayAction::Show => self.show_window(ctx),
                 crate::tray::TrayAction::Hide => self.hide_to_tray(ctx),
                 crate::tray::TrayAction::Quit => {
-                    self.force_quit = true;
-                    self.cfg.save();
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    // Tray "Quit" must really terminate the background process
+                    // and remove the notification-area icon, not just hide.
+                    self.hard_exit();
                 }
             }
         }

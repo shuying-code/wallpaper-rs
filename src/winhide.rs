@@ -71,8 +71,9 @@ pub unsafe fn hide(hwnd: isize) -> Option<Placement> {
     Some(placement)
 }
 
-/// Restore the window to its remembered placement, re-enable the normal taskbar
-/// entry and bring it to the foreground.
+/// Restore the window, re-enable the normal taskbar entry, centre it on the
+/// primary monitor's work area (so it never hides under the taskbar) and bring
+/// it to the foreground.
 pub unsafe fn show(hwnd: isize, p: &Placement) {
     if hwnd == 0 {
         return;
@@ -80,13 +81,36 @@ pub unsafe fn show(hwnd: isize, p: &Placement) {
     let h = hwnd as *mut c_void;
     let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
     SetWindowLongPtrW(h, GWL_EXSTYLE, ex & !WS_EX_TOOLWINDOW);
+    // Centre on the primary monitor's work area (screen minus taskbar).
+    let mut wa = Rect::default();
+    let ok = SystemParametersInfoW(
+        SPI_GETWORKAREA,
+        0,
+        &mut wa as *mut Rect as *mut c_void,
+        0,
+    );
+    let mut w = p.width;
+    let mut hgt = p.height;
+    if w <= 0 {
+        w = 1000;
+    }
+    if hgt <= 0 {
+        hgt = 700;
+    }
+    let (mut x, mut y) = (p.left, p.top);
+    if ok != 0 {
+        let avail_w = (wa.right - wa.left).max(0);
+        let avail_h = (wa.bottom - wa.top).max(0);
+        x = wa.left + ((avail_w - w) / 2).max(0);
+        y = wa.top + ((avail_h - hgt) / 2).max(0);
+    }
     SetWindowPos(
         h,
         std::ptr::null_mut(),
-        p.left,
-        p.top,
-        p.width,
-        p.height,
+        x,
+        y,
+        w,
+        hgt,
         SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED,
     );
     ShowWindow(h, SW_RESTORE);
@@ -110,4 +134,7 @@ extern "system" {
     fn ShowWindow(hwnd: *mut c_void, cmd: i32) -> i32;
     fn SetForegroundWindow(hwnd: *mut c_void) -> i32;
     fn GetSystemMetrics(index: i32) -> i32;
+    fn SystemParametersInfoW(action: u32, param: u32, data: *mut c_void, win_ini: u32) -> i32;
 }
+
+const SPI_GETWORKAREA: u32 = 0x0030;
