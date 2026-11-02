@@ -1,5 +1,9 @@
 //! wallpaper-rs — cross-platform desktop wallpaper app (fixed or slideshow).
 
+// Windows release builds are GUI apps: don't spawn a black console window.
+// Debug builds keep the console for `--selftest` / `--shots` / diagnostics.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod albums;
 mod app;
 mod autostart;
