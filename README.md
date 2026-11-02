@@ -30,7 +30,7 @@
 
 在应用内「关于」页也可直接点击下载。
 
-> 移动端（Android / iOS）可安装包的构建前提与现状，详见 [MOBILE.md](MOBILE.md)：界面已适配，但打包需 Android SDK/NDK 与（iOS）macOS + Xcode + 苹果签名。
+> 移动端：**Android 已提供可安装 APK**（`wallpaper-rs-android-universal.apk`，含 arm64/armv7/x86_64），构建方式见 [MOBILE.md](MOBILE.md)。**iOS** 需 macOS + Xcode + 苹果签名，Windows 无法产出可安装包。
 
 ## 功能
 

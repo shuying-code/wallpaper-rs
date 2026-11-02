@@ -470,9 +470,16 @@ impl App {
                 Action::Random => self.random_pick(ctx),
                 Action::Rescan => self.scan(),
                 Action::PickFolder => {
-                    if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                        self.cfg.folder = Some(dir);
-                        self.scan();
+                    #[cfg(not(target_os = "android"))]
+                    {
+                        if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                            self.cfg.folder = Some(dir);
+                            self.scan();
+                        }
+                    }
+                    #[cfg(target_os = "android")]
+                    {
+                        self.status = "移动端请在系统中选择图片文件夹".to_string();
                     }
                 }
                 Action::OpenFolder => {

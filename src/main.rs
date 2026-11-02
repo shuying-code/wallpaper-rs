@@ -1,27 +1,13 @@
 //! wallpaper-rs — cross-platform desktop wallpaper app (fixed or slideshow).
+//!
+//! Thin desktop entry point; all UI/logic lives in the `wallpaper_rs` library so
+//! the same code can also be packaged as an Android APK.
 
 // Windows release builds are GUI apps: don't spawn a black console window.
 // Debug builds keep the console for `--selftest` / `--shots` / diagnostics.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-mod albums;
-mod app;
-mod autostart;
-mod config;
-mod diskscan;
-mod hotkey;
-mod online;
-mod permissions;
-mod platform;
-mod shot;
-mod theme;
-mod thumbs;
-mod tray;
-mod wallpaper;
-#[cfg(windows)]
-mod winhide;
-
-use eframe::egui;
+use wallpaper_rs::{app, config, wallpaper};
 
 fn main() -> eframe::Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -71,34 +57,12 @@ fn main() -> eframe::Result<()> {
         }
     }
 
-    let native = native_options();
+    let native = wallpaper_rs::native_options();
     eframe::run_native(
         "wallpaper-rs",
         native,
         Box::new(|cc| Ok(Box::new(app::App::new(cc)))),
     )
-}
-
-fn native_options() -> eframe::NativeOptions {
-    #[cfg(any(target_os = "android", target_os = "ios"))]
-    {
-        // Mobile: fill the screen, no window decorations; the layout collapses
-        // to a bottom navigation bar automatically at narrow widths.
-        eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default().with_title("Wallpaper Studio"),
-            ..Default::default()
-        }
-    }
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    {
-        eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default()
-                .with_inner_size([1080.0, 720.0])
-                .with_min_inner_size([360.0, 560.0])
-                .with_title("Wallpaper Studio · 桌面壁纸"),
-            ..Default::default()
-        }
-    }
 }
 
 fn selftest() -> i32 {

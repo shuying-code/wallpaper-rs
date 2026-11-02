@@ -9,7 +9,9 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+#[cfg(not(target_os = "android"))]
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+#[cfg(not(target_os = "android"))]
 use tray_icon::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
 /// An action requested from the tray icon.
@@ -26,6 +28,7 @@ pub enum TrayAction {
 /// Owns the live tray icon and drains the actions produced by its handlers.
 pub struct Tray {
     /// Kept alive for the lifetime of the app; dropping it removes the icon.
+    #[cfg(not(target_os = "android"))]
     _icon: tray_icon::TrayIcon,
     queue: Arc<Mutex<VecDeque<TrayAction>>>,
 }
@@ -34,6 +37,15 @@ impl Tray {
     /// Build the tray icon + context menu. Returns `None` if the platform has no
     /// usable tray backend (the caller then falls back to the old behaviour).
     pub fn install(ctx: egui::Context) -> Option<Tray> {
+        // Android has no system tray: report "no tray" so the app falls back to
+        // normal window behaviour (hide-to-tray buttons are hidden on mobile).
+        #[cfg(target_os = "android")]
+        {
+            let _ = ctx;
+            return None;
+        }
+        #[cfg(not(target_os = "android"))]
+        {
         let menu = Menu::new();
         let show = MenuItem::new("显示主界面", true, None);
         let hide = MenuItem::new("隐藏到托盘", true, None);
@@ -103,6 +115,7 @@ impl Tray {
         }
 
         Some(Tray { _icon: icon, queue })
+        }
     }
 
     /// Take every action queued since the last call (non-blocking).
@@ -114,6 +127,7 @@ impl Tray {
 
 /// A small procedurally-drawn 32×32 icon (amber→teal disc with a dark mountain
 /// silhouette) so no external image asset is required at build time.
+#[cfg(not(target_os = "android"))]
 fn make_icon() -> tray_icon::Icon {
     const N: u32 = 32;
     let mut rgba = vec![0u8; (N * N * 4) as usize];

@@ -2,6 +2,17 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.8.1] - 2026-11-02
+
+### 新增
+- **Android 可安装包**：完成 Android 移植并构建、签名出 `wallpaper-rs-android-universal.apk`（armeabi-v7a + arm64-v8a + x86_64，minSdk 24 / target 34）。
+
+### 变更
+- 拆分为库 + 双入口：新增 `src/lib.rs`（共享 UI/逻辑）与 `src/android.rs`（`android_main` 入口，经 eframe `event_loop_builder` 注入 `AndroidApp`）；`src/main.rs` 精简为桌面入口并改用库。
+- 桌面专属依赖按平台门控：`tray-icon`、`global-hotkey`、`rfd` 在 Android 下不编译（`src/tray.rs` / `src/hotkey.rs` 提供移动端桩实现，`PickFolder` 在移动端给出提示）；新增 `[lib] crate-type = ["cdylib","rlib"]` 与 `[package.metadata.android]`。
+- 修复 Android 构建：`cargo apk build --release --lib`（须加 `--lib`，否则桌面 bin 会被当作 cdylib 处理而报错）；签名经 `CARGO_APK_RELEASE_KEYSTORE(_PASSWORD)` 环境变量传入，密钥不写入仓库。
+- 构建与安装步骤见 `MOBILE.md`。iOS / iPadOS 仍需 macOS + Xcode + 苹果签名，Windows 无法产出可安装包。
+
 ## [0.8.0] - 2026-11-02
 
 ### 新增

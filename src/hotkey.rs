@@ -9,7 +9,7 @@ use std::sync::atomic::AtomicI32;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(target_os = "android")))]
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 
 pub struct Hotkey {
@@ -18,10 +18,10 @@ pub struct Hotkey {
     err: Arc<AtomicI32>,
     chosen: Arc<AtomicI32>,
     /// id of the hotkey that actually registered (non-Windows path); -1 if none.
-    #[cfg(not(windows))]
+    #[cfg(all(not(windows), not(target_os = "android")))]
     gh_id: i32,
     /// Kept alive for the lifetime of the app so the registration persists.
-    #[cfg(not(windows))]
+    #[cfg(all(not(windows), not(target_os = "android")))]
     _manager: Option<global_hotkey::GlobalHotKeyManager>,
 }
 
@@ -29,7 +29,7 @@ impl Hotkey {
     /// Returns true once if the hotkey was pressed since the last call.
     pub fn take_toggle(&self) -> bool {
         // Non-Windows: drain the global-hotkey event channel for a matching press.
-        #[cfg(not(windows))]
+        #[cfg(all(not(windows), not(target_os = "android")))]
         {
             if self.gh_id >= 0 {
                 while let Ok(ev) = global_hotkey::GlobalHotKeyEvent::receiver().try_recv() {
@@ -113,7 +113,7 @@ pub fn start(ctx: eframe::egui::Context) -> Hotkey {
             chosen,
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(all(not(windows), not(target_os = "android")))]
     {
         let _ = ctx;
         // Must be created on the main thread (macOS requirement). eframe calls
@@ -159,6 +159,17 @@ pub fn start(ctx: eframe::egui::Context) -> Hotkey {
             chosen,
             gh_id: ghid,
             _manager: manager,
+        }
+    }
+    #[cfg(target_os = "android")]
+    {
+        // No global hotkeys on mobile.
+        let _ = ctx;
+        Hotkey {
+            toggle,
+            registered,
+            err,
+            chosen,
         }
     }
 }
