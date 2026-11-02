@@ -1,15 +1,21 @@
 //! wallpaper-rs — cross-platform desktop wallpaper app (fixed or slideshow).
 
+mod albums;
 mod app;
 mod autostart;
-mod burnin;
 mod config;
 mod diskscan;
 mod hotkey;
 mod online;
+mod permissions;
+mod platform;
+mod shot;
 mod theme;
 mod thumbs;
+mod tray;
 mod wallpaper;
+#[cfg(windows)]
+mod winhide;
 
 use eframe::egui;
 
@@ -51,19 +57,44 @@ fn main() -> eframe::Result<()> {
             return Ok(());
         }
     }
+    // Screen-size adaptation screenshots: `--shots <dir>`.
+    if let Some(pos) = args.iter().position(|a| a == "--shots") {
+        if let Some(dir) = args.get(pos + 1) {
+            std::env::set_var("WP_SHOT_DIR", dir);
+        } else {
+            eprintln!("--shots requires an output directory");
+            std::process::exit(2);
+        }
+    }
 
-    let native = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1080.0, 720.0])
-            .with_min_inner_size([900.0, 580.0])
-            .with_title("Wallpaper Studio · 桌面壁纸"),
-        ..Default::default()
-    };
+    let native = native_options();
     eframe::run_native(
         "wallpaper-rs",
         native,
         Box::new(|cc| Ok(Box::new(app::App::new(cc)))),
     )
+}
+
+fn native_options() -> eframe::NativeOptions {
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        // Mobile: fill the screen, no window decorations; the layout collapses
+        // to a bottom navigation bar automatically at narrow widths.
+        eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default().with_title("Wallpaper Studio"),
+            ..Default::default()
+        }
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_inner_size([1080.0, 720.0])
+                .with_min_inner_size([360.0, 560.0])
+                .with_title("Wallpaper Studio · 桌面壁纸"),
+            ..Default::default()
+        }
+    }
 }
 
 fn selftest() -> i32 {
@@ -87,33 +118,6 @@ fn selftest() -> i32 {
     } else {
         println!("[FAIL] image decoder");
         ok = false;
-    }
-    // OLED burn-in pixel-shift smoke test.
-    {
-        let src = std::env::temp_dir().join("wp_shift_src.png");
-        let dst = std::env::temp_dir().join("wp_shift_dst.png");
-        let mut img = image::RgbaImage::new(8, 8);
-        for (x, y, p) in img.enumerate_pixels_mut() {
-            *p = image::Rgba([x as u8, y as u8, 0, 255]);
-        }
-        let _ = img.save(&src);
-        match burnin::shifted_copy(&src, 1, 1, &dst) {
-            Ok(_) => match image::open(&dst) {
-                Ok(i) if i.width() == 8 && i.height() == 8 => {
-                    println!("[PASS] burnin pixel shift")
-                }
-                _ => {
-                    println!("[FAIL] burnin pixel shift (size)");
-                    ok = false;
-                }
-            },
-            Err(e) => {
-                println!("[FAIL] burnin pixel shift: {e}");
-                ok = false;
-            }
-        }
-        let _ = std::fs::remove_file(&src);
-        let _ = std::fs::remove_file(&dst);
     }
     println!("[INFO] config dir: {}", config::config_dir().display());
     println!("[INFO] platform: {}", std::env::consts::OS);

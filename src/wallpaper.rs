@@ -29,6 +29,16 @@ impl Fit {
     pub fn all() -> [Fit; 5] {
         [Fit::Fill, Fit::Fit, Fit::Stretch, Fit::Center, Fit::Tile]
     }
+    /// Short Chinese-only label for narrow / mobile layouts.
+    pub fn short(&self) -> &'static str {
+        match self {
+            Fit::Fill => "填充",
+            Fit::Fit => "适应",
+            Fit::Stretch => "拉伸",
+            Fit::Center => "居中",
+            Fit::Tile => "平铺",
+        }
+    }
 }
 
 /// Set the desktop wallpaper to `path`. `fit` controls the display style on
@@ -43,7 +53,19 @@ pub fn set_wallpaper(path: &Path, fit: Fit) -> Result<(), String> {
         let _ = fit;
         return macos_impl(path);
     }
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(target_os = "android")]
+    {
+        // On Android the wallpaper is applied from the mobile host via
+        // WallpaperManager (JNI); a plain desktop binary cannot do it here.
+        let _ = fit;
+        return Err("Android 需在移动端宿主中通过 WallpaperManager 设置壁纸（需 SET_WALLPAPER 权限）".to_string());
+    }
+    #[cfg(target_os = "ios")]
+    {
+        let _ = fit;
+        return Err("iOS 不允许 App 直接更改壁纸，请把图片导出到相册后手动设为墙纸".to_string());
+    }
+    #[cfg(all(unix, not(target_os = "macos"), not(target_os = "android"), not(target_os = "ios")))]
     {
         return linux_impl(path, fit);
     }
@@ -66,7 +88,17 @@ pub fn set_lock_screen(path: &Path) -> Result<(), String> {
         let _ = path;
         return Err("macOS 锁屏壁纸跟随系统，暂不支持单独设置".to_string());
     }
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(target_os = "android")]
+    {
+        let _ = path;
+        return Err("Android 暂不支持单独设置锁屏壁纸".to_string());
+    }
+    #[cfg(target_os = "ios")]
+    {
+        let _ = path;
+        return Err("iOS 不允许 App 更改锁屏壁纸".to_string());
+    }
+    #[cfg(all(unix, not(target_os = "macos"), not(target_os = "android"), not(target_os = "ios")))]
     {
         return linux_lock(path);
     }

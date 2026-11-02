@@ -7,15 +7,20 @@ use crate::wallpaper::{self, Fit};
 use eframe::egui;
 use egui::{Color32, ColorImage, RichText, Rounding, Stroke, TextureHandle, Vec2};
 use rand::Rng;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 const CELL_W: f32 = 176.0;
-const IMG_H: f32 = 100.0;
 const GAP: f32 = 10.0;
 const CARD_PAD: f32 = 8.0;
+/// Below this content width (or on a phone/tablet) the layout switches to the
+/// compact, touch-friendly single-pane mode with a bottom navigation bar.
+const COMPACT_BREAK: f32 = 820.0;
+/// How many images each album shows before a "load more" button appears.
+/// Keeps very large folders from building thousands of card widgets per frame.
+const PAGE_IMAGES: usize = 48;
 /// Upper bound on decoded thumbnail textures kept in RAM/VRAM. Cards that
 /// scroll far out of view are evicted (and re-requested when visible again) so
 /// a 3000-image full-disk scan can't pin ~1.4 GB of textures.
@@ -41,8 +46,14 @@ enum Action {
     OpenConfig,
     Save,
     ScanAllDisks,
-    ShiftOnce,
-    Minimize,
+    HideToTray,
+    ToggleSidebar,
+    ToggleTheme,
+    ExpandAllAlbums,
+    CollapseAllAlbums,
+    RetryPermissions,
+    OpenPermissionPage,
+    DismissPermissions,
     Quit,
     ReapplyCurrent,
 }
@@ -60,10 +71,9 @@ struct Snapshot {
     search: String,
     folder: Option<PathBuf>,
     last_path: Option<PathBuf>,
-    oled: bool,
-    shift_iv: u64,
-    shift_max: u32,
     close_bg: bool,
+    collapsed_folders: BTreeSet<String>,
+    sidebar_hidden: bool,
     daily_online: bool,
     online_auto_set: bool,
     online_likes: i64,
@@ -85,10 +95,9 @@ impl Snapshot {
             search: c.search.clone(),
             folder: c.folder.clone(),
             last_path: c.last_path.clone(),
-            oled: c.oled_guard,
-            shift_iv: c.shift_interval_secs,
-            shift_max: c.shift_max_px,
             close_bg: c.close_to_background,
+            collapsed_folders: c.collapsed_folders.clone(),
+            sidebar_hidden: c.sidebar_hidden,
             daily_online: c.daily_online,
             online_auto_set: c.online_auto_set,
             online_likes: c.online_likes,
@@ -102,6 +111,10 @@ impl Snapshot {
 pub struct App {
     cfg: Config,
     images: Vec<PathBuf>,
+    /// Images grouped by their containing folder (folders = albums).
+    albums: Vec<crate::albums::Album>,
+    /// Folders the last scan could not read (used to prompt for permission).
+    permission_issues: Vec<PathBuf>,
     current: Option<usize>,
     last_switch: Instant,
     status: String,
@@ -113,13 +126,15 @@ pub struct App {
     preview: Option<(PathBuf, TextureHandle)>,
     applied_theme: usize,
     hotkey: crate::hotkey::Hotkey,
+    tray: Option<crate::tray::Tray>,
     scan_rx: Option<Receiver<Vec<PathBuf>>>,
     scanning: bool,
-    shift_rx: Option<Receiver<Result<(), String>>>,
-    shifting: bool,
-    last_shift: Instant,
     window_hidden: bool,
     force_quit: bool,
+    #[cfg(windows)]
+    window_hwnd: isize,
+    #[cfg(windows)]
+    hidden_placement: Option<crate::winhide::Placement>,
     monitors: usize,
     primary_res: (i32, i32),
     // Online daily wallpaper (Bing) state.
@@ -131,16 +146,35 @@ pub struct App {
     online_boot_checked: bool,
     last_online_auto: Instant,
     wallpaper_managers: Vec<String>,
+    /// Compact (phone/tablet or narrow window) layout with a bottom nav bar.
+    compact: bool,
+    /// Per-album display limit (pages of `PAGE_IMAGES`), grows via "load more".
+    album_limits: HashMap<String, usize>,
+    /// Active screen-size adaptation screenshot run (from `--shots <dir>`).
+    shot: Option<crate::shot::Shooter>,
 }
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let cfg = Config::load();
         theme::apply(&cc.egui_ctx, cfg.theme == 1);
+        #[cfg(windows)]
+        let window_hwnd = {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            cc.window_handle()
+                .ok()
+                .and_then(|h| match h.as_raw() {
+                    RawWindowHandle::Win32(w) => Some(w.hwnd.get()),
+                    _ => None,
+                })
+                .unwrap_or(0)
+        };
         let mut app = Self {
             applied_theme: cfg.theme,
             cfg,
             images: Vec::new(),
+            albums: Vec::new(),
+            permission_issues: Vec::new(),
             current: None,
             last_switch: Instant::now(),
             status: String::new(),
@@ -150,13 +184,15 @@ impl App {
             tex_order: Vec::new(),
             preview: None,
             hotkey: crate::hotkey::start(cc.egui_ctx.clone()),
+            tray: None,
             scan_rx: None,
             scanning: false,
-            shift_rx: None,
-            shifting: false,
-            last_shift: Instant::now(),
             window_hidden: false,
             force_quit: false,
+            #[cfg(windows)]
+            window_hwnd,
+            #[cfg(windows)]
+            hidden_placement: None,
             monitors: wallpaper::monitor_count(),
             primary_res: wallpaper::primary_resolution(),
             online_rx: None,
@@ -167,6 +203,9 @@ impl App {
             online_boot_checked: false,
             last_online_auto: Instant::now(),
             wallpaper_managers: wallpaper::conflicting_wallpaper_managers(),
+            compact: false,
+            album_limits: HashMap::new(),
+            shot: crate::shot::Shooter::from_env(),
         };
         // Optional deep-link to a tab, e.g. `wallpaper-rs --tab settings`.
         if let Some(pos) = std::env::args().position(|a| a == "--tab") {
@@ -180,7 +219,14 @@ impl App {
                 };
             }
         }
-        // Keep timers (slideshow / OLED shift) ticking even while minimized.
+        if let Some(sh) = app.shot.as_ref() {
+            crate::shot::ensure_dir(&sh.dir);
+        }
+        // Install the system-tray icon (needed to restore the window after the
+        // user hides it by clicking "X"). `None` means the platform has no tray;
+        // in that case we fall back to the global-hotkey restore path.
+        app.tray = crate::tray::Tray::install(cc.egui_ctx.clone());
+        // Keep timers (slideshow / daily wallpaper) ticking even while hidden.
         {
             let c = cc.egui_ctx.clone();
             std::thread::spawn(move || loop {
@@ -194,6 +240,8 @@ impl App {
 
     fn scan(&mut self) {
         self.images.clear();
+        self.albums.clear();
+        self.permission_issues.clear();
         self.thumb.reset();
         self.tex_cache.clear();
         self.tex_order.clear();
@@ -202,12 +250,22 @@ impl App {
         if let Some(folder) = self.cfg.folder.clone() {
             if folder.exists() {
                 let mut files = Vec::new();
-                collect_images(&folder, self.cfg.recursive, &mut files);
+                let mut denied = Vec::new();
+                if crate::permissions::probe_dir(&folder)
+                    == crate::permissions::PermissionState::Denied
+                {
+                    denied.push(folder.clone());
+                }
+                collect_images(&folder, self.cfg.recursive, &mut files, &mut denied);
+                denied.sort();
+                denied.dedup();
                 files.sort();
                 if self.cfg.wallpaper_only {
                     files.retain(|p| crate::thumbs::is_wallpaper_file(p));
                 }
                 self.images = files;
+                self.albums = crate::albums::build_albums(&self.images, Some(&folder));
+                self.permission_issues = denied;
             }
         }
         if let Some(lp) = self.cfg.last_path.clone() {
@@ -223,6 +281,13 @@ impl App {
         } else {
             format!("已载入 {} 张图片", self.images.len())
         };
+        if !self.permission_issues.is_empty() {
+            self.status = format!(
+                "已载入 {} 张图片，但有 {} 个目录无访问权限",
+                self.images.len(),
+                self.permission_issues.len()
+            );
+        }
         self.last_switch = Instant::now();
     }
 
@@ -352,14 +417,35 @@ impl App {
                     self.status = "配置已保存".to_string();
                 }
                 Action::ScanAllDisks => self.start_full_scan(),
-                Action::ShiftOnce => self.spawn_shift(),
-                Action::Minimize => {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-                    self.window_hidden = true;
-                    self.status = "已最小化到后台（用全局快捷键唤醒）".to_string();
+                Action::HideToTray => self.hide_to_tray(ctx),
+                Action::ToggleSidebar => {
+                    self.cfg.sidebar_hidden = !self.cfg.sidebar_hidden;
                 }
+                Action::ToggleTheme => {
+                    self.cfg.theme = if self.cfg.theme == 1 { 0 } else { 1 };
+                }
+                Action::ExpandAllAlbums => self.cfg.collapsed_folders.clear(),
+                Action::CollapseAllAlbums => {
+                    self.cfg.collapsed_folders =
+                        self.albums.iter().map(|a| a.key.clone()).collect();
+                }
+                Action::RetryPermissions => {
+                    self.scan();
+                    if self.permission_issues.is_empty() {
+                        self.status = "权限已获取，图库已重新载入".to_string();
+                    }
+                }
+                Action::OpenPermissionPage => {
+                    // Reveal the denied folder itself: Explorer shows its
+                    // "get access to this folder" confirmation dialog, which is
+                    // the OS-native way to let the operator grant permission.
+                    // On macOS this instead opens the Full Disk Access page.
+                    let target = self.permission_issues.first().cloned();
+                    crate::permissions::open_authorization(target.as_deref());
+                }
+                Action::DismissPermissions => self.permission_issues.clear(),
                 Action::Quit => {
-                    // Explicit quit always exits, even if close-to-background is on.
+                    // Explicit quit always exits, even if hide-to-tray is on.
                     self.force_quit = true;
                     self.cfg.save();
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -388,40 +474,113 @@ impl App {
         };
     }
 
-    fn spawn_shift(&mut self) {
-        if self.shifting {
-            return;
+    /// Hide the main window into the system tray while keeping the app running
+    /// (slideshow / daily wallpaper continue in the background).
+    fn hide_to_tray(&mut self, ctx: &egui::Context) {
+        // On Windows we keep the HWND "visible" to the OS but move it off-screen
+        // and out of the taskbar. That preserves the egui event loop (a truly
+        // hidden window stops receiving repaints, freezing rotation/timers).
+        #[cfg(windows)]
+        {
+            if !self.window_hidden {
+                if let Some(p) = unsafe { crate::winhide::hide(self.window_hwnd) } {
+                    self.hidden_placement = Some(p);
+                }
+            }
         }
-        let path = match self.current_path() {
-            Some(p) => p,
-            None => {
-                self.status = "请先选择一张壁纸再执行位移".to_string();
-                return;
+        #[cfg(not(windows))]
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
+        let _ = ctx;
+        self.window_hidden = true;
+        self.status = "已隐藏到系统托盘，点击托盘图标可唤回".to_string();
+    }
+
+    /// Restore and focus the main window (from the tray icon or global hotkey).
+    fn show_window(&mut self, ctx: &egui::Context) {
+        #[cfg(windows)]
+        {
+            if let Some(p) = self.hidden_placement.take() {
+                unsafe { crate::winhide::show(self.window_hwnd, &p) };
             }
-        };
-        self.shifting = true;
-        self.last_shift = Instant::now();
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.shift_rx = Some(rx);
-        let maxp = self.cfg.shift_max_px.max(1) as i64;
-        let fit = self.cfg.fit;
-        let out_dir = config_dir();
-        std::thread::spawn(move || {
-            let mut rng = rand::thread_rng();
-            let mut dx = rng.gen_range(-maxp..=maxp);
-            let dy = rng.gen_range(-maxp..=maxp);
-            // Avoid a no-op shift of (0,0) so a shift tick always moves pixels.
-            if dx == 0 && dy == 0 {
-                dx = maxp.max(1);
-            }
-            let r = crate::burnin::apply_shift(&path, fit, dx, dy, &out_dir);
-            let _ = tx.send(r);
-        });
+        }
+        #[cfg(not(windows))]
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+        let _ = ctx;
+        self.window_hidden = false;
     }
 
     /// Keep the thumbnail texture cache bounded so scanning thousands of images
     /// cannot exhaust VRAM/RAM. Evicted paths are forgotten by the thumbnailer
     /// so they are re-decoded if they scroll back into view.
+    /// Handle an incoming screenshot result and advance the shot plan. Returns
+    /// `true` when the whole run is finished (the app then closes).
+    fn shot_pre(&mut self, ctx: &egui::Context) -> bool {
+        if self.shot.is_none() {
+            return false;
+        }
+        // Consume a screenshot from the previous frame's request.
+        let img = if self.shot.as_ref().map(|s| s.pending).unwrap_or(false) {
+            crate::shot::take_screenshot(ctx)
+        } else {
+            None
+        };
+        if let Some(img) = img {
+            if let Some(sh) = self.shot.as_mut() {
+                sh.store(&img);
+            }
+        }
+        // Finished?
+        let finished = self.shot.as_ref().map(|s| s.finished()).unwrap_or(false);
+        if finished {
+            let (n, dir) = self
+                .shot
+                .as_ref()
+                .map(|s| (s.saved.len(), s.dir.display().to_string()))
+                .unwrap_or((0, String::new()));
+            if let Some(sh) = self.shot.as_ref() {
+                sh.write_manifest();
+            }
+            self.status = format!("适配截图完成：{n} 张，已保存到 {dir}");
+            self.force_quit = true;
+            self.cfg.save();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return true;
+        }
+        // Apply the current item's tab and (once) its window size.
+        let info = self.shot.as_ref().and_then(|s| {
+            s.current().map(|it| (it.tab, it.w, it.h, s.settle, s.pending))
+        });
+        if let Some((tab, w, h, settle, pending)) = info {
+            self.tab = tab_from_index(tab);
+            if settle == 0 && !pending {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
+            }
+        }
+        false
+    }
+
+    /// Advance the settle timer and request the screenshot once the window has
+    /// had time to resize and render.
+    fn shot_post(&mut self, ctx: &egui::Context) {
+        let Some(sh) = self.shot.as_mut() else {
+            return;
+        };
+        if sh.pending || sh.finished() {
+            return;
+        }
+        sh.settle += 1;
+        if sh.settle >= crate::shot::SETTLE_FRAMES {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
+            sh.pending = true;
+        }
+    }
+
     fn enforce_tex_cap(&mut self) {
         let plan = evict_plan(&self.tex_order, TEX_CAP);
         if plan.is_empty() {
@@ -706,45 +865,55 @@ impl App {
     }
 
     // ---- UI sections ------------------------------------------------------
-    fn draw_header(&self, ctx: &egui::Context) {
+    fn draw_header(&self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        let (mx, my) = if self.compact { (12.0, 9.0) } else { (20.0, 13.0) };
         egui::TopBottomPanel::top("hdr")
             .frame(
                 egui::Frame::none()
                     .fill(theme::surface())
-                    .inner_margin(egui::Margin::symmetric(20.0, 13.0)),
+                    .inner_margin(egui::Margin::symmetric(mx, my)),
             )
             .show(ctx, |ui| {
                 let full = ui.max_rect();
                 ui.horizontal(|ui| {
+                    if !self.compact {
+                        if ghost_button(ui, "☰").on_hover_text("显示 / 隐藏侧栏").clicked() {
+                            actions.push(Action::ToggleSidebar);
+                        }
+                        ui.add_space(2.0);
+                    }
                     // Brand mark
+                    let logo_size = if self.compact { 34.0 } else { 40.0 };
                     let (logo, _) =
-                        ui.allocate_exact_size(egui::vec2(40.0, 40.0), egui::Sense::hover());
+                        ui.allocate_exact_size(egui::vec2(logo_size, logo_size), egui::Sense::hover());
                     ui.painter().rect_filled(logo, Rounding::same(12.0), theme::accent());
                     ui.painter().text(
                         logo.center(),
                         egui::Align2::CENTER_CENTER,
                         "🖼",
-                        egui::FontId::proportional(20.0),
+                        egui::FontId::proportional(if self.compact { 16.0 } else { 20.0 }),
                         Color32::WHITE,
                     );
-                    ui.add_space(2.0);
+                    ui.add_space(if self.compact { 8.0 } else { 2.0 });
                     ui.vertical(|ui| {
                         ui.label(
                             RichText::new("Wallpaper Studio")
-                                .size(18.0)
+                                .size(if self.compact { 14.5 } else { 18.0 })
                                 .strong()
                                 .color(theme::text()),
                         );
-                        ui.label(
-                            RichText::new("桌面壁纸 · 固定与轮播")
-                                .size(11.0)
-                                .color(theme::subtext()),
-                        );
+                        if !self.compact {
+                            ui.label(
+                                RichText::new("桌面壁纸 · 固定与轮播")
+                                    .size(11.0)
+                                    .color(theme::subtext()),
+                            );
+                        }
                     });
-                    ui.add_space(10.0);
+                    ui.add_space(if self.compact { 6.0 } else { 10.0 });
                     let mode = if self.cfg.mode == Mode::Slideshow { "轮播" } else { "固定" };
                     chip(ui, mode, theme::accent_soft(), theme::accent());
-                    if self.cfg.mode == Mode::Slideshow {
+                    if !self.compact && self.cfg.mode == Mode::Slideshow {
                         if self.cfg.running {
                             chip(ui, "● 运行中", theme::accent_soft(), theme::ok());
                         } else {
@@ -752,7 +921,20 @@ impl App {
                         }
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if let Some(p) = self.current_path() {
+                        if self.compact {
+                            // Theme toggle lives in the header on mobile (the
+                            // sidebar, where it normally sits, is hidden).
+                            let dark = self.cfg.theme == 1;
+                            let lbl = if dark { "☀" } else { "🌙" };
+                            let btn = ui.add(
+                                egui::Button::new(RichText::new(lbl).size(16.0))
+                                    .frame(false)
+                                    .min_size(egui::vec2(38.0, 34.0)),
+                            );
+                            if btn.on_hover_text("切换浅色 / 深色主题").clicked() {
+                                actions.push(Action::ToggleTheme);
+                            }
+                        } else if let Some(p) = self.current_path() {
                             let name = p
                                 .file_name()
                                 .map(|s| s.to_string_lossy().to_string())
@@ -784,6 +966,9 @@ impl App {
     }
 
     fn draw_sidebar(&mut self, ctx: &egui::Context) {
+        if self.cfg.sidebar_hidden {
+            return;
+        }
         egui::SidePanel::left("nav")
             .resizable(false)
             .exact_width(214.0)
@@ -829,6 +1014,65 @@ impl App {
                     let label = if dark { "☀  浅色主题" } else { "🌙  深色主题" };
                     if theme_toggle(ui, label) {
                         self.cfg.theme = if dark { 0 } else { 1 };
+                    }
+                });
+            });
+    }
+
+    /// Compact bottom navigation bar (phones/tablets, narrow windows).
+    fn draw_bottom_nav(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::bottom("mobilenav")
+            .exact_height(66.0)
+            .frame(
+                egui::Frame::none()
+                    .fill(theme::surface())
+                    .inner_margin(egui::Margin::symmetric(6.0, 6.0)),
+            )
+            .show(ctx, |ui| {
+                // hairline on top edge
+                let r = ui.max_rect();
+                ui.painter().line_segment(
+                    [r.left_top(), r.right_top()],
+                    Stroke::new(1.0_f32, theme::border()),
+                );
+                let items: [(Tab, &str, &str); 5] = [
+                    (Tab::Library, "🖼", "壁纸库"),
+                    (Tab::Slideshow, "🎞", "轮播"),
+                    (Tab::Online, "🌐", "每日"),
+                    (Tab::Settings, "⚙", "设置"),
+                    (Tab::About, "ℹ", "关于"),
+                ];
+                let w = ui.available_width() / items.len() as f32;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    for (tab, icon, label) in items {
+                        if bottom_nav_button(ui, icon, label, self.tab == tab, w) {
+                            self.tab = tab;
+                        }
+                    }
+                });
+            });
+    }
+
+    fn draw_status_bar(&self, ctx: &egui::Context) {
+        egui::TopBottomPanel::bottom("status")
+            .frame(
+                egui::Frame::none()
+                    .fill(theme::card())
+                    .inner_margin(egui::Margin::symmetric(18.0, 6.0)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(&self.status).size(12.0).color(theme::subtext()));
+                    if !self.compact {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let hint = if self.hotkey.is_registered() {
+                                format!("{} 后台 / 唤回", self.hotkey.label())
+                            } else {
+                                "全局快捷键不可用".to_string()
+                            };
+                            ui.label(RichText::new(hint).size(11.0).color(theme::subtext()));
+                        });
                     }
                 });
             });
@@ -885,20 +1129,15 @@ impl App {
             })
             .inner_margin(egui::Margin::symmetric(16.0, 13.0))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("📁").size(15.0).color(theme::accent()));
-                    egui::Frame::none()
-                        .fill(theme::extreme())
-                        .rounding(Rounding::same(8.0))
-                        .inner_margin(egui::Margin::symmetric(11.0, 5.0))
-                        .show(ui, |ui| {
-                            ui.label(
-                                RichText::new(ellipsis(&folder, 54))
-                                    .size(12.5)
-                                    .color(theme::text()),
-                            );
-                        });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let folder_hint = if self.compact { 30 } else { 54 };
+                // Folder path chip (own row on compact, inline on desktop).
+                if self.compact {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new("📁").size(15.0).color(theme::accent()));
+                        folder_chip(ui, &ellipsis(&folder, folder_hint));
+                    });
+                    ui.add_space(8.0);
+                    ui.horizontal_wrapped(|ui| {
                         if primary_button(ui, "选择文件夹…").clicked() {
                             actions.push(Action::PickFolder);
                         }
@@ -912,53 +1151,103 @@ impl App {
                             actions.push(Action::OpenFolder);
                         }
                     });
-                });
-                ui.add_space(11.0);
-                ui.horizontal(|ui| {
-                    let mut rc = self.cfg.recursive;
-                    if ui.checkbox(&mut rc, "包含子文件夹").changed() {
-                        self.cfg.recursive = rc;
-                        actions.push(Action::Rescan);
-                    }
-                    ui.add_space(10.0);
-                    let mut wo = self.cfg.wallpaper_only;
-                    if ui
-                        .checkbox(&mut wo, "仅壁纸尺寸(≥1280×720)")
-                        .on_hover_text("过滤掉图标、小图、竖图等不适合做壁纸的图片")
-                        .changed()
-                    {
-                        self.cfg.wallpaper_only = wo;
-                        actions.push(Action::Rescan);
-                    }
-                    ui.add_space(10.0);
-                    ui.label(RichText::new("🔍").size(13.0).color(theme::subtext()));
-                    egui::Frame::none()
-                        .fill(theme::extreme())
-                        .stroke(Stroke::new(1.0_f32, theme::border()))
-                        .rounding(Rounding::same(8.0))
-                        .inner_margin(egui::Margin::symmetric(9.0, 4.0))
-                        .show(ui, |ui| {
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.cfg.search)
-                                    .hint_text("按文件名过滤…")
-                                    .desired_width(210.0)
-                                    .frame(false),
-                            );
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("📁").size(15.0).color(theme::accent()));
+                        folder_chip(ui, &ellipsis(&folder, folder_hint));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if primary_button(ui, "选择文件夹…").clicked() {
+                                actions.push(Action::PickFolder);
+                            }
+                            if ghost_button(ui, "全盘扫描").clicked() {
+                                actions.push(Action::ScanAllDisks);
+                            }
+                            if ghost_button(ui, "重新扫描").clicked() {
+                                actions.push(Action::Rescan);
+                            }
+                            if ghost_button(ui, "打开目录").clicked() {
+                                actions.push(Action::OpenFolder);
+                            }
                         });
-                    ui.add_space(10.0);
-                    chip(
-                        ui,
-                        &format!("共 {total} 张"),
-                        theme::accent_soft(),
-                        theme::accent(),
-                    );
-                    if self.scanning {
-                        ui.add_space(6.0);
-                        chip(ui, "扫描中…", theme::accent_soft(), theme::accent());
-                    }
-                });
+                    });
+                }
+                ui.add_space(11.0);
+                // Filters + search. On compact screens the checkboxes, the
+                // search field and the count chip each get their own row so
+                // nothing overflows the narrow viewport.
+                let only_label = if self.compact { "仅壁纸尺寸" } else { "仅壁纸尺寸(≥1280×720)" };
+                let search_w = if self.compact { ui.available_width() - 24.0 } else { 210.0 };
+                if self.compact {
+                    ui.horizontal_wrapped(|ui| {
+                        let mut rc = self.cfg.recursive;
+                        if ui.checkbox(&mut rc, "包含子文件夹").changed() {
+                            self.cfg.recursive = rc;
+                            actions.push(Action::Rescan);
+                        }
+                        ui.add_space(8.0);
+                        let mut wo = self.cfg.wallpaper_only;
+                        if ui.checkbox(&mut wo, only_label).changed() {
+                            self.cfg.wallpaper_only = wo;
+                            actions.push(Action::Rescan);
+                        }
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("🔍").size(13.0).color(theme::subtext()));
+                        search_field(ui, &mut self.cfg.search, search_w.max(120.0));
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        chip(
+                            ui,
+                            &format!("共 {total} 张"),
+                            theme::accent_soft(),
+                            theme::accent(),
+                        );
+                        if self.scanning {
+                            chip(ui, "扫描中…", theme::accent_soft(), theme::accent());
+                        }
+                    });
+                } else {
+                    ui.horizontal_wrapped(|ui| {
+                        let mut rc = self.cfg.recursive;
+                        if ui.checkbox(&mut rc, "包含子文件夹").changed() {
+                            self.cfg.recursive = rc;
+                            actions.push(Action::Rescan);
+                        }
+                        ui.add_space(8.0);
+                        let mut wo = self.cfg.wallpaper_only;
+                        if ui
+                            .checkbox(&mut wo, only_label)
+                            .on_hover_text("过滤掉图标、小图、竖图等不适合做壁纸的图片")
+                            .changed()
+                        {
+                            self.cfg.wallpaper_only = wo;
+                            actions.push(Action::Rescan);
+                        }
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("🔍").size(13.0).color(theme::subtext()));
+                        search_field(ui, &mut self.cfg.search, search_w);
+                        ui.add_space(8.0);
+                        chip(
+                            ui,
+                            &format!("共 {total} 张"),
+                            theme::accent_soft(),
+                            theme::accent(),
+                        );
+                        if self.scanning {
+                            chip(ui, "扫描中…", theme::accent_soft(), theme::accent());
+                        }
+                    });
+                }
             });
         ui.add_space(12.0);
+
+        // Permission banner: folders the last scan couldn't read.
+        if !self.permission_issues.is_empty() {
+            self.ui_permission_banner(ui, actions);
+            ui.add_space(12.0);
+        }
 
         if self.images.is_empty() {
             self.empty_state(ui, actions);
@@ -966,39 +1255,208 @@ impl App {
         }
 
         let q = self.cfg.search.trim().to_lowercase();
-        let paths: Vec<PathBuf> = self
-            .images
-            .iter()
-            .filter(|p| {
-                q.is_empty()
-                    || p.file_name()
-                        .map(|n| n.to_string_lossy().to_lowercase().contains(&q))
-                        .unwrap_or(false)
-            })
-            .cloned()
-            .collect();
+        let matches = |p: &PathBuf| {
+            q.is_empty()
+                || p.file_name()
+                    .map(|n| n.to_string_lossy().to_lowercase().contains(&q))
+                    .unwrap_or(false)
+        };
+
+        // Toolbar: album count + expand/collapse all.
+        let album_label =
+            format!("{} 个相册 · 按文件夹分类", self.albums.len());
+        if self.compact {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(album_label).size(12.0).color(theme::subtext()));
+                if ghost_button(ui, "全部折叠").clicked() {
+                    actions.push(Action::CollapseAllAlbums);
+                }
+                if ghost_button(ui, "全部展开").clicked() {
+                    actions.push(Action::ExpandAllAlbums);
+                }
+            });
+        } else {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(album_label).size(12.0).color(theme::subtext()));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ghost_button(ui, "全部折叠").clicked() {
+                        actions.push(Action::CollapseAllAlbums);
+                    }
+                    if ghost_button(ui, "全部展开").clicked() {
+                        actions.push(Action::ExpandAllAlbums);
+                    }
+                });
+            });
+        }
+        ui.add_space(8.0);
+
+        // Snapshot the albums to a local list so we can call `draw_card(&mut self)`
+        // while iterating without holding a borrow on `self.albums`.
+        // Each entry: (key, name, images, collapsed, display_limit).
+        let mut sections: Vec<(String, String, Vec<PathBuf>, bool, usize)> = Vec::new();
+        for a in &self.albums {
+            let imgs: Vec<PathBuf> = a.images.iter().filter(|p| matches(p)).cloned().collect();
+            if imgs.is_empty() && !q.is_empty() {
+                continue;
+            }
+            let collapsed = self.cfg.collapsed_folders.contains(&a.key);
+            let limit = *self.album_limits.get(&a.key).unwrap_or(&PAGE_IMAGES);
+            sections.push((a.key.clone(), a.name.clone(), imgs, collapsed, limit));
+        }
 
         let current_path = self.current_path();
         let avail = ui.available_width();
-        let item_w = CELL_W + CARD_PAD * 2.0;
-        let cols = (((avail + GAP) / (item_w + GAP)).floor() as usize).max(1);
+        // Fluid grid: 2–3 columns on compact screens, fixed cells on desktop.
+        let (cols, cell_w) = if self.compact {
+            let n = if avail < 470.0 { 2 } else { 3 };
+            let cw = ((avail - GAP * (n as f32 - 1.0)) / n as f32 - CARD_PAD * 2.0).max(120.0);
+            (n, cw)
+        } else {
+            let item_w = CELL_W + CARD_PAD * 2.0;
+            let n = (((avail + GAP) / (item_w + GAP)).floor() as usize).max(1);
+            (n, CELL_W)
+        };
+        let mut toggles: Vec<String> = Vec::new();
+        let mut load_more: Vec<String> = Vec::new();
 
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                let mut idx = 0usize;
-                while idx < paths.len() {
+                if sections.is_empty() {
+                    ui.add_space(24.0);
+                    ui.label(
+                        RichText::new(if q.is_empty() {
+                            "暂无相册"
+                        } else {
+                            "没有匹配的图片"
+                        })
+                        .size(13.0)
+                        .color(theme::subtext()),
+                    );
+                    return;
+                }
+                for (key, name, imgs, collapsed, limit) in &sections {
+                    let arrow = if *collapsed { "▶" } else { "▼" };
                     ui.horizontal(|ui| {
-                        for _ in 0..cols {
-                            if idx >= paths.len() {
-                                break;
+                        let label = RichText::new(format!("{arrow}  📁  {name}"))
+                            .size(13.5)
+                            .color(theme::text());
+                        let resp = ui.add(
+                            egui::Button::new(label)
+                                .frame(false)
+                                .min_size(egui::vec2(0.0, 26.0)),
+                        );
+                        if resp.clicked() {
+                            toggles.push(key.clone());
+                        }
+                        chip(
+                            ui,
+                            &format!("{} 张", imgs.len()),
+                            theme::accent_soft(),
+                            theme::accent(),
+                        );
+                    });
+                    if !*collapsed {
+                        ui.add_space(4.0);
+                        // Only build up to `limit` cards; large folders page in.
+                        let shown = (*limit).min(imgs.len());
+                        let mut idx = 0usize;
+                        while idx < shown {
+                            ui.horizontal(|ui| {
+                                for _ in 0..cols {
+                                    if idx >= shown {
+                                        break;
+                                    }
+                                    let path = imgs[idx].clone();
+                                    self.draw_card(ui, &path, current_path.as_deref(), actions, cell_w);
+                                    idx += 1;
+                                }
+                            });
+                            ui.add_space(GAP);
+                        }
+                        if imgs.len() > shown {
+                            let remain = imgs.len() - shown;
+                            ui.add_space(2.0);
+                            if ghost_button(ui, &format!("加载更多（还有 {remain} 张）")).clicked() {
+                                load_more.push(key.clone());
                             }
-                            self.draw_card(ui, &paths[idx], current_path.as_deref(), actions);
-                            idx += 1;
+                        }
+                    }
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.add_space(6.0);
+                }
+            });
+
+        // Apply collapse toggles requested while iterating.
+        for k in toggles {
+            if !self.cfg.collapsed_folders.remove(&k) {
+                self.cfg.collapsed_folders.insert(k);
+            }
+        }
+        // Grow the page for albums whose "load more" button was clicked.
+        for k in load_more {
+            let e = self.album_limits.entry(k).or_insert(PAGE_IMAGES);
+            *e += PAGE_IMAGES;
+        }
+    }
+
+    /// Banner shown when a scan hits folders it cannot read. Offers to retry
+    /// (triggers the OS prompt where applicable) or jump to the authorization
+    /// page / reveal the folder (platform-specific).
+    fn ui_permission_banner(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let g = crate::permissions::guidance();
+        let count = self.permission_issues.len();
+        egui::Frame::none()
+            .fill(theme::accent_soft())
+            .stroke(Stroke::new(1.0_f32, theme::accent()))
+            .rounding(Rounding::same(12.0))
+            .inner_margin(egui::Margin::symmetric(16.0, 12.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("🔒").size(16.0));
+                    ui.label(
+                        RichText::new(format!("{count} 个目录无访问权限 · {}", g.title))
+                            .size(13.5)
+                            .strong()
+                            .color(theme::text()),
+                    );
+                });
+                ui.add_space(4.0);
+                for p in self.permission_issues.iter().take(3) {
+                    ui.label(
+                        RichText::new(format!("• {}", ellipsis(&p.display().to_string(), 80)))
+                            .size(11.0)
+                            .color(theme::subtext()),
+                    );
+                }
+                if count > 3 {
+                    ui.label(
+                        RichText::new(format!("… 其余 {} 个目录", count - 3))
+                            .size(11.0)
+                            .color(theme::subtext()),
+                    );
+                }
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(g.detail)
+                        .size(11.5)
+                        .color(theme::subtext()),
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if primary_button(ui, "请求权限 / 重试").clicked() {
+                        actions.push(Action::RetryPermissions);
+                    }
+                    if ghost_button(ui, g.action).clicked() {
+                        actions.push(Action::OpenPermissionPage);
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ghost_button(ui, "忽略").clicked() {
+                            actions.push(Action::DismissPermissions);
                         }
                     });
-                    ui.add_space(GAP);
-                }
+                });
             });
     }
 
@@ -1041,7 +1499,9 @@ impl App {
         path: &Path,
         current: Option<&Path>,
         actions: &mut Vec<Action>,
+        cell_w: f32,
     ) {
+        let img_h = (cell_w * 0.58).round().max(70.0);
         let is_current = current == Some(path);
         let base_stroke = if is_current {
             Stroke::new(2.0_f32, theme::accent())
@@ -1061,10 +1521,10 @@ impl App {
             })
             .show(ui, |ui| {
                 ui.vertical(|ui| {
-                    ui.set_min_width(CELL_W);
-                    ui.set_max_width(CELL_W);
+                    ui.set_min_width(cell_w);
+                    ui.set_max_width(cell_w);
                     let (rect, resp) =
-                        ui.allocate_exact_size(Vec2::new(CELL_W, IMG_H), egui::Sense::click());
+                        ui.allocate_exact_size(Vec2::new(cell_w, img_h), egui::Sense::click());
                     // Lazy-load: only decode thumbnails for cards actually on
                     // screen (or about to be), not all 3000 scanned files.
                     if ui.is_rect_visible(rect)
@@ -1328,8 +1788,12 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("播放模式").size(12.0).color(theme::subtext()));
                     ui.add_space(4.0);
-                    ui.selectable_value(&mut self.cfg.mode, Mode::Fixed, " 固定壁纸 ");
-                    ui.selectable_value(&mut self.cfg.mode, Mode::Slideshow, " 轮播 ");
+                    if segment(ui, self.cfg.mode == Mode::Fixed, "固定壁纸") {
+                        self.cfg.mode = Mode::Fixed;
+                    }
+                    if segment(ui, self.cfg.mode == Mode::Slideshow, "轮播") {
+                        self.cfg.mode = Mode::Slideshow;
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if self.cfg.mode == Mode::Slideshow {
                             let mut sh = self.cfg.shuffle;
@@ -1426,12 +1890,13 @@ impl App {
                         if ghost_button(ui, "🎲 随机一张").clicked() {
                             actions.push(Action::Random);
                         }
-                        ui.label(
-                            RichText::new("固定模式：在「壁纸库」点击任意图片即可设为桌面壁纸。")
-                                .size(12.5)
-                                .color(theme::subtext()),
-                        );
                     });
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new("固定模式：在「壁纸库」点击任意图片即可设为桌面壁纸。")
+                            .size(12.0)
+                            .color(theme::subtext()),
+                    );
                 }
             });
     }
@@ -1459,12 +1924,18 @@ impl App {
                     setting_label(ui, "显示方式", "填充 / 适应 / 拉伸 / 居中 / 平铺");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let before_fit = self.cfg.fit;
+                        let fit_text = if self.compact {
+                            self.cfg.fit.short()
+                        } else {
+                            self.cfg.fit.label()
+                        };
                         egui::ComboBox::from_id_salt("fit_combo")
-                            .selected_text(self.cfg.fit.label())
-                            .width(200.0)
+                            .selected_text(fit_text)
+                            .width(if self.compact { 116.0 } else { 200.0 })
                             .show_ui(ui, |ui| {
                                 for f in Fit::all() {
-                                    ui.selectable_value(&mut self.cfg.fit, f, f.label());
+                                    let t = if self.compact { f.short() } else { f.label() };
+                                    ui.selectable_value(&mut self.cfg.fit, f, t);
                                 }
                             });
                         if self.cfg.fit != before_fit {
@@ -1479,8 +1950,12 @@ impl App {
                 ui.horizontal(|ui| {
                     setting_label(ui, "主题", "浅色 / 深色，即时生效");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.selectable_value(&mut self.cfg.theme, 1, "深色");
-                        ui.selectable_value(&mut self.cfg.theme, 0, "浅色");
+                        if segment(ui, self.cfg.theme == 1, "深色") {
+                            self.cfg.theme = 1;
+                        }
+                        if segment(ui, self.cfg.theme == 0, "浅色") {
+                            self.cfg.theme = 0;
+                        }
                     });
                 });
             });
@@ -1510,35 +1985,39 @@ impl App {
                         }
                     });
                 });
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    setting_label(ui, "开机自动启动", "登录系统后自动运行本程序");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let mut auto = self.cfg.autostart;
-                        if ui.checkbox(&mut auto, "").changed() {
-                            match crate::autostart::set_enabled(auto) {
-                                Ok(_) => {
-                                    self.cfg.autostart = auto;
-                                    self.status = if auto {
-                                        "已开启开机自启".to_string()
-                                    } else {
-                                        "已关闭开机自启".to_string()
-                                    };
-                                }
-                                Err(e) => {
-                                    self.cfg.autostart = !auto;
-                                    self.status = format!("开机自启设置失败：{e}");
+                // Autostart is desktop-only (login items / Run key / .desktop).
+                if !crate::platform::is_mobile() {
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        setting_label(ui, "开机自动启动", "登录系统后自动运行本程序");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let mut auto = self.cfg.autostart;
+                            if ui.checkbox(&mut auto, "").changed() {
+                                match crate::autostart::set_enabled(auto) {
+                                    Ok(_) => {
+                                        self.cfg.autostart = auto;
+                                        self.status = if auto {
+                                            "已开启开机自启".to_string()
+                                        } else {
+                                            "已关闭开机自启".to_string()
+                                        };
+                                    }
+                                    Err(e) => {
+                                        self.cfg.autostart = !auto;
+                                        self.status = format!("开机自启设置失败：{e}");
+                                    }
                                 }
                             }
-                        }
+                        });
                     });
-                });
+                }
             });
         ui.add_space(12.0);
 
-        // OLED burn-in guard ------------------------------------------------
+        // Resident & hotkey -------------------------------------------------
+        if !crate::platform::is_mobile() {
         egui::Frame::none()
             .fill(theme::card())
             .stroke(Stroke::new(1.0_f32, theme::border()))
@@ -1551,23 +2030,26 @@ impl App {
             })
             .inner_margin(egui::Margin::symmetric(18.0, 16.0))
             .show(ui, |ui| {
-                section_header(ui, "OLED 防烧屏");
+                section_header(ui, "托盘与快捷键");
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new("长时间显示同一张壁纸，OLED 屏幕上的固定元素（任务栏、时钟、图标）可能留下残影甚至烧屏。开启守护后会定期把壁纸微移几个像素，让像素负载均摊。")
+                    RichText::new("关闭窗口（右上角 ×）后会隐藏到系统托盘：Windows 右下角通知区域 / macOS 菜单栏 / Linux 状态区，程序继续在后台运行。单击托盘图标可重新打开窗口，右键菜单可退出。")
                         .size(11.5)
                         .color(theme::subtext()),
                 );
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    setting_label(ui, "防烧屏守护", "定期微移壁纸，缓解残影 / 烧屏");
+                    let desc = if self.tray.is_some() {
+                        "托盘图标已就绪"
+                    } else {
+                        "当前环境无系统托盘，将改用全局快捷键隐藏 / 唤回"
+                    };
+                    setting_label(ui, "系统托盘", desc);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let mut g = self.cfg.oled_guard;
-                        if ui.checkbox(&mut g, "").changed() {
-                            self.cfg.oled_guard = g;
-                            if g {
-                                self.last_shift = Instant::now();
-                            }
+                        if self.tray.is_some() {
+                            chip(ui, "可用", theme::accent_soft(), theme::ok());
+                        } else {
+                            chip(ui, "不可用", theme::extreme(), theme::subtext());
                         }
                     });
                 });
@@ -1575,61 +2057,7 @@ impl App {
                 ui.separator();
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    setting_label(ui, "位移间隔", "每隔多久微移一次（秒）");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_enabled(
-                            self.cfg.oled_guard,
-                            egui::DragValue::new(&mut self.cfg.shift_interval_secs)
-                                .range(10..=3600)
-                                .suffix(" 秒"),
-                        );
-                    });
-                });
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    setting_label(ui, "最大位移", "单次最大偏移像素（1–30）");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_enabled(
-                            self.cfg.oled_guard,
-                            egui::DragValue::new(&mut self.cfg.shift_max_px)
-                                .range(1..=30)
-                                .suffix(" px"),
-                        );
-                    });
-                });
-                ui.add_space(12.0);
-                ui.horizontal(|ui| {
-                    if primary_button(ui, "立即位移一次").clicked() {
-                        actions.push(Action::ShiftOnce);
-                    }
-                    ui.label(
-                        RichText::new("建议同时开启轮播并缩短间隔，防烧屏效果更好。")
-                            .size(11.0)
-                            .color(theme::subtext()),
-                    );
-                });
-            });
-        ui.add_space(12.0);
-
-        // Resident & hotkey -------------------------------------------------
-        egui::Frame::none()
-            .fill(theme::card())
-            .stroke(Stroke::new(1.0_f32, theme::border()))
-            .rounding(Rounding::same(14.0))
-            .shadow(egui::epaint::Shadow {
-                offset: egui::vec2(0.0, 3.0),
-                blur: 12.0,
-                spread: 0.0,
-                color: theme::shadow(),
-            })
-            .inner_margin(egui::Margin::symmetric(18.0, 16.0))
-            .show(ui, |ui| {
-                section_header(ui, "常驻后台与快捷键");
-                ui.add_space(12.0);
-                ui.horizontal(|ui| {
-                    setting_label(ui, "关闭时最小化到后台", "关闭窗口不退出，轮播 / 防烧屏继续运行");
+                    setting_label(ui, "关闭时隐藏到托盘", "关闭窗口后隐藏到通知区域，轮播 / 每日壁纸继续运行");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let mut cb = self.cfg.close_to_background;
                         if ui.checkbox(&mut cb, "").changed() {
@@ -1643,7 +2071,7 @@ impl App {
                 let reg = self.hotkey.is_registered();
                 ui.horizontal(|ui| {
                     let desc = if reg {
-                        format!("{}：最小化 / 唤回窗口", self.hotkey.label())
+                        format!("{}：显示 / 隐藏窗口", self.hotkey.label())
                     } else {
                         "注册失败：快捷键可能被其它软件占用".to_string()
                     };
@@ -1662,18 +2090,19 @@ impl App {
                 ui.separator();
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    setting_label(ui, "最小化 / 退出", "最小化到后台继续运行，或彻底退出应用");
+                    setting_label(ui, "隐藏 / 退出", "隐藏到托盘继续运行，或彻底退出应用");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ghost_button(ui, "退出应用").clicked() {
                             actions.push(Action::Quit);
                         }
-                        if ghost_button(ui, "最小化到后台").clicked() {
-                            actions.push(Action::Minimize);
+                        if ghost_button(ui, "隐藏到托盘").clicked() {
+                            actions.push(Action::HideToTray);
                         }
                     });
                 });
             });
         ui.add_space(12.0);
+        }
 
         // Display & compatibility -------------------------------------------
         egui::Frame::none()
@@ -1827,10 +2256,26 @@ impl App {
             );
             ui.add_space(10.0);
             ui.label(
-                RichText::new("跨平台桌面壁纸工具（Windows / macOS / Linux），支持固定壁纸与轮播。")
+                RichText::new("跨平台壁纸工具：Windows / macOS / Linux 桌面 + iOS / Android 自适应界面，支持固定壁纸与轮播。")
                     .size(13.0)
                     .color(theme::subtext()),
             );
+            ui.add_space(6.0);
+            let cap = crate::platform::wallpaper_support();
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("当前平台：{}", crate::platform::name()))
+                        .size(11.5)
+                        .color(theme::subtext()),
+                );
+                let (fill, col, txt) = if cap.can_set {
+                    (theme::accent_soft(), theme::ok(), format!("{} · 可设置", cap.label))
+                } else {
+                    (theme::extreme(), theme::subtext(), format!("{} · 仅浏览", cap.label))
+                };
+                chip(ui, &txt, fill, col);
+            });
+            ui.label(RichText::new(cap.note).size(11.0).color(theme::subtext()));
         });
         ui.add_space(18.0);
         egui::Frame::none()
@@ -1944,32 +2389,51 @@ impl eframe::App for App {
             self.applied_theme = self.cfg.theme;
         }
 
-        // Global hotkey: toggle minimize / restore.
-        if self.hotkey.take_toggle() {
-            if self.window_hidden {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                self.window_hidden = false;
-                self.status = "已唤回窗口".to_string();
-            } else {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-                self.window_hidden = true;
-                self.status = "已最小化到后台（用全局快捷键唤醒）".to_string();
+        // Screen-size adaptation screenshot mode (`--shots <dir>`): drive the
+        // resize / capture state machine every frame and keep repainting.
+        if self.shot.is_some() {
+            ctx.request_repaint();
+            if self.shot_pre(ctx) {
+                return;
             }
         }
 
-        // Close-to-background: keep running (wallpaper rotation / OLED shift) when
-        // the window is closed, provided the global hotkey is available to restore.
+        // System tray: react to menu / click actions queued by the tray handlers.
+        let tray_actions = self.tray.as_ref().map(|t| t.drain()).unwrap_or_default();
+        for action in tray_actions {
+            match action {
+                crate::tray::TrayAction::Show => self.show_window(ctx),
+                crate::tray::TrayAction::Hide => self.hide_to_tray(ctx),
+                crate::tray::TrayAction::Quit => {
+                    self.force_quit = true;
+                    self.cfg.save();
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
+
+        // Global hotkey: show / hide the window (bonus shortcut, tray optional).
+        if self.hotkey.take_toggle() {
+            if self.window_hidden {
+                self.show_window(ctx);
+                self.status = "已唤回窗口".to_string();
+            } else {
+                self.hide_to_tray(ctx);
+            }
+        }
+
+        // "X" close -> hide to tray instead of quitting (unless the user chose
+        // Quit). We can swallow the close as long as there is a way to bring the
+        // window back: the system tray, or the global hotkey as a fallback.
+        let can_restore = self.tray.is_some() || self.hotkey.is_registered();
         if should_background_on_close(
             ctx.input(|i| i.viewport().close_requested()),
             self.cfg.close_to_background,
-            self.hotkey.is_registered(),
+            can_restore,
             self.force_quit,
         ) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-            self.window_hidden = true;
-            self.status = "已最小化到后台继续运行（用全局快捷键唤醒）".to_string();
+            self.hide_to_tray(ctx);
         }
 
         // Poll background full-disk scan.
@@ -1982,6 +2446,8 @@ impl eframe::App for App {
             self.tex_order.clear();
             self.preview = None;
             self.images = found;
+            self.albums = crate::albums::build_albums(&self.images, None);
+            self.permission_issues.clear();
             self.current = if self.images.is_empty() { None } else { Some(0) };
             self.status = if self.images.is_empty() {
                 "全盘扫描完成，但未找到符合条件的壁纸".to_string()
@@ -1997,17 +2463,6 @@ impl eframe::App for App {
                 )
             };
             self.last_switch = Instant::now();
-        }
-
-        // Poll background OLED pixel-shift.
-        let shift_result = self.shift_rx.as_ref().and_then(|rx| rx.try_recv().ok());
-        if let Some(res) = shift_result {
-            self.shift_rx = None;
-            self.shifting = false;
-            self.status = match res {
-                Ok(_) => "已执行防烧屏像素位移".to_string(),
-                Err(e) => format!("像素位移失败：{e}"),
-            };
         }
 
         // Poll background online-wallpaper fetch.
@@ -2050,15 +2505,6 @@ impl eframe::App for App {
                 self.last_online_auto = Instant::now();
                 self.start_online_fetch(0);
             }
-        }
-
-        // OLED burn-in guard scheduling: micro-shift on an interval.
-        if self.cfg.oled_guard
-            && !self.shifting
-            && !self.images.is_empty()
-            && self.last_shift.elapsed().as_secs() >= self.cfg.shift_interval_secs.max(10)
-        {
-            self.spawn_shift();
         }
 
         let snap = Snapshot::of(&self.cfg);
@@ -2122,9 +2568,28 @@ impl eframe::App for App {
             ctx.request_repaint_after(Duration::from_millis(350));
         }
 
+        // Responsive: use the compact, touch-friendly layout on phones/tablets
+        // (or a narrow desktop window), and the sidebar layout otherwise.
+        self.compact =
+            crate::platform::is_mobile() || ctx.screen_rect().width() < COMPACT_BREAK;
+        let (touch_h, pad) = if self.compact {
+            (46.0, egui::vec2(16.0, 10.0))
+        } else {
+            (34.0, egui::vec2(15.0, 8.0))
+        };
+        ctx.style_mut(|s| {
+            s.spacing.interact_size.y = touch_h;
+            s.spacing.button_padding = pad;
+        });
+
         let mut actions: Vec<Action> = Vec::new();
-        self.draw_header(ctx);
-        self.draw_sidebar(ctx);
+        self.draw_header(ctx, &mut actions);
+        if self.compact {
+            self.draw_bottom_nav(ctx);
+        } else {
+            self.draw_sidebar(ctx);
+        }
+        self.draw_status_bar(ctx);
         self.draw_center(ctx, &mut actions);
         self.apply(ctx, actions);
 
@@ -2133,26 +2598,7 @@ impl eframe::App for App {
             self.cfg.save();
         }
 
-        // status bar
-        egui::TopBottomPanel::bottom("status")
-            .frame(
-                egui::Frame::none()
-                    .fill(theme::card())
-                    .inner_margin(egui::Margin::symmetric(18.0, 6.0)),
-            )
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(&self.status).size(12.0).color(theme::subtext()));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let hint = if self.hotkey.is_registered() {
-                            format!("{} 后台 / 唤回", self.hotkey.label())
-                        } else {
-                            "全局快捷键不可用".to_string()
-                        };
-                        ui.label(RichText::new(hint).size(11.0).color(theme::subtext()));
-                    });
-                });
-            });
+        self.shot_post(ctx);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
@@ -2180,6 +2626,44 @@ fn chip(ui: &mut egui::Ui, text: &str, fill: Color32, color: Color32) {
         .show(ui, |ui| {
             ui.label(RichText::new(text).size(11.5).color(color).strong());
         });
+}
+
+/// Rounded chip used for the selected folder path.
+fn folder_chip(ui: &mut egui::Ui, text: &str) {
+    egui::Frame::none()
+        .fill(theme::extreme())
+        .rounding(Rounding::same(8.0))
+        .inner_margin(egui::Margin::symmetric(11.0, 5.0))
+        .show(ui, |ui| {
+            ui.label(RichText::new(text).size(12.5).color(theme::text()));
+        });
+}
+
+/// Rounded search box used on the library toolbar.
+fn search_field(ui: &mut egui::Ui, text: &mut String, width: f32) {
+    egui::Frame::none()
+        .fill(theme::extreme())
+        .stroke(Stroke::new(1.0_f32, theme::border()))
+        .rounding(Rounding::same(8.0))
+        .inner_margin(egui::Margin::symmetric(9.0, 4.0))
+        .show(ui, |ui| {
+            ui.add(
+                egui::TextEdit::singleline(text)
+                    .hint_text("按文件名过滤…")
+                    .desired_width(width)
+                    .frame(false),
+            );
+        });
+}
+
+fn tab_from_index(i: usize) -> Tab {
+    match i {
+        0 => Tab::Library,
+        1 => Tab::Slideshow,
+        2 => Tab::Online,
+        3 => Tab::Settings,
+        _ => Tab::About,
+    }
 }
 
 fn page_title(ui: &mut egui::Ui, title: &str, subtitle: &str) {
@@ -2266,6 +2750,39 @@ fn nav_button(ui: &mut egui::Ui, icon: &str, label: &str, selected: bool) -> boo
     resp.clicked()
 }
 
+/// A single bottom-nav item: stacked icon + label with a soft selected pill.
+fn bottom_nav_button(ui: &mut egui::Ui, icon: &str, label: &str, selected: bool, width: f32) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 54.0), egui::Sense::click());
+    let hovered = resp.hovered();
+    if selected {
+        ui.painter()
+            .rect_filled(rect.shrink2(egui::vec2(6.0, 4.0)), Rounding::same(12.0), theme::accent_soft());
+    } else if hovered {
+        ui.painter()
+            .rect_filled(rect.shrink2(egui::vec2(6.0, 4.0)), Rounding::same(12.0), theme::extreme());
+    }
+    let color = if selected { theme::accent() } else { theme::subtext() };
+    let center = rect.center();
+    ui.painter().text(
+        egui::pos2(center.x, center.y - 10.0),
+        egui::Align2::CENTER_CENTER,
+        icon,
+        egui::FontId::proportional(18.0),
+        color,
+    );
+    ui.painter().text(
+        egui::pos2(center.x, center.y + 12.0),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(11.0),
+        color,
+    );
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp.clicked()
+}
+
 fn primary_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
     ui.add(
         egui::Button::new(RichText::new(text).size(12.5).color(Color32::WHITE).strong())
@@ -2305,16 +2822,57 @@ fn theme_toggle(ui: &mut egui::Ui, label: &str) -> bool {
     resp.clicked()
 }
 
-fn collect_images(dir: &Path, recursive: bool, out: &mut Vec<PathBuf>) {
+/// A small pill-style segmented option (e.g. 浅色 / 深色), themed to the palette.
+fn segment(ui: &mut egui::Ui, selected: bool, text: &str) -> bool {
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), egui::FontId::proportional(12.5), theme::text());
+    let textw = (galley.size().x + 26.0).max(40.0);
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(textw, 28.0), egui::Sense::click());
+    let fill = if selected {
+        theme::accent_soft()
+    } else if resp.hovered() {
+        theme::extreme()
+    } else {
+        Color32::TRANSPARENT
+    };
+    if fill != Color32::TRANSPARENT {
+        ui.painter().rect_filled(rect, Rounding::same(9.0), fill);
+    }
+    let color = if selected { theme::accent() } else { theme::subtext() };
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        text,
+        egui::FontId::proportional(12.5),
+        color,
+    );
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp.clicked()
+}
+
+fn collect_images(
+    dir: &Path,
+    recursive: bool,
+    out: &mut Vec<PathBuf>,
+    denied: &mut Vec<PathBuf>,
+) {
     let rd = match std::fs::read_dir(dir) {
         Ok(r) => r,
-        Err(_) => return,
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::PermissionDenied {
+                denied.push(dir.to_path_buf());
+            }
+            return;
+        }
     };
     for e in rd.flatten() {
         let p = e.path();
         if p.is_dir() {
             if recursive {
-                collect_images(&p, recursive, out);
+                collect_images(&p, recursive, out, denied);
             }
         } else if is_image(&p) {
             out.push(p);
@@ -2388,16 +2946,17 @@ fn open_url(url: &str) {
     }
 }
 
-/// Decide whether a window-close should be swallowed into the background.
-/// Explicit quit (`force_quit`) and an unregistered hotkey both fall through to
-/// a real exit so the user can never get stuck with an un-closable window.
+/// Decide whether a window-close should be swallowed into the tray.
+/// `can_restore` means there is some way to bring the window back (system tray
+/// or global hotkey); if not, and the user explicitly quit, we fall through to a
+/// real exit so the app can never get stuck un-closable and unrecoverable.
 fn should_background_on_close(
     close_requested: bool,
     close_to_background: bool,
-    hotkey_ok: bool,
+    can_restore: bool,
     force_quit: bool,
 ) -> bool {
-    close_requested && close_to_background && hotkey_ok && !force_quit
+    close_requested && close_to_background && can_restore && !force_quit
 }
 
 /// Return the oldest keys that must be dropped so `order` fits within `cap`.
@@ -2419,7 +2978,7 @@ mod tests {
         assert!(should_background_on_close(true, true, true, false));
         // Explicit quit always exits.
         assert!(!should_background_on_close(true, true, true, true));
-        // Hotkey unavailable -> must exit (can't restore otherwise).
+        // No way to restore the window -> must exit.
         assert!(!should_background_on_close(true, true, false, false));
         // Setting off -> exit.
         assert!(!should_background_on_close(true, false, true, false));

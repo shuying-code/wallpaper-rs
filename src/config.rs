@@ -2,6 +2,7 @@
 
 use crate::wallpaper::Fit;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::env;
 use std::path::PathBuf;
 
@@ -32,18 +33,15 @@ pub struct Config {
     /// Launch the app automatically at login (Windows Run key / LaunchAgent / autostart .desktop).
     #[serde(default)]
     pub autostart: bool,
-    /// OLED burn-in guard: periodically micro-shift the wallpaper.
-    #[serde(default)]
-    pub oled_guard: bool,
-    /// How often (seconds) to micro-shift while the OLED guard is on.
-    #[serde(default = "default_shift_interval")]
-    pub shift_interval_secs: u64,
-    /// Maximum micro-shift in pixels.
-    #[serde(default = "default_shift_max")]
-    pub shift_max_px: u32,
-    /// Minimize to background on close (continues running) instead of exiting.
+    /// Hide to the system tray on close (continues running) instead of exiting.
     #[serde(default = "default_true")]
     pub close_to_background: bool,
+    /// Album keys the user has collapsed in the library view.
+    #[serde(default)]
+    pub collapsed_folders: BTreeSet<String>,
+    /// Whether the left navigation sidebar is hidden.
+    #[serde(default)]
+    pub sidebar_hidden: bool,
     /// Online daily wallpaper (Bing) auto-fetch + set on launch/day.
     #[serde(default)]
     pub daily_online: bool,
@@ -63,12 +61,6 @@ pub struct Config {
     pub wallpaper_only: bool,
 }
 
-fn default_shift_interval() -> u64 {
-    60
-}
-fn default_shift_max() -> u32 {
-    8
-}
 fn default_true() -> bool {
     true
 }
@@ -87,10 +79,9 @@ impl Default for Config {
             running: false,
             search: String::new(),
             autostart: false,
-            oled_guard: false,
-            shift_interval_secs: 60,
-            shift_max_px: 8,
             close_to_background: true,
+            collapsed_folders: BTreeSet::new(),
+            sidebar_hidden: false,
             daily_online: false,
             online_auto_set: true,
             online_likes: 0,
@@ -172,8 +163,9 @@ fn parse_file(p: &std::path::Path) -> Option<Config> {
 mod tests {
     use super::*;
 
-    /// A config written by an older version (no OLED / background fields) must
-    /// still load, keeping the user's data and filling new fields with defaults.
+    /// A config written by an older version must still load, keeping the user's
+    /// data and filling new fields with defaults. Legacy `oled_*` / `shift_*`
+    /// keys from removed features are simply ignored (serde skips unknown keys).
     #[test]
     fn legacy_config_loads_with_defaults() {
         let legacy = r#"{
@@ -193,10 +185,7 @@ mod tests {
         assert!(c.shuffle);
         assert_eq!(c.theme, 1);
         assert_eq!(c.folder.as_deref(), Some(std::path::Path::new("C:\\pics")));
-        // New-in-0.4 fields fall back to defaults.
-        assert!(!c.oled_guard);
-        assert_eq!(c.shift_interval_secs, 60);
-        assert_eq!(c.shift_max_px, 8);
+        // Newer fields fall back to defaults.
         assert!(c.close_to_background);
         assert!(!c.autostart);
     }

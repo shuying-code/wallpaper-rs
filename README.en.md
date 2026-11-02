@@ -33,24 +33,31 @@ You can also click the download links in the in-app **About** page.
 
 ## Features
 
-- **Library**: scan a local folder (optionally recursive) and browse thumbnails in a grid, with filename search.
+- **Library (folder albums)**: scan a local folder (optionally recursive) and group images into albums by their containing folder; each album can be **expanded / collapsed**, with "Expand all / Collapse all" in the toolbar and filename search.
+- **Collapsible sidebar**: the `☰` button in the title bar hides / shows the left navigation to focus on the images; the state is remembered.
+- **Permission request & authorization guidance**: when a scan hits folders it cannot read, instead of silently skipping them the app shows a banner with "Request permission / Retry" (on macOS this triggers the system privacy prompt) and "Open folder location / Open authorization settings" to jump to the OS authorization page or the file manager, letting the operator grant access.
 - **Fixed wallpaper**: click a thumbnail or "Set as wallpaper" to apply instantly.
 - **Slideshow**: auto-change on an interval, sequential or random, with a progress bar showing time to the next change.
 - **Display mode**: Fill / Fit / Stretch / Center / Tile (Windows registry; Linux via GNOME `picture-options`).
 - **Theme**: light / dark toggle with instant restyle.
 - **Persistent config**: folder, mode, interval, fit, theme and last wallpaper are saved locally.
 - **Launch at login**: one toggle — Windows `Run` key, macOS `LaunchAgent`, Linux autostart `.desktop`.
-- **OLED burn-in guard**: micro-shift the wallpaper every few seconds/minutes (adjustable interval & amplitude) to spread pixel load.
 - **Full-disk scan**: background scan of all drives for images (skips system/cache dirs, bounded).
-- **Resident + global hotkey**: close-to-background keeps rotation running; `Ctrl+Alt+W` toggles minimize/restore (auto-fallback if taken).
+- **Close to system tray**: the top-right "X" hides the window to the system tray (Windows notification area / macOS menu bar / Linux status area) instead of quitting, so rotation keeps running; single-click the tray icon to restore, right-click for Show / Hide / Quit.
+- **Global hotkey**: `Ctrl+Alt+W` toggles show/hide of the window (auto-fallback to `Ctrl+Alt+Shift+W` / `Ctrl+Alt+F9` if taken).
 - **Display aware**: detects monitor count and primary resolution; HiDPI handled by the OS; applies to all monitors.
+- **Redesigned, responsive UI**: a warm editorial look (paper-cream + terracotta + deep teal); on narrow windows (phone / tablet, width < 820pt) it collapses the sidebar into a bottom tab bar, wraps controls, uses fluid 2–3 column cards and larger touch targets. Adapts across desktop, iOS and Android.
+- **Paged lazy loading for large libraries**: an album with many images renders one page (48) at a time with a "Load more" button, on top of on-demand thumbnail decoding — thousands of images stay smooth and stay off your VRAM.
+- **Multi-size adaptation screenshots (`--shots`)**: one command renders the UI at phone / tablet / desktop sizes for each page and saves PNGs, for quick responsive review.
 - **Online daily wallpaper**: fetch the Bing daily image (`cn.bing.com`, reachable in China) with "Learn about this picture", like / dislike, previous / next, set as desktop / lock screen, and daily auto-rotate.
 - **Lock screen**: also set the current wallpaper as the system lock screen (Windows `PersonalizationCSP`; Ubuntu/GNOME `gsettings` lock-screen `picture-uri`; macOS lock screen follows the system wallpaper).
-- **Cross-platform global hotkey**: Windows `RegisterHotKey`; macOS / Linux(X11) via `global-hotkey`; toggle minimize/restore.
+- **Cross-platform global hotkey**: Windows `RegisterHotKey`; macOS / Linux(X11) via `global-hotkey`; toggle show/hide.
 - **Keyboard shortcuts**: `←` previous, `→` next.
 - **Single binary, pure Rust**: no WebView or runtime; embedded CJK font, no missing-glyph boxes.
 
 ## Screens
+
+Warm redesigned look. Desktop uses the left sidebar (toggle with `☰`); narrow/mobile widths switch to a bottom tab bar.
 
 | Library | Slideshow |
 |---|---|
@@ -64,6 +71,12 @@ Dark theme:
 
 ![Dark theme](assets/screenshot-library-dark.png)
 
+Mobile compact layout (bottom tab bar):
+
+| Library | Settings |
+|---|---|
+| ![Mobile library](assets/screenshot-mobile-library.png) | ![Mobile settings](assets/screenshot-mobile-settings.png) |
+
 ## Platforms
 
 | Platform | Status | How the wallpaper is set |
@@ -71,6 +84,8 @@ Dark theme:
 | Windows x64 | ✅ Built & verified | `SystemParametersInfoW` + registry `Control Panel\Desktop` |
 | macOS | ✅ Source supported | `osascript` via System Events |
 | Linux | ✅ Source supported | GNOME `gsettings`, falling back to `feh` |
+| Android | 🧩 UI adapted (mobile toolchain required) | mobile host applies via `WallpaperManager` (needs `SET_WALLPAPER`); touch/narrow layout supported |
+| iOS / iPadOS | 🧩 UI adapted (browse only) | iOS forbids programmatic wallpaper changes; export to Photos and set manually; touch/narrow layout supported |
 
 ## Config location
 
@@ -101,6 +116,14 @@ cargo run --release
 ```bash
 cargo run -- --selftest      # config serialization + image decoder check
 cargo run -- --version       # print version
+```
+
+### Multi-size adaptation screenshots
+
+```bash
+cargo run --release -- --shots ./shots
+# Renders phone(390×844) / tablet(834×1112) / desktop(1440×900)
+# for each page and saves shot-*.png files.
 ```
 
 ## Quick start
