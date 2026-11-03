@@ -11,6 +11,12 @@ use wallpaper_rs::{app, config, wallpaper};
 
 fn main() -> eframe::Result<()> {
     let args: Vec<String> = std::env::args().collect();
+    // Elevated helper: this copy was launched through the UAC prompt by
+    // `elevate::run_elevated`. Do the privileged work, exit with a status code,
+    // and never open a window.
+    if let Some((action, rest)) = wallpaper_rs::elevate::pending_helper_call(&args) {
+        std::process::exit(wallpaper_rs::elevate::run_helper_action(&action, &rest));
+    }
     if args.iter().any(|a| a == "--selftest") {
         std::process::exit(selftest());
     }

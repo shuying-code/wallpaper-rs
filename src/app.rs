@@ -135,8 +135,6 @@ pub struct App {
     force_quit: bool,
     #[cfg(windows)]
     window_hwnd: isize,
-    #[cfg(windows)]
-    hidden_placement: Option<crate::winhide::Placement>,
     monitors: usize,
     primary_res: (i32, i32),
     // Online daily wallpaper (Bing) state.
@@ -193,8 +191,6 @@ impl App {
             force_quit: false,
             #[cfg(windows)]
             window_hwnd,
-            #[cfg(windows)]
-            hidden_placement: None,
             monitors: wallpaper::monitor_count(),
             primary_res: wallpaper::primary_resolution(),
             online_rx: None,
@@ -227,7 +223,11 @@ impl App {
         // Install the system-tray icon (needed to restore the window after the
         // user hides it by clicking "X"). `None` means the platform has no tray;
         // in that case we fall back to the global-hotkey restore path.
-        app.tray = crate::tray::Tray::install(cc.egui_ctx.clone());
+        #[cfg(windows)]
+        let tray_hwnd = window_hwnd;
+        #[cfg(not(windows))]
+        let tray_hwnd = 0isize;
+        app.tray = crate::tray::Tray::install(cc.egui_ctx.clone(), tray_hwnd);
         // Keep timers (slideshow / daily wallpaper) ticking even while hidden.
         {
             let c = cc.egui_ctx.clone();
@@ -555,16 +555,12 @@ impl App {
     /// Hide the main window into the system tray while keeping the app running
     /// (slideshow / daily wallpaper continue in the background).
     fn hide_to_tray(&mut self, ctx: &egui::Context) {
-        // On Windows we keep the HWND "visible" to the OS but move it off-screen
-        // and out of the taskbar. That preserves the egui event loop (a truly
-        // hidden window stops receiving repaints, freezing rotation/timers).
+        // On Windows we keep the HWND on-screen but fully transparent and
+        // click-through (and out of the taskbar). Keeping it on-screen preserves
+        // the egui event loop, so the tray menu / hotkey / timers keep working.
         #[cfg(windows)]
         {
-            if !self.window_hidden {
-                if let Some(p) = unsafe { crate::winhide::hide(self.window_hwnd) } {
-                    self.hidden_placement = Some(p);
-                }
-            }
+            unsafe { crate::winhide::hide_to_tray(self.window_hwnd) };
         }
         #[cfg(not(windows))]
         {
@@ -579,9 +575,7 @@ impl App {
     fn show_window(&mut self, ctx: &egui::Context) {
         #[cfg(windows)]
         {
-            if let Some(p) = self.hidden_placement.take() {
-                unsafe { crate::winhide::show(self.window_hwnd, &p) };
-            }
+            unsafe { crate::winhide::show_from_tray(self.window_hwnd) };
         }
         #[cfg(not(windows))]
         {
@@ -603,6 +597,9 @@ impl App {
         }
         let _ = ctx;
         self.window_hidden = false;
+        // Keep the status line consistent (otherwise it can keep showing
+        // "已隐藏到系统托盘…" after the window is back).
+        self.status = "已唤回窗口".to_string();
     }
 
     /// Really terminate the background process (used by the tray "Quit" item and
@@ -613,6 +610,10 @@ impl App {
         self.cfg.save();
         // Dropping the tray icon sends Shell_NotifyIcon(NIM_DELETE).
         self.tray = None;
+        // "退出" means the whole app: take down every other wallpaper-rs copy
+        // (autostart + manual start, double-clicked exe, stale instances, ...)
+        // so no background slideshow is left running.
+        crate::instances::terminate_other_instances();
         std::process::exit(0)
     }
 
@@ -730,10 +731,7 @@ impl App {
             self.status = "请先选择一张壁纸".to_string();
             return;
         };
-        match wallpaper::set_lock_screen(&path) {
-            Ok(_) => self.status = "已设置锁屏壁纸".to_string(),
-            Err(e) => self.status = format!("锁屏设置失败：{e}"),
-        }
+        self.apply_lock_screen(&path);
     }
 
     fn set_lock_from_online(&mut self) {
@@ -742,8 +740,32 @@ impl App {
             return;
         };
         let path = img.path.clone();
-        match wallpaper::set_lock_screen(&path) {
+        self.apply_lock_screen(&path);
+    }
+
+    /// Set the lock-screen image, transparently requesting administrator rights
+    /// when needed. On Windows the write goes to `HKLM`, so a non-elevated
+    /// attempt is denied (code 5): rather than telling the user to "run as
+    /// administrator", we relaunch ourselves through the UAC prompt, perform the
+    /// write in that elevated copy, then report the outcome and carry on.
+    fn apply_lock_screen(&mut self, path: &Path) {
+        match wallpaper::set_lock_screen(path) {
             Ok(_) => self.status = "已设置锁屏壁纸".to_string(),
+            Err(e) if e.needs_admin && !crate::elevate::is_elevated() => {
+                self.status = "正在请求管理员权限以设置锁屏…".to_string();
+                let arg = path.to_string_lossy().to_string();
+                match crate::elevate::run_elevated(crate::elevate::ACTION_LOCK_SCREEN, &[arg]) {
+                    crate::elevate::ElevationResult::Ok => {
+                        self.status = "已设置锁屏壁纸（已通过管理员授权）".to_string()
+                    }
+                    crate::elevate::ElevationResult::Cancelled => {
+                        self.status = "已取消管理员授权，未设置锁屏壁纸".to_string()
+                    }
+                    crate::elevate::ElevationResult::Failed(msg) => {
+                        self.status = format!("锁屏设置失败：{msg}")
+                    }
+                }
+            }
             Err(e) => self.status = format!("锁屏设置失败：{e}"),
         }
     }
@@ -2347,10 +2369,19 @@ impl App {
                 section_header(ui, "托盘与快捷键");
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new("关闭窗口（右上角 ×）后会隐藏到系统托盘：Windows 右下角通知区域 / macOS 菜单栏 / Linux 状态区，程序继续在后台运行。单击托盘图标可重新打开窗口，右键菜单可退出。")
+                    RichText::new("关闭窗口（右上角 ×）后会隐藏到系统托盘：Windows 右下角通知区域 / macOS 菜单栏 / Linux 状态区，程序继续在后台运行。托盘图标会尽量保持常驻显示；单击托盘图标可重新打开窗口，右键菜单可退出。")
                         .size(11.5)
                         .color(theme::subtext()),
                 );
+                #[cfg(windows)]
+                {
+                    if ghost_button(ui, "打开托盘设置（把图标设为始终显示）").clicked() {
+                        // Use rundll32 (GUI subsystem) so no console window flashes.
+                        let _ = std::process::Command::new("rundll32.exe")
+                            .args(["url.dll,FileProtocolHandler", "ms-settings:taskbar"])
+                            .spawn();
+                    }
+                }
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     let desc = if self.tray.is_some() {
@@ -2474,7 +2505,7 @@ impl App {
                 section_header(ui, "锁屏壁纸");
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new("把当前壁纸同时设为系统锁屏。Windows 通过 PersonalizationCSP（需以管理员身份运行）；Ubuntu / GNOME 通过 gsettings 设置锁屏 picture-uri；macOS 锁屏跟随系统壁纸。")
+                    RichText::new("把当前壁纸同时设为系统锁屏。Windows 通过 PersonalizationCSP 写入 HKLM，首次点击会弹出系统管理员授权（UAC），点「是」后自动完成，无需手动以管理员身份运行；Ubuntu / GNOME 通过 gsettings 设置锁屏 picture-uri；macOS 锁屏跟随系统壁纸。")
                         .size(11.5)
                         .color(theme::subtext()),
                 );
@@ -2724,6 +2755,13 @@ impl eframe::App for App {
                     self.hard_exit();
                 }
             }
+        }
+
+        // Keep `window_hidden` in sync with the OS-level hidden state (tray menu
+        // actions are applied directly on the native thread).
+        #[cfg(windows)]
+        {
+            self.window_hidden = crate::winhide::is_hidden();
         }
 
         // Global hotkey: show / hide the window (bonus shortcut, tray optional).

@@ -75,10 +75,11 @@ pub fn set_wallpaper(path: &Path, fit: Fit) -> Result<(), String> {
 
 /// Set the **lock screen** image (best-effort, platform-specific).
 ///
-/// - Windows: writes `PersonalizationCSP` under HKEY_LOCAL_MACHINE (needs admin).
+/// - Windows: writes `PersonalizationCSP` under HKEY_LOCAL_MACHINE (needs admin);
+///   on failure the caller can retry via [`crate::elevate`] using the UAC prompt.
 /// - Ubuntu / GNOME (Linux): `org.gnome.desktop.screensaver picture-uri`.
 /// - macOS: the lock screen wallpaper follows the system; not separately settable.
-pub fn set_lock_screen(path: &Path) -> Result<(), String> {
+pub fn set_lock_screen(path: &Path) -> Result<(), LockError> {
     #[cfg(windows)]
     {
         return windows_lock(path);
@@ -86,28 +87,65 @@ pub fn set_lock_screen(path: &Path) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         let _ = path;
-        return Err("macOS 锁屏壁纸跟随系统，暂不支持单独设置".to_string());
+        return Err(LockError::plain("macOS 锁屏壁纸跟随系统，暂不支持单独设置"));
     }
     #[cfg(target_os = "android")]
     {
         let _ = path;
-        return Err("Android 暂不支持单独设置锁屏壁纸".to_string());
+        return Err(LockError::plain("Android 暂不支持单独设置锁屏壁纸"));
     }
     #[cfg(target_os = "ios")]
     {
         let _ = path;
-        return Err("iOS 不允许 App 更改锁屏壁纸".to_string());
+        return Err(LockError::plain("iOS 不允许 App 更改锁屏壁纸"));
     }
     #[cfg(all(unix, not(target_os = "macos"), not(target_os = "android"), not(target_os = "ios")))]
     {
-        return linux_lock(path);
+        return linux_lock(path).map_err(LockError::plain);
     }
     #[allow(unreachable_code)]
-    Err("当前平台暂不支持设置锁屏壁纸".to_string())
+    Err(LockError::plain("当前平台暂不支持设置锁屏壁纸"))
 }
 
+/// Failure from [`set_lock_screen`].
+///
+/// Besides the human-readable message it carries a flag telling the caller
+/// whether the write was rejected purely for lack of administrator rights — the
+/// UI then re-runs the action through the Windows UAC prompt instead of just
+/// showing an error.
+#[derive(Debug, Clone)]
+pub struct LockError {
+    pub message: String,
+    /// `true` when the failure is an access-denied that elevation could fix.
+    pub needs_admin: bool,
+}
+
+impl LockError {
+    fn plain(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            needs_admin: false,
+        }
+    }
+    #[cfg(windows)]
+    fn denied(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            needs_admin: true,
+        }
+    }
+}
+
+impl std::fmt::Display for LockError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for LockError {}
+
 #[cfg(windows)]
-fn windows_lock(path: &Path) -> Result<(), String> {
+fn windows_lock(path: &Path) -> Result<(), LockError> {
     use std::os::windows::ffi::OsStrExt;
     let subkey: Vec<u16> = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\PersonalizationCSP"
         .encode_utf16()
@@ -128,9 +166,7 @@ fn windows_lock(path: &Path) -> Result<(), String> {
         )
     };
     if rc != 0 {
-        return Err(format!(
-            "写入锁屏设置失败，需要以管理员身份运行 (code {rc})"
-        ));
+        return Err(lock_reg_error(rc));
     }
     let pwide: Vec<u16> = path
         .as_os_str()
@@ -176,9 +212,20 @@ fn windows_lock(path: &Path) -> Result<(), String> {
         RegCloseKey(hkey);
     }
     if last != 0 {
-        Err(format!("写入锁屏注册表失败 (code {last})"))
+        Err(lock_reg_error(last))
     } else {
         Ok(())
+    }
+}
+
+/// Map a Win32 registry error code from the lock-screen write into a
+/// [`LockError`]. `ERROR_ACCESS_DENIED` (5) means we simply are not elevated.
+#[cfg(windows)]
+fn lock_reg_error(rc: i32) -> LockError {
+    if rc == 5 {
+        LockError::denied(format!("写入锁屏设置被拒绝，需要管理员权限 (code {rc})"))
+    } else {
+        LockError::plain(format!("写入锁屏设置失败 (code {rc})"))
     }
 }
 
@@ -274,38 +321,47 @@ pub fn conflicting_wallpaper_managers() -> Vec<String> {
             ("upupoo", "UPUPOO / 火萤"),
         ];
         let mut out: Vec<String> = Vec::new();
-        unsafe {
-            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-            if snap as isize == -1 {
-                return out;
-            }
-            let mut e: ProcessEntry32W = std::mem::zeroed();
-            e.dw_size = std::mem::size_of::<ProcessEntry32W>() as u32;
-            if Process32FirstW(snap, &mut e) != 0 {
-                loop {
-                    let len = e
-                        .sz_exe_file
-                        .iter()
-                        .position(|&c| c == 0)
-                        .unwrap_or(e.sz_exe_file.len());
-                    let name = String::from_utf16_lossy(&e.sz_exe_file[..len]).to_ascii_lowercase();
-                    for (key, disp) in SIGS {
-                        if name.contains(key) && !out.iter().any(|x| x == disp) {
-                            out.push((*disp).to_string());
-                        }
-                    }
-                    if Process32NextW(snap, &mut e) == 0 {
-                        break;
-                    }
+        for_each_running_process(|name, _pid| {
+            for (key, disp) in SIGS {
+                if name.contains(key) && !out.iter().any(|x| x == disp) {
+                    out.push((*disp).to_string());
                 }
             }
-            CloseHandle(snap);
-        }
+        });
         out
     }
     #[cfg(not(windows))]
     {
         Vec::new()
+    }
+}
+
+/// Enumerate every running process, invoking `f(lowercase exe name, pid)` for
+/// each. Windows only; a no-op on other platforms.
+#[cfg(windows)]
+pub(crate) fn for_each_running_process(mut f: impl FnMut(&str, u32)) {
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap as isize == -1 {
+            return;
+        }
+        let mut e: ProcessEntry32W = std::mem::zeroed();
+        e.dw_size = std::mem::size_of::<ProcessEntry32W>() as u32;
+        if Process32FirstW(snap, &mut e) != 0 {
+            loop {
+                let len = e
+                    .sz_exe_file
+                    .iter()
+                    .position(|&c| c == 0)
+                    .unwrap_or(e.sz_exe_file.len());
+                let name = String::from_utf16_lossy(&e.sz_exe_file[..len]).to_ascii_lowercase();
+                f(&name, e.th32_process_id);
+                if Process32NextW(snap, &mut e) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snap);
     }
 }
 

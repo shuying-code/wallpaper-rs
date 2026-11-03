@@ -43,14 +43,14 @@ You can also click the download links in the in-app **About** page.
 - **Persistent config**: folder, mode, interval, fit, theme and last wallpaper are saved locally.
 - **Launch at login**: one toggle — Windows `Run` key, macOS `LaunchAgent`, Linux autostart `.desktop`.
 - **Full-disk scan**: background scan of all drives for images (skips system/cache dirs, bounded).
-- **Close to system tray**: the top-right "X" hides the window to the system tray (Windows notification area / macOS menu bar / Linux status area) instead of quitting, so rotation keeps running; single-click the tray icon to restore, right-click for Show / Hide / Quit.
+- **Close to system tray (icon kept visible)**: the top-right "X" hides the window to the system tray (Windows notification area / macOS menu bar / Linux status area) instead of quitting; the taskbar button disappears and rotation keeps running. On Windows the app tries to pin its tray icon as always-visible (`IsPromoted` in `NotifyIconSettings`) so Win11 doesn't tuck it into the hidden-icons overflow; Settings also has an "Open tray settings" button to pin it manually. Single-click the tray icon to restore the window centered; the tray menu's Quit is a real exit — it ends this process and also closes every other running wallpaper-rs instance on the machine.
 - **Global hotkey**: `Ctrl+Alt+W` toggles show/hide of the window (auto-fallback to `Ctrl+Alt+Shift+W` / `Ctrl+Alt+F9` if taken).
 - **Display aware**: detects monitor count and primary resolution; HiDPI handled by the OS; applies to all monitors.
 - **Redesigned, responsive UI**: a warm editorial look (paper-cream + terracotta + deep teal); on narrow windows (phone / tablet, width < 820pt) it collapses the sidebar into a bottom tab bar, wraps controls, uses fluid 2–3 column cards and larger touch targets. Adapts across desktop, iOS and Android.
 - **Paged lazy loading for large libraries**: an album with many images renders one page (48) at a time with a "Load more" button, on top of on-demand thumbnail decoding — thousands of images stay smooth and stay off your VRAM.
 - **Multi-size adaptation screenshots (`--shots`)**: one command renders the UI at phone / tablet / desktop sizes for each page and saves PNGs, for quick responsive review.
 - **Online daily wallpaper**: fetch the Bing daily image (`cn.bing.com`, reachable in China) with "Learn about this picture", like / dislike, previous / next, set as desktop / lock screen, and daily auto-rotate.
-- **Lock screen**: also set the current wallpaper as the system lock screen (Windows `PersonalizationCSP`; Ubuntu/GNOME `gsettings` lock-screen `picture-uri`; macOS lock screen follows the system wallpaper).
+- **Lock screen**: also set the current wallpaper as the system lock screen (Windows writes `PersonalizationCSP`, raising the UAC elevation prompt automatically — click Yes to finish, no need to run as administrator manually; Ubuntu/GNOME `gsettings` lock-screen `picture-uri`; macOS lock screen follows the system wallpaper).
 - **Cross-platform global hotkey**: Windows `RegisterHotKey`; macOS / Linux(X11) via `global-hotkey`; toggle show/hide.
 - **Keyboard shortcuts**: `←` previous, `→` next.
 - **Single binary, pure Rust**: no WebView or runtime; embedded CJK font, no missing-glyph boxes.

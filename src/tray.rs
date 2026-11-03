@@ -36,16 +36,22 @@ pub struct Tray {
 impl Tray {
     /// Build the tray icon + context menu. Returns `None` if the platform has no
     /// usable tray backend (the caller then falls back to the old behaviour).
-    pub fn install(ctx: egui::Context) -> Option<Tray> {
+    pub fn install(ctx: egui::Context, window: isize) -> Option<Tray> {
         // Android has no system tray: report "no tray" so the app falls back to
         // normal window behaviour (hide-to-tray buttons are hidden on mobile).
         #[cfg(target_os = "android")]
         {
             let _ = ctx;
+            let _ = window;
             return None;
         }
         #[cfg(not(target_os = "android"))]
         {
+        // The main window HWND (Windows) so tray actions can be applied directly,
+        // without waiting for the egui frame loop.
+        let win_hwnd = window;
+        #[cfg(not(windows))]
+        let _ = win_hwnd;
         let menu = Menu::new();
         let show = MenuItem::new("显示主界面", true, None);
         let hide = MenuItem::new("隐藏到托盘", true, None);
@@ -59,6 +65,11 @@ impl Tray {
         let hide_id = hide.id().clone();
         let quit_id = quit.id().clone();
 
+        // Ask Windows to keep our tray icon in the always-visible part of the
+        // notification area (instead of the Win11 overflow "hidden icons" menu).
+        // Best-effort: the system may only apply it after Explorer restarts or the
+        // user signs in again, so we also retry shortly after the icon is added.
+        promote_tray_icon();
         let icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_tooltip("wallpaper-rs · 桌面壁纸")
@@ -67,6 +78,9 @@ impl Tray {
             .with_menu_on_left_click(false)
             .build()
             .ok()?;
+        // The shell may create the NotifyIconSettings registry entry only after the
+        // icon is registered; retry a few times in the background to pin it.
+        promote_tray_icon_later();
 
         let queue: Arc<Mutex<VecDeque<TrayAction>>> = Arc::new(Mutex::new(VecDeque::new()));
 
@@ -85,6 +99,23 @@ impl Tray {
                     None
                 };
                 if let Some(a) = action {
+                    // Apply immediately on the native thread so the action works
+                    // even if the egui frame loop is idle (e.g. hidden to tray).
+                    #[cfg(windows)]
+                    match a {
+                        TrayAction::Show => unsafe { crate::winhide::show_from_tray(win_hwnd) },
+                        TrayAction::Hide => unsafe { crate::winhide::hide_to_tray(win_hwnd) },
+                        TrayAction::Quit => {
+                            // Safety net: exit even if the UI loop never wakes.
+                            std::thread::spawn(|| {
+                                // Kill sibling instances first, then ourselves.
+                                crate::instances::terminate_other_instances();
+                                std::thread::sleep(std::time::Duration::from_millis(2500));
+                                std::process::exit(0);
+                            });
+                        }
+                    }
+                    // Also enqueue so the UI can sync state / status text.
                     queue.lock().unwrap().push_back(a);
                     ctx.request_repaint();
                 }
@@ -95,6 +126,7 @@ impl Tray {
         {
             let queue = queue.clone();
             let ctx = ctx.clone();
+            let win_hwnd_lc = win_hwnd;
             TrayIconEvent::set_event_handler(Some(move |ev: TrayIconEvent| {
                 let show = matches!(
                     ev,
@@ -108,6 +140,10 @@ impl Tray {
                     }
                 );
                 if show {
+                    #[cfg(windows)]
+                    unsafe {
+                        crate::winhide::show_from_tray(win_hwnd_lc)
+                    };
                     queue.lock().unwrap().push_back(TrayAction::Show);
                     ctx.request_repaint();
                 }
@@ -160,4 +196,60 @@ fn make_icon() -> tray_icon::Icon {
         }
     }
     tray_icon::Icon::from_rgba(rgba, N, N).expect("32x32 RGBA icon is valid")
+}
+
+/// Ask Windows to show our notification-area icon permanently (not tucked into
+/// the Win11 "show hidden icons" overflow). Windows keeps this per-icon state in
+/// `HKCU\Control Panel\NotifyIconSettings\<hash>` as `IsPromoted` (1 = shown).
+///
+/// This is best-effort and has no supported API: setting the flag may only take
+/// effect after Explorer restarts or the user signs in again. Any failure is
+/// silently ignored so it can never break startup.
+#[cfg(windows)]
+fn promote_tray_icon() {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
+    use winreg::RegKey;
+
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    // NOTE: don't `canonicalize` here — on Windows it returns a verbatim path with
+    // a `\\?\` prefix, which would never match the plain `ExecutablePath` value
+    // the shell stores in the registry.
+    let exe_l = exe.to_string_lossy().to_lowercase();
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let Ok(root) = hkcu.open_subkey_with_flags(
+        r"Control Panel\NotifyIconSettings",
+        KEY_READ | KEY_WRITE,
+    ) else {
+        return;
+    };
+    for name in root.enum_keys().flatten() {
+        let Ok(key) = root.open_subkey_with_flags(&name, KEY_READ | KEY_WRITE) else {
+            continue;
+        };
+        let Ok(path) = key.get_value::<String, _>("ExecutablePath") else {
+            continue;
+        };
+        if path.to_lowercase() == exe_l {
+            let _ = key.set_value("IsPromoted", &1u32);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+#[allow(dead_code)]
+fn promote_tray_icon() {}
+
+/// Retry `promote_tray_icon` for a little while after start-up: the shell may
+/// create the per-icon registry entry only once the icon has been added.
+#[allow(dead_code)]
+fn promote_tray_icon_later() {
+    std::thread::spawn(|| {
+        for delay_ms in [500u64, 1500, 3000, 6000, 12000] {
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+            promote_tray_icon();
+        }
+    });
 }

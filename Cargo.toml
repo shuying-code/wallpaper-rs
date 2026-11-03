@@ -1,6 +1,6 @@
 [package]
 name = "wallpaper-rs"
-version = "0.8.1"
+version = "0.9.0"
 edition = "2021"
 description = "Cross-platform desktop wallpaper app (Windows/macOS/Linux): fixed wallpaper or slideshow/rotation, built with Rust + egui."
 license = "MIT"
@@ -31,6 +31,9 @@ raw-window-handle = "0.6"
 [target.'cfg(not(target_os = "android"))'.dependencies]
 rfd = "0.14"
 tray-icon = "0.26"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
 
 [target.'cfg(all(not(windows), not(target_os = "android")))'.dependencies]
 global-hotkey = "0.6"
