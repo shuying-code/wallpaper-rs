@@ -21,12 +21,13 @@
 
 前往 [最新 Release](https://github.com/shuying-code/wallpaper-rs/releases/latest) 下载对应平台安装包：
 
-| 平台 | 下载 |
-|---|---|
-| Windows (x64) | [wallpaper-rs-windows-x64.zip](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-windows-x64.zip) |
-| macOS (Universal, Intel+M 芯片) | [wallpaper-rs-macos-universal.tar.gz](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-macos-universal.tar.gz) |
-| Linux / Ubuntu (x64) | [wallpaper-rs-linux-x64.tar.gz](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-linux-x64.tar.gz) |
-| 全部版本 | [Releases 页面](https://github.com/shuying-code/wallpaper-rs/releases/latest) |
+| 平台 | 便携版 | 安装包 |
+|---|---|---|
+| Windows (x64) | [.zip](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-windows-x64.zip) | [安装器 setup.exe](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-windows-x64-setup.exe) |
+| macOS (Universal, Intel+M 芯片) | [.tar.gz](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-macos-universal.tar.gz) | [.dmg](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-macos-universal.dmg) |
+| Linux / Ubuntu (x64) | [.tar.gz](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-linux-x64.tar.gz) | [.deb](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-linux-x64.deb) · [.AppImage](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-linux-x64.AppImage) |
+| Android | — | [.apk](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-android-universal.apk) |
+| 全部版本 |  | [Releases 页面](https://github.com/shuying-code/wallpaper-rs/releases/latest) |
 
 在应用内「关于」页也可直接点击下载。
 

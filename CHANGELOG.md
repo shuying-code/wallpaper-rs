@@ -2,6 +2,19 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.9.1] - 2026-11-04
+
+### 新增
+- **各平台真正的安装包**：GitHub Actions 在原有便携 zip / tar.gz 之外，新增：
+  - Windows：Inno Setup 安装器 `wallpaper-rs-windows-x64-setup.exe`（开始菜单 / 桌面快捷方式，可在安装向导中选择是否为所有用户安装）；
+  - macOS：`.dmg` 镜像（内含 `Wallpaper Studio.app`，可直接拖入「应用程序」）；
+  - Linux：`.deb` 安装包与 `.AppImage` 单文件（附 `.desktop` 与图标）。
+- **Android APK 由 CI 构建**：新增 `android` job，用 `cargo-apk` 构建 `aarch64` / `armv7` / `x86_64` 三合一的可安装 APK（`wallpaper-rs-android-universal.apk`），CI 内自动生成一次性签名密钥，无需把密钥写进仓库。
+
+### 变更
+- Release 改为在所有平台构建完成后，由新增的 `release` job 统一汇总上传（避免多 job 并发写 Release 的竞态）。
+- 新增 `packaging/` 目录存放安装器定义（Inno `.iss`、macOS `Info.plist`、Linux `.desktop` / `control` / 图标）。
+
 ## [0.9.0] - 2026-11-03
 
 ### 变更 / 修复

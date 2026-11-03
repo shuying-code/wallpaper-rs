@@ -7,39 +7,52 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to attach artifacts to (e.g. v0.1.0)"
+        description: "Release tag to attach artifacts to (e.g. v0.9.1)"
         required: true
-        default: "v0.1.0"
+        default: "v0.9.1"
 
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
+  # ---------------------------------------------------------------- Windows --
   windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build
+      - name: Build (release)
         run: cargo build --release
-      - name: Package
+      - name: Package (portable zip)
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item target/release/wallpaper-rs.exe dist/wallpaper-rs-windows-x64.exe
           Copy-Item README.md dist/README.md
           Compress-Archive -Path dist/wallpaper-rs-windows-x64.exe, dist/README.md -DestinationPath dist/wallpaper-rs-windows-x64.zip -Force
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $ver = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) { $iscc = Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe' }
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y --no-progress
+            $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          }
+          Write-Host "Using $iscc for v$ver"
+          & $iscc "/DMyAppVersion=$ver" packaging\windows\wallpaper-rs.iss
       - uses: actions/upload-artifact@v4
         with:
-          name: wallpaper-rs-windows-x64
-          path: dist/wallpaper-rs-windows-x64.zip
-      - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ inputs.tag || github.ref_name }}
-          files: dist/wallpaper-rs-windows-x64.zip
+          name: windows
+          path: |
+            dist/wallpaper-rs-windows-x64.zip
+            dist/wallpaper-rs-windows-x64-setup.exe
 
+  # ------------------------------------------------------------------ macOS --
   macos:
     runs-on: macos-latest
     steps:
@@ -57,21 +70,34 @@ jobs:
           chmod +x dist/wallpaper-rs-macos-universal
           codesign --force --sign - dist/wallpaper-rs-macos-universal || true
           lipo -info dist/wallpaper-rs-macos-universal
-      - name: Package
+      - name: Package (tar.gz)
         run: |
           cd dist
           tar -czf wallpaper-rs-macos-universal.tar.gz wallpaper-rs-macos-universal
+      - name: Build .app bundle + .dmg
+        run: |
+          set -euo pipefail
+          VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          APP="dist/Wallpaper Studio.app"
+          rm -rf "$APP"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          sed "s/__VERSION__/$VERSION/g" packaging/macos/Info.plist > "$APP/Contents/Info.plist"
+          cp dist/wallpaper-rs-macos-universal "$APP/Contents/MacOS/wallpaper-rs"
+          chmod +x "$APP/Contents/MacOS/wallpaper-rs"
+          codesign --force --deep --sign - "$APP" || true
+          rm -rf dmgroot && mkdir -p dmgroot
+          cp -R "$APP" dmgroot/
+          ln -s /Applications dmgroot/Applications
+          hdiutil create -volname "Wallpaper Studio" -srcfolder dmgroot -ov -format UDZO dist/wallpaper-rs-macos-universal.dmg
+          rm -rf dmgroot
       - uses: actions/upload-artifact@v4
         with:
-          name: wallpaper-rs-macos-universal
-          path: dist/wallpaper-rs-macos-universal.tar.gz
-      - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ inputs.tag || github.ref_name }}
-          files: dist/wallpaper-rs-macos-universal.tar.gz
+          name: macos
+          path: |
+            dist/wallpaper-rs-macos-universal.tar.gz
+            dist/wallpaper-rs-macos-universal.dmg
 
+  # ------------------------------------------------------------------ Linux --
   linux:
     runs-on: ubuntu-latest
     steps:
@@ -87,19 +113,99 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build
         run: cargo build --release
-      - name: Package
+      - name: Package (tar.gz + .deb)
         run: |
+          set -euo pipefail
+          VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
           mkdir -p dist
           cp target/release/wallpaper-rs dist/wallpaper-rs-linux-x64
           chmod +x dist/wallpaper-rs-linux-x64
           tar -czf dist/wallpaper-rs-linux-x64.tar.gz -C dist wallpaper-rs-linux-x64
+          # .deb
+          mkdir -p deb/DEBIAN deb/usr/bin deb/usr/share/applications deb/usr/share/icons/hicolor/256x256/apps
+          sed "s/__VERSION__/$VERSION/g" packaging/linux/control > deb/DEBIAN/control
+          cp target/release/wallpaper-rs deb/usr/bin/wallpaper-rs
+          cp packaging/linux/wallpaper-rs.desktop deb/usr/share/applications/
+          cp packaging/linux/wallpaper-rs.png deb/usr/share/icons/hicolor/256x256/apps/
+          dpkg-deb --build --root-owner-group deb dist/wallpaper-rs-linux-x64.deb
+      - name: Build AppImage
+        run: |
+          set -euo pipefail
+          mkdir -p AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
+          cp target/release/wallpaper-rs AppDir/usr/bin/wallpaper-rs
+          cp packaging/linux/wallpaper-rs.desktop AppDir/wallpaper-rs.desktop
+          cp packaging/linux/wallpaper-rs.desktop AppDir/usr/share/applications/
+          cp packaging/linux/wallpaper-rs.png AppDir/wallpaper-rs.png
+          cp packaging/linux/wallpaper-rs.png AppDir/usr/share/icons/hicolor/256x256/apps/wallpaper-rs.png
+          cat > AppDir/AppRun <<'EOF'
+          #!/bin/sh
+          HERE="$(dirname "$(readlink -f "$0")")"
+          exec "$HERE/usr/bin/wallpaper-rs" "$@"
+          EOF
+          chmod +x AppDir/AppRun
+          wget -q -O appimagetool https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          ARCH=x86_64 ./appimagetool --appimage-extract-and-run AppDir dist/wallpaper-rs-linux-x64.AppImage
       - uses: actions/upload-artifact@v4
         with:
-          name: wallpaper-rs-linux-x64
-          path: dist/wallpaper-rs-linux-x64.tar.gz
-      - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@v2
+          name: linux
+          path: |
+            dist/wallpaper-rs-linux-x64.tar.gz
+            dist/wallpaper-rs-linux-x64.deb
+            dist/wallpaper-rs-linux-x64.AppImage
+
+  # ---------------------------------------------------------------- Android --
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install SDK / NDK packages
+        run: |
+          sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;26.1.10909125"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+      - name: Install cargo-apk
+        run: cargo install cargo-apk --version 0.10.0
+      - name: Build APK (release, signed with generated keystore)
+        run: |
+          set -euo pipefail
+          keytool -genkeypair -v -keystore release.jks -storepass android -keypass android \
+            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Wallpaper Studio, OU=App, O=shuying-code, L=City, S=State, C=CN"
+          export CARGO_APK_RELEASE_KEYSTORE="$PWD/release.jks"
+          export CARGO_APK_RELEASE_KEYSTORE_PASSWORD=android
+          export CARGO_APK_RELEASE_KEYSTORE_KEY_PASSWORD=android
+          cargo apk build --release --lib
+          mkdir -p dist
+          cp target/release/apk/wallpaper-rs.apk dist/wallpaper-rs-android-universal.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: dist/wallpaper-rs-android-universal.apk
+
+  # ---------------------------------------------------------------- Release --
+  release:
+    needs: [ windows, macos, linux, android ]
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: List assets
+        run: ls -laR assets
+      - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
-          files: dist/wallpaper-rs-linux-x64.tar.gz
+          name: ${{ inputs.tag || github.ref_name }}
+          files: assets/*
+          fail_on_unmatched_files: false

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Wallpaper Studio
+GenericName=Wallpaper Manager
+Comment=Desktop wallpaper: fixed image or timed slideshow
+Exec=wallpaper-rs
+Icon=wallpaper-rs
+Terminal=false
+Categories=Utility;Graphics;
+Keywords=wallpaper;background;slideshow;

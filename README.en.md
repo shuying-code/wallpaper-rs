@@ -22,12 +22,13 @@ subscription, no telemetry.**
 
 Get the latest build from the [latest Release](https://github.com/shuying-code/wallpaper-rs/releases/latest):
 
-| Platform | Download |
-|---|---|
-| Windows (x64) | [wallpaper-rs-windows-x64.zip](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-windows-x64.zip) |
-| macOS (Universal, Intel + Apple Silicon) | [wallpaper-rs-macos-universal.tar.gz](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-macos-universal.tar.gz) |
-| Linux / Ubuntu (x64) | [wallpaper-rs-linux-x64.tar.gz](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-linux-x64.tar.gz) |
-| All versions | [Releases page](https://github.com/shuying-code/wallpaper-rs/releases/latest) |
+| Platform | Portable | Installer |
+|---|---|---|
+| Windows (x64) | [.zip](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-windows-x64.zip) | [setup.exe](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-windows-x64-setup.exe) |
+| macOS (Universal, Intel + Apple Silicon) | [.tar.gz](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-macos-universal.tar.gz) | [.dmg](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-macos-universal.dmg) |
+| Linux / Ubuntu (x64) | [.tar.gz](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-linux-x64.tar.gz) | [.deb](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-linux-x64.deb) · [.AppImage](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-linux-x64.AppImage) |
+| Android | — | [.apk](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-android-universal.apk) |
+| All versions |  | [Releases page](https://github.com/shuying-code/wallpaper-rs/releases/latest) |
 
 You can also click the download links in the in-app **About** page.
 

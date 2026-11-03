@@ -4,8 +4,8 @@
 
 | 平台 | 状态 |
 |---|---|
-| Windows / macOS / Linux | ✅ 桌面安装包由 GitHub Actions 构建，发布到 [Releases](https://github.com/shuying-code/wallpaper-rs/releases)。 |
-| **Android** | ✅ **可构建并签名出可安装 APK**（`wallpaper-rs-android-universal.apk`，含 armeabi-v7a / arm64-v8a / x86_64）。界面已做触控 / 窄屏适配。 |
+| Windows / macOS / Linux | ✅ 桌面安装包（zip/tar.gz + `setup.exe`/`.dmg`/`.deb`/`.AppImage`）由 GitHub Actions 构建，发布到 [Releases](https://github.com/shuying-code/wallpaper-rs/releases)。 |
+| **Android** | ✅ **可安装 APK 由 CI（`android` job）构建**（`wallpaper-rs-android-universal.apk`，含 armeabi-v7a / arm64-v8a / x86_64）。界面已做触控 / 窄屏适配。 |
 | **iOS / iPadOS** | ⛔ 需 macOS + Xcode + 苹果签名，Windows 上无法产出可安装包（详见下文）。 |
 
 ---
