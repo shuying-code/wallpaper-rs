@@ -141,7 +141,7 @@ cargo run --release -- --shots ./shots
 2. 点击任意缩略图即可设为固定壁纸；或进入「轮播」选择间隔与顺序后点「开始」。
 3. 在「设置」里切换显示方式与主题；配置会自动保存。
 
-> 详细图文步骤见 [docs/用户操作手册.md](docs/用户操作手册.md)。
+> 详细图文步骤见 [docs/用户操作手册.md](docs/用户操作手册.md)；完整文档索引、使用反馈与协作说明见 [docs/README.md](docs/README.md)、[docs/FEEDBACK.md](docs/FEEDBACK.md)。
 
 ## 目录结构
 
@@ -154,10 +154,17 @@ wallpaper-rs/
 │  ├─ config.rs      # 配置结构、跨平台配置目录
 │  ├─ wallpaper.rs   # 各平台设置壁纸实现
 │  ├─ autostart.rs   # 开机自启（Windows 注册表 / LaunchAgent / autostart）
-│  └─ thumbs.rs      # 缩略图工作线程
-├─ docs/             # 用户操作手册与文档索引
+│  ├─ thumbs.rs      # 缩略图工作线程
+│  └─ 其他模块：albums / diskscan / hotkey / tray / elevate / permissions / platform / shot / online / android / instances / winhide
+├─ tests/            # 集成测试
+├─ packaging/        # Windows / macOS / Linux 打包脚本与资源
+├─ docs/             # 用户操作手册、使用反馈与文档索引
 ├─ assets/           # 截图
-└─ dist/             # 本机构建产物（Windows exe）
+├─ .github/          # Issue 模板与 CI / build / Docker 工作流
+├─ Dockerfile        # 容器镜像构建
+├─ .editorconfig / .gitattributes / rustfmt.toml    # 代码风格与换行统一
+├─ CONTRIBUTING.md / SECURITY.md / CODE_OF_CONDUCT.md
+└─ dist/             # 本机构建产物（git 忽略）
 ```
 
 ## 许可
