@@ -1229,25 +1229,18 @@ impl App { // 实现
             ) // 块结束
             .show(ctx, |ui| { // 语句
                 theme::paint_bg_gradient(ui, ui.max_rect()); // 调用 paint_bg_gradient
-                match self.tab { // 分支匹配
-                    Tab::Library => self.ui_library(ui, actions), // 匹配分支
-                    Tab::Slideshow => self.ui_slideshow(ui, actions), // 匹配分支
-                    Tab::Online => { // 匹配分支
-                        egui::ScrollArea::vertical() // 调用 vertical
-                            .auto_shrink([false, false]) // 语句
-                            .show(ui, |ui| self.ui_online(ui)); // 语句
-                    } // 块结束
-                    Tab::Settings => { // 匹配分支
-                        egui::ScrollArea::vertical() // 调用 vertical
-                            .auto_shrink([false, false]) // 语句
-                            .show(ui, |ui| self.ui_settings(ui, actions)); // 语句
-                    } // 块结束
-                    Tab::About => { // 匹配分支
-                        egui::ScrollArea::vertical() // 调用 vertical
-                            .auto_shrink([false, false]) // 语句
-                            .show(ui, |ui| self.ui_about(ui)); // 语句
-                    } // 块结束
-                } // 块结束
+                // 统一滚动：左侧菜单选中的任意页面，右侧内容都可在垂直方向滑动浏览。
+                egui::ScrollArea::vertical() // 调用 vertical
+                    .auto_shrink([false, false]) // 语句
+                    .show(ui, |ui| { // 语句
+                        match self.tab { // 分支匹配
+                            Tab::Library => self.ui_library(ui, actions), // 匹配分支
+                            Tab::Slideshow => self.ui_slideshow(ui, actions), // 匹配分支
+                            Tab::Online => self.ui_online(ui), // 匹配分支
+                            Tab::Settings => self.ui_settings(ui, actions), // 匹配分支
+                            Tab::About => self.ui_about(ui), // 匹配分支
+                        } // 块结束
+                    }); // 语句
             }); // 语句
     } // 块结束
 
@@ -1461,9 +1454,7 @@ impl App { // 实现
         let mut toggles: Vec<String> = Vec::new(); // 变量 toggles
         let mut load_more: Vec<String> = Vec::new(); // 变量 load_more
 
-        egui::ScrollArea::vertical() // 调用 vertical
-            .auto_shrink([false, false]) // 语句
-            .show(ui, |ui| { // 语句
+        ui.scope(|ui| { // 相册列表统一交由外层滚动区域处理
                 if sections.is_empty() { // 条件分支
                     ui.add_space(24.0); // 语句
                     ui.label( // 语句

@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap; // 引入依赖
 use std::path::{Path, PathBuf}; // 引入依赖
+use std::time::SystemTime; // 引入依赖（读取文件夹修改时间）
 
 #[derive(Debug, Clone, PartialEq, Eq)] // 语句
 pub struct Album { // 结构体 Album
@@ -40,15 +41,32 @@ pub fn build_albums(images: &[PathBuf], root: Option<&Path>) -> Vec<Album> { // 
     for a in &mut albums { // 循环
         a.images.sort(); // 语句
     } // 块结束
-    // Root album (key ".") first, then folders alphabetically.
+    // 按文件夹的修改时间「倒序」排列：离现在越近（时间越新）的文件夹排越上面。
+    // 读取不到时间（例如测试里的虚拟路径）时回退为按名称升序，保证稳定顺序。
     albums.sort_by(|a, b| { // 语句
-        let ra = a.key != "."; // 变量 ra
-        let rb = b.key != "."; // 变量 rb
-        ra.cmp(&rb) // 语句
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())) // 语句
-            .then_with(|| a.key.cmp(&b.key)) // 语句
+        match (folder_mtime(&a.dir), folder_mtime(&b.dir)) { // 分支匹配
+            (Some(ta), Some(tb)) => tb // 语句
+                .cmp(&ta) // 新 → 旧（时间近的在前）
+                .then_with(|| by_name(a, b)), // 语句
+            (Some(_), None) => std::cmp::Ordering::Less, // 有新时间的排前面
+            (None, Some(_)) => std::cmp::Ordering::Greater, // 语句
+            (None, None) => by_name(a, b), // 语句
+        } // 块结束
     }); // 语句
     albums // 语句
+} // 块结束
+
+/// 目录（文件夹）的最后修改时间；读取失败返回 `None`。
+fn folder_mtime(dir: &Path) -> Option<SystemTime> { // 函数 folder_mtime
+    std::fs::metadata(dir).and_then(|m| m.modified()).ok() // 语句
+} // 块结束
+
+/// 名称（不区分大小写）+ key 的稳定次序，作为时间相同时的兜底排序。
+fn by_name(a: &Album, b: &Album) -> std::cmp::Ordering { // 函数 by_name
+    a.name // 语句
+        .to_lowercase() // 语句
+        .cmp(&b.name.to_lowercase()) // 语句
+        .then_with(|| a.key.cmp(&b.key)) // 语句
 } // 块结束
 
 fn album_key(dir: &Path, root: Option<&Path>) -> String { // 函数 album_key
