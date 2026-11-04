@@ -7,11 +7,15 @@
 pub mod albums; // 模块 albums
 pub mod app; // 模块 app
 pub mod autostart; // 模块 autostart
+pub mod bing; // 模块 bing
 pub mod config; // 模块 config
 pub mod diskscan; // 模块 diskscan
 pub mod elevate; // 模块 elevate
 pub mod hotkey; // 模块 hotkey
 pub mod instances; // 模块 instances
+pub mod moewalls; // 模块 moewalls
+pub mod motionbgs; // 模块 motionbgs
+pub mod netbian; // 模块 netbian
 pub mod online; // 模块 online
 pub mod permissions; // 模块 permissions
 pub mod platform; // 模块 platform
@@ -20,6 +24,7 @@ pub mod theme; // 模块 theme
 pub mod thumbs; // 模块 thumbs
 pub mod tray; // 模块 tray
 pub mod wallpaper; // 模块 wallpaper
+pub mod websrc; // 模块 websrc
 
 #[cfg(windows)] // 语句
 pub mod winhide; // 模块 winhide

@@ -28,11 +28,20 @@ const TEX_CAP: usize = 300; // 常量 TEX_CAP
 
 #[derive(PartialEq, Eq, Clone, Copy)] // 语句
 enum Tab { // 枚举 Tab
+    Web4k, // 语句
     Library, // 语句
     Slideshow, // 语句
     Online, // 语句
     Settings, // 语句
     About, // 语句
+} // 块结束
+
+/// 网上壁纸库中，原图下载完成后要执行的动作。
+#[derive(Clone, Copy, PartialEq, Eq)] // 语句
+enum WebApply { // 枚举 WebApply
+    Wallpaper, // 语句
+    Lock, // 语句
+    Save, // 语句
 } // 块结束
 
 enum Action { // 枚举 Action
@@ -145,6 +154,32 @@ pub struct App { // 结构体 App
     online_idx: u32, // 字段 online_idx
     online_boot_checked: bool, // 字段 online_boot_checked
     last_online_auto: Instant, // 字段 last_online_auto
+    // 网上壁纸库（多站点：必应 / 彼岸图网 / MoeWalls / MotionBGs）状态。
+    web_source: usize, // 当前站点下标（0 = 必应）
+    web_items: Vec<crate::websrc::Item>, // 字段 web_items
+    web_page: u32, // 字段 web_page
+    web_total_pages: u32, // 字段 web_total_pages
+    web_has_more: bool, // 字段 web_has_more
+    web_only_fav: bool, // 只看收藏
+    web_error: Option<String>, // 上次列表加载错误
+    web_category: usize, // 字段 web_category
+    web_query: String, // 字段 web_query
+    web_search_active: bool, // 字段 web_search_active
+    web_search_id: Option<u32>, // 字段 web_search_id
+    web_loading: bool, // 字段 web_loading
+    web_loaded_once: bool, // 字段 web_loaded_once
+    web_list_rx: Option<Receiver<Result<crate::websrc::Page, String>>>, // 字段 web_list_rx
+    web_thumb: crate::websrc::ThumbWorker, // 字段 web_thumb
+    web_thumbs: HashMap<String, Option<TextureHandle>>, // 字段 web_thumbs
+    web_thumb_order: Vec<String>, // 字段 web_thumb_order
+    web_full: HashMap<u32, Option<crate::websrc::Full>>, // 字段 web_full
+    web_full_rx: Option<Receiver<(u32, Result<crate::websrc::Full, String>)>>, // 字段 web_full_rx
+    web_preview_id: Option<u32>, // 字段 web_preview_id
+    web_preview_tex: Option<TextureHandle>, // 字段 web_preview_tex
+    web_pending: Option<(u32, WebApply)>, // 字段 web_pending
+    web_busy: bool, // 字段 web_busy
+    web_video_busy: bool, // 动态壁纸（mp4）下载中
+    web_video_rx: Option<Receiver<Result<PathBuf, String>>>, // 字段 web_video_rx
     wallpaper_managers: Vec<String>, // 字段 wallpaper_managers
     /// Compact (phone/tablet or narrow window) layout with a bottom nav bar.
     compact: bool, // 字段 compact
@@ -158,6 +193,12 @@ impl App { // 实现
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self { // 函数 new
         let cfg = Config::load(); // 变量 cfg
         theme::apply(&cc.egui_ctx, cfg.theme == 1); // 调用 apply
+        // 恢复上次「网上壁纸库」的来源 / 分类 / 关键词 / 收藏筛选。
+        let web_src = crate::websrc::source_index_by_key(&cfg.web_source_key); // 变量 web_src
+        let web_cat = cfg.web_category; // 变量 web_cat
+        let web_query = cfg.web_query.clone(); // 变量 web_query
+        let web_search_active = cfg.web_search_active; // 变量 web_search_active
+        let web_only_fav = cfg.web_only_fav; // 变量 web_only_fav
         #[cfg(windows)] // 语句
         let window_hwnd = { // 变量 window_hwnd
             use raw_window_handle::{HasWindowHandle, RawWindowHandle}; // 引入依赖
@@ -200,6 +241,31 @@ impl App { // 实现
             online_idx: 0, // 字段 online_idx
             online_boot_checked: false, // 字段 online_boot_checked
             last_online_auto: Instant::now(), // 字段 last_online_auto
+            web_source: web_src, // 默认必应（排第一）
+            web_items: Vec::new(), // 字段 web_items
+            web_page: 1, // 字段 web_page
+            web_total_pages: 1, // 字段 web_total_pages
+            web_has_more: false, // 字段 web_has_more
+            web_only_fav, // 只看收藏
+            web_error: None, // 上次列表加载错误
+            web_category: web_cat, // 字段 web_category
+            web_query, // 字段 web_query
+            web_search_active, // 字段 web_search_active
+            web_search_id: None, // 字段 web_search_id
+            web_loading: false, // 字段 web_loading
+            web_loaded_once: false, // 字段 web_loaded_once
+            web_list_rx: None, // 字段 web_list_rx
+            web_thumb: crate::websrc::ThumbWorker::new(config_dir().join("webwall")), // 字段 web_thumb
+            web_thumbs: HashMap::new(), // 字段 web_thumbs
+            web_thumb_order: Vec::new(), // 字段 web_thumb_order
+            web_full: HashMap::new(), // 字段 web_full
+            web_full_rx: None, // 字段 web_full_rx
+            web_preview_id: None, // 字段 web_preview_id
+            web_preview_tex: None, // 字段 web_preview_tex
+            web_pending: None, // 字段 web_pending
+            web_busy: false, // 字段 web_busy
+            web_video_busy: false, // 字段 web_video_busy
+            web_video_rx: None, // 字段 web_video_rx
             wallpaper_managers: wallpaper::conflicting_wallpaper_managers(), // 字段 wallpaper_managers
             compact: false, // 字段 compact
             album_limits: HashMap::new(), // 字段 album_limits
@@ -209,6 +275,7 @@ impl App { // 实现
         if let Some(pos) = std::env::args().position(|a| a == "--tab") { // 条件分支
             if let Some(name) = std::env::args().nth(pos + 1) { // 条件分支
                 app.tab = match name.to_ascii_lowercase().as_str() { // 语句
+                    "web" | "netbian" | "web4k" => Tab::Web4k, // 匹配分支
                     "slideshow" => Tab::Slideshow, // 匹配分支
                     "online" => Tab::Online, // 匹配分支
                     "settings" => Tab::Settings, // 匹配分支
@@ -219,6 +286,10 @@ impl App { // 实现
         } // 块结束
         if let Some(sh) = app.shot.as_ref() { // 条件分支
             crate::shot::ensure_dir(&sh.dir); // 调用 ensure_dir
+        } // 块结束
+        // Optional: preselect the online source, e.g. `WP_WEB_SOURCE=2` (MoeWalls).
+        if let Some(v) = std::env::var("WP_WEB_SOURCE").ok().and_then(|s| s.trim().parse::<usize>().ok()) { // 条件分支
+            app.web_source = v.min(crate::websrc::SOURCES.len() - 1); // 语句
         } // 块结束
         // Install the system-tray icon (needed to restore the window after the
         // user hides it by clicking "X"). `None` means the platform has no tray;
@@ -1007,6 +1078,798 @@ impl App { // 实现
     } // 块结束
 
     // ---- UI sections ------------------------------------------------------
+    // ---- 网上壁纸库（多站点） --------------------------------------------
+    /// 载入当前站点分类 / 搜索结果的第 `page` 页（1 基）。后台线程取数据，
+    /// 结果在 `update()` 里轮询。
+    fn web_load(&mut self, page: u32) {
+        // 允许新请求顶替进行中的请求：新接收端会替换旧的，旧结果自动作废。
+        self.web_loading = true;
+        if self.web_only_fav {
+            // 收藏视图不联网，只展示本地收藏。
+            self.web_loading = false;
+            self.web_persist();
+            return;
+        }
+        let page = page.max(1);
+        let src = self.web_source.min(crate::websrc::SOURCES.len() - 1);
+        let cat = self.web_category;
+        let keyword = if self.web_search_active {
+            self.web_query.trim().to_string()
+        } else {
+            String::new()
+        };
+        let sid = self.web_search_id;
+        let name = crate::websrc::SOURCES[src].name;
+        self.status = format!("正在加载{name}（第 {page} 页）…");
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.web_list_rx = Some(rx);
+        std::thread::spawn(move || {
+            let r = crate::websrc::fetch(src, cat, page, &keyword, sid);
+            let _ = tx.send(r);
+        });
+        self.web_persist();
+    }
+
+    /// 切换站点：重置分类 / 关键词并载入第一页。
+    fn web_switch(&mut self, src: usize) {
+        self.web_source = src.min(crate::websrc::SOURCES.len() - 1);
+        self.web_category = 0;
+        self.web_search_active = false;
+        self.web_query.clear();
+        self.web_search_id = None;
+        self.web_preview_id = None;
+        self.web_preview_tex = None;
+        self.web_load(1);
+        self.web_persist();
+    }
+
+    /// 后台取某张壁纸的原图（详情页 → 原图直链 → 下载到缓存）。
+    fn web_prepare(&mut self, id: u32) {
+        if self.web_busy || matches!(self.web_full.get(&id), Some(Some(_))) {
+            return;
+        }
+        let Some(item) = self.web_view_items().into_iter().find(|i| i.id == id) else {
+            return;
+        };
+        self.web_busy = true;
+        self.status = format!("正在解析原图（#{id}）…");
+        let cache = self.web_thumb.cache_dir().to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.web_full_rx = Some(rx);
+        std::thread::spawn(move || {
+            let r = crate::websrc::full(&item, &cache);
+            let _ = tx.send((id, r));
+        });
+    }
+
+    /// 原图就绪后执行选定的动作。
+    fn apply_web_full(&mut self, kind: WebApply, full: &crate::websrc::Full) {
+        match kind {
+            WebApply::Wallpaper => match wallpaper::set_wallpaper(&full.path, self.cfg.fit) {
+                Ok(_) => self.status = format!("已设为桌面壁纸：{}", full.title),
+                Err(e) => self.status = format!("设置失败：{e}"),
+            },
+            WebApply::Lock => self.apply_lock_screen(&full.path),
+            WebApply::Save => self.web_save(full),
+        }
+    }
+
+    /// 当前站点的保存目录：`图片/网上壁纸库/<站点>`。
+    fn web_save_dir(&self) -> PathBuf {
+        let src = self.web_source.min(crate::websrc::SOURCES.len() - 1);
+        crate::config::home()
+            .join("Pictures")
+            .join("网上壁纸库")
+            .join(crate::websrc::SOURCES[src].key)
+    }
+
+    /// 把原图另存到「图片/网上壁纸库/<站点>」目录。
+    fn web_save(&mut self, full: &crate::websrc::Full) {
+        let dir = self.web_save_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let name = full
+            .path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| format!("web_{}.jpg", full.id));
+        let dest = dir.join(name);
+        match std::fs::copy(&full.path, &dest) {
+            Ok(_) => self.status = format!("已下载原图到 {}", dest.display()),
+            Err(e) => self.status = format!("保存失败：{e}"),
+        }
+    }
+
+    /// 下载动态壁纸（mp4）到「图片/网上壁纸库/<站点>」目录。
+    fn web_video_download(&mut self, url: String, name: String) {
+        if self.web_video_busy {
+            return;
+        }
+        self.web_video_busy = true;
+        let src = self.web_source.min(crate::websrc::SOURCES.len() - 1);
+        let referer = crate::websrc::SOURCES[src].referer;
+        let dir = self.web_save_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let dest = dir.join(name);
+        self.status = format!("正在下载动态壁纸…（{}）", dest.display());
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.web_video_rx = Some(rx);
+        std::thread::spawn(move || {
+            let r = crate::websrc::download_to(&url, &dest, referer).map(|_| dest.clone());
+            let _ = tx.send(r);
+        });
+    }
+
+    /// 当前要展示的条目：收藏视图（可按关键词过滤）或当前站点列表。
+    fn web_view_items(&self) -> Vec<crate::websrc::Item> {
+        if self.web_only_fav {
+            let kw = if self.web_search_active {
+                self.web_query.trim().to_lowercase()
+            } else {
+                String::new()
+            };
+            self.cfg
+                .web_favorites
+                .iter()
+                .filter(|f| kw.is_empty() || f.title.to_lowercase().contains(&kw))
+                .map(|f| crate::websrc::Item {
+                    id: f.id,
+                    title: f.title.clone(),
+                    thumb: f.thumb.clone(),
+                    page: f.page.clone(),
+                    src: crate::websrc::source_index_by_key(&f.key),
+                    full_url: f.full_url.clone(),
+                    video_url: f.video_url.clone(),
+                })
+                .collect()
+        } else {
+            self.web_items.clone()
+        }
+    }
+
+    /// 该条目是否已收藏。
+    fn web_is_fav(&self, it: &crate::websrc::Item) -> bool {
+        let key = crate::websrc::SOURCES[it.src.min(crate::websrc::SOURCES.len() - 1)].key;
+        self.cfg
+            .web_favorites
+            .iter()
+            .any(|f| f.key == key && f.id == it.id)
+    }
+
+    /// 切换收藏并持久化。
+    fn web_toggle_fav(&mut self, it: &crate::websrc::Item) {
+        let key = crate::websrc::SOURCES[it.src.min(crate::websrc::SOURCES.len() - 1)].key;
+        if let Some(pos) = self
+            .cfg
+            .web_favorites
+            .iter()
+            .position(|f| f.key == key && f.id == it.id)
+        {
+            self.cfg.web_favorites.remove(pos);
+            self.status = format!("已取消收藏：{}", ellipsis(&it.title, 24));
+        } else {
+            self.cfg.web_favorites.push(crate::config::FavItem {
+                key: key.to_string(),
+                id: it.id,
+                title: it.title.clone(),
+                thumb: it.thumb.clone(),
+                page: it.page.clone(),
+                full_url: it.full_url.clone(),
+                video_url: it.video_url.clone(),
+            });
+            self.status = format!(
+                "已收藏（共 {} 条）：{}",
+                self.cfg.web_favorites.len(),
+                ellipsis(&it.title, 24)
+            );
+        }
+        self.cfg.save();
+    }
+
+    /// 打开预览：优先用已下载原图的纹理，否则请求原图。
+    fn web_open_preview(&mut self, ctx: &egui::Context, id: u32) {
+        self.web_preview_id = Some(id);
+        self.web_preview_tex = None;
+        if let Some(Some(f)) = self.web_full.get(&id).cloned() {
+            if let Some(t) = crate::thumbs::load_image(&f.path, 1600) {
+                let ci = ColorImage::from_rgba_unmultiplied([t.w, t.h], &t.rgba);
+                self.web_preview_tex = Some(ctx.load_texture(
+                    format!("webp:{}", f.path.display()),
+                    ci,
+                    egui::TextureOptions::LINEAR,
+                ));
+            }
+        } else {
+            self.web_prepare(id);
+        }
+    }
+
+    /// 在当前列表 / 收藏内切换上一张 / 下一张预览。
+    fn web_step(&mut self, ctx: &egui::Context, delta: i32) {
+        let items = self.web_view_items();
+        let Some(id) = self.web_preview_id else {
+            return;
+        };
+        let Some(pos) = items.iter().position(|i| i.id == id) else {
+            return;
+        };
+        let np = pos as i32 + delta;
+        if np < 0 || np >= items.len() as i32 {
+            return;
+        }
+        let nid = items[np as usize].id;
+        self.web_open_preview(ctx, nid);
+    }
+
+    /// 清空缩略图磁盘缓存。
+    fn web_clear_cache(&mut self) {
+        let dir = self.web_thumb.cache_dir().to_path_buf();
+        let mut n = 0usize;
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                if std::fs::remove_file(e.path()).is_ok() {
+                    n += 1;
+                }
+            }
+        }
+        self.web_thumb.reset();
+        self.web_thumbs.clear();
+        self.web_thumb_order.clear();
+        self.status = format!("已清理缩略图缓存（{n} 个文件）");
+    }
+
+    /// 持久化网上壁纸库的浏览状态。
+    fn web_persist(&mut self) {
+        let key = crate::websrc::SOURCES[self.web_source.min(crate::websrc::SOURCES.len() - 1)].key;
+        self.cfg.web_source_key = key.to_string();
+        self.cfg.web_category = self.web_category;
+        self.cfg.web_query = self.web_query.clone();
+        self.cfg.web_search_active = self.web_search_active;
+        self.cfg.web_only_fav = self.web_only_fav;
+        self.cfg.save();
+    }
+
+    /// 网上壁纸库缩略图纹理上限（滚动出屏的会被逐出并允许重新拉取）。
+    fn enforce_web_tex_cap(&mut self) { // 函数 enforce_web_tex_cap
+        const WEB_CAP: usize = 160; // 常量 WEB_CAP
+        if self.web_thumb_order.len() <= WEB_CAP { // 条件分支
+            return; // 返回
+        } // 块结束
+        let extra = self.web_thumb_order.len() - WEB_CAP; // 变量 extra
+        let evicted: Vec<String> = self.web_thumb_order.drain(0..extra).collect(); // 变量 evicted
+        for k in evicted { // 循环
+            self.web_thumbs.remove(&k); // 语句
+            self.web_thumb.forget(&k); // 语句
+        } // 块结束
+    } // 块结束
+
+    fn ui_web4k(&mut self, ui: &mut egui::Ui) { // 函数 ui_web4k
+        let src = self.web_source.min(crate::websrc::SOURCES.len() - 1);
+        let s = &crate::websrc::SOURCES[src];
+        ui.horizontal(|ui| { // 语句
+            ui.label(RichText::new("网上壁纸库").size(20.0).strong().color(theme::text())); // 语句
+            ui.add_space(8.0); // 语句
+            chip(ui, &format!("{} · {}", s.name, s.host), theme::accent_soft(), theme::accent()); // 调用 chip
+            ui.add_space(6.0); // 语句
+            chip(ui, s.tag, theme::accent_soft(), theme::accent()); // 调用 chip
+        }); // 语句
+        ui.add_space(2.0); // 语句
+        let note = if s.video { // 变量 note
+            "联网浏览动态壁纸站：支持关键词搜索、按分类浏览、分页翻页；可下载封面设为桌面/锁屏，也可下载动态 MP4 壁纸。" // 语句
+        } else { // 语句
+            "联网浏览高清壁纸：支持关键词搜索、按分类浏览、分页翻页；可下载原图、设为桌面壁纸或锁屏。" // 语句
+        }; // 块结束
+        ui.label( // 语句
+            RichText::new(note) // 调用 new
+                .size(11.5) // 语句
+                .color(theme::subtext()), // 语句
+        ); // 块结束
+        ui.add_space(10.0); // 语句
+
+        // 站点选择器（必应排第一）----------------------------------------
+        ui.label(RichText::new("壁纸来源").size(10.5).color(theme::subtext())); // 语句
+        ui.add_space(4.0); // 语句
+        let mut switch_to: Option<usize> = None; // 变量 switch_to
+        ui.horizontal_wrapped(|ui| { // 语句
+            for (i, sc) in crate::websrc::SOURCES.iter().enumerate() { // 循环
+                if segment(ui, self.web_source == i, sc.name) { // 条件分支
+                    switch_to = Some(i); // 语句
+                } // 块结束
+            } // 块结束
+        }); // 语句
+        if let Some(i) = switch_to { // 条件分支
+            if i != self.web_source { // 条件分支
+                self.web_switch(i); // 语句
+            } // 块结束
+        } // 块结束
+        ui.add_space(10.0); // 语句
+
+        // 收藏 & 缓存工具 ------------------------------------------------
+        ui.horizontal_wrapped(|ui| { // 语句
+            let fav_n = self.cfg.web_favorites.len(); // 变量 fav_n
+            let fav_label = if self.web_only_fav { // 变量 fav_label
+                format!("★ 收藏中（{fav_n}）") // 语句
+            } else { // 语句
+                format!("☆ 仅看收藏（{fav_n}）") // 语句
+            }; // 块结束
+            if segment(ui, self.web_only_fav, &fav_label) { // 条件分支
+                self.web_only_fav = !self.web_only_fav; // 语句
+                self.web_preview_id = None; // 语句
+                self.web_preview_tex = None; // 语句
+                self.web_error = None; // 语句
+                self.web_load(1); // 语句
+                self.web_persist(); // 语句
+            } // 块结束
+            if ghost_button(ui, "清理缩略图缓存").clicked() { // 条件分支
+                self.web_clear_cache(); // 语句
+            } // 块结束
+        }); // 语句
+        ui.add_space(10.0); // 语句
+
+        // 工具条：搜索 / 分类 / 分页 -------------------------------------
+        egui::Frame::none() // 调用 none
+            .fill(theme::card()) // 语句
+            .stroke(Stroke::new(1.0_f32, theme::border())) // 语句
+            .rounding(Rounding::same(14.0)) // 语句
+            .inner_margin(egui::Margin::symmetric(16.0, 12.0)) // 语句
+            .show(ui, |ui| { // 语句
+                ui.horizontal_wrapped(|ui| { // 语句
+                    ui.label(RichText::new("🔍").size(13.0).color(theme::subtext())); // 语句
+                    let w = if self.compact { ui.available_width() - 160.0 } else { 260.0 }; // 变量 w
+                    egui::Frame::none() // 调用 none
+                        .fill(theme::extreme()) // 语句
+                        .stroke(Stroke::new(1.0_f32, theme::border())) // 语句
+                        .rounding(Rounding::same(8.0)) // 语句
+                        .inner_margin(egui::Margin::symmetric(9.0, 4.0)) // 语句
+                        .show(ui, |ui| { // 语句
+                            ui.add( // 语句
+                                egui::TextEdit::singleline(&mut self.web_query) // 调用 singleline
+                                    .hint_text(if self.web_only_fav { // 调用 hint_text
+                                        "在收藏中按标题筛选…" // 语句
+                                    } else { // 语句
+                                        "搜索关键词，如：风景 / 星空…" // 语句
+                                    }) // 块结束
+                                    .desired_width(w.max(120.0)) // 语句
+                                    .frame(false), // 语句
+                            ); // 块结束
+                        }); // 语句
+                    if primary_button(ui, "搜索").clicked() && !self.web_query.trim().is_empty() { // 条件分支
+                        self.web_search_active = true; // 语句
+                        self.web_search_id = None; // 语句
+                        if self.web_only_fav { // 条件分支
+                            self.web_persist(); // 语句
+                        } // 块结束
+                        self.web_load(1); // 语句
+                    } // 块结束
+                    if ghost_button(ui, "返回分类").clicked() { // 条件分支
+                        self.web_search_active = false; // 语句
+                        self.web_search_id = None; // 语句
+                        self.web_query.clear(); // 语句
+                        self.web_load(1); // 语句
+                    } // 块结束
+                    if self.web_loading { // 条件分支
+                        chip(ui, "加载中…", theme::accent_soft(), theme::accent()); // 调用 chip
+                    } // 块结束
+                    if let Some(e) = self.web_error.clone() { // 条件分支
+                        chip(ui, &format!("失败：{}", ellipsis(&e, 22)), theme::accent_soft(), theme::accent()); // 调用 chip
+                        if ghost_button(ui, "重试").clicked() { // 条件分支
+                            self.web_load(self.web_page.max(1)); // 语句
+                        } // 块结束
+                    } // 块结束
+                }); // 语句
+                ui.add_space(8.0); // 语句
+                let cats = s.cats; // 变量 cats
+                if cats.len() > 1 && !self.web_only_fav { // 条件分支
+                    ui.horizontal_wrapped(|ui| { // 语句
+                        for (i, c) in cats.iter().enumerate() { // 循环
+                            let sel = self.web_category == i && !self.web_search_active; // 变量 sel
+                            if segment(ui, sel, c.name) { // 条件分支
+                                self.web_category = i; // 语句
+                                self.web_search_active = false; // 语句
+                                self.web_search_id = None; // 语句
+                                self.web_preview_id = None; // 语句
+                                self.web_preview_tex = None; // 语句
+                                self.web_load(1); // 语句
+                            } // 块结束
+                        } // 块结束
+                    }); // 语句
+                } // 块结束
+                ui.add_space(8.0); // 语句
+                if self.web_only_fav { // 条件分支
+                    ui.horizontal_wrapped(|ui| { // 语句
+                        chip(ui, &format!("收藏 {} 条", self.cfg.web_favorites.len()), theme::accent_soft(), theme::accent()); // 调用 chip
+                        if self.web_search_active { // 条件分支
+                            chip(ui, &format!("筛选：{}", ellipsis(&self.web_query, 16)), theme::extreme(), theme::text()); // 调用 chip
+                        } // 块结束
+                    }); // 语句
+                } else { // 语句
+                ui.horizontal_wrapped(|ui| { // 语句
+                    if ghost_button(ui, "‹ 上一页").clicked() && self.web_page > 1 { // 条件分支
+                        self.web_load(self.web_page - 1); // 语句
+                    } // 块结束
+                    let page_label = if self.web_total_pages > 0 { // 变量 page_label
+                        format!("第 {} / {} 页", self.web_page, self.web_total_pages) // 语句
+                    } else { // 语句
+                        format!("第 {} 页", self.web_page) // 语句
+                    }; // 块结束
+                    chip( // 调用 chip
+                        ui, // 语句
+                        &page_label, // 语句
+                        theme::accent_soft(), // 字段 theme
+                        theme::accent(), // 字段 theme
+                    ); // 块结束
+                    if ghost_button(ui, "下一页 ›").clicked() && self.web_has_more { // 条件分支
+                        self.web_load(self.web_page + 1); // 语句
+                    } // 块结束
+                    chip( // 调用 chip
+                        ui, // 语句
+                        &format!("本页 {} 张", self.web_items.len()), // 语句
+                        theme::extreme(), // 字段 theme
+                        theme::text(), // 字段 theme
+                    ); // 块结束
+                    if self.web_search_active { // 条件分支
+                        chip( // 调用 chip
+                            ui, // 语句
+                            &format!("搜索：{}", ellipsis(&self.web_query, 16)), // 语句
+                            theme::accent_soft(), // 字段 theme
+                            theme::accent(), // 字段 theme
+                        ); // 块结束
+                    } // 块结束
+                    if ghost_button(ui, "刷新").clicked() { // 条件分支
+                        self.web_load(self.web_page.max(1)); // 语句
+                    } // 块结束
+                }); // 语句
+                } // 块结束
+            }); // 语句
+        ui.add_space(12.0); // 语句
+
+        // 预览 + 操作 ---------------------------------------------------
+        if let Some(id) = self.web_preview_id { // 条件分支
+            self.ui_web_preview(ui, id); // 语句
+            ui.add_space(12.0); // 语句
+        } // 块结束
+
+        let items = self.web_view_items(); // 变量 items
+        if items.is_empty() { // 条件分支
+            ui.add_space(20.0); // 语句
+            let msg = if self.web_loading { // 变量 msg
+                "正在加载…" // 语句
+            } else if self.web_only_fav { // 语句
+                if self.web_search_active { // 条件分支
+                    "收藏里没有匹配的条目" // 语句
+                } else { // 语句
+                    "还没有收藏，点卡片上的 ☆ 即可添加" // 语句
+                } // 块结束
+            } else { // 语句
+                "没有结果，换个关键词或分类试试" // 语句
+            }; // 块结束
+            ui.label(RichText::new(msg).size(13.0).color(theme::subtext())); // 语句
+            return; // 返回
+        } // 块结束
+
+        // 网格
+        let avail = ui.available_width(); // 变量 avail
+        let (cols, cell_w) = if self.compact { // 调用 let
+            let n = if avail < 470.0 { 2 } else { 3 }; // 变量 n
+            let cw = ((avail - GAP * (n as f32 - 1.0)) / n as f32 - CARD_PAD * 2.0).max(120.0); // 变量 cw
+            (n, cw) // 语句
+        } else { // 语句
+            let item_w = CELL_W + CARD_PAD * 2.0; // 变量 item_w
+            let n = (((avail + GAP) / (item_w + GAP)).floor() as usize).max(1); // 变量 n
+            (n, CELL_W) // 语句
+        }; // 块结束
+        egui::ScrollArea::vertical() // 调用 vertical
+            .auto_shrink([false, false]) // 语句
+            .show(ui, |ui| { // 语句
+                let mut idx = 0usize; // 变量 idx
+                while idx < items.len() { // 循环
+                    ui.horizontal(|ui| { // 语句
+                        for _ in 0..cols { // 循环
+                            if idx >= items.len() { // 条件分支
+                                break; // 语句
+                            } // 块结束
+                            let it = items[idx].clone(); // 变量 it
+                            self.web_card(ui, &it, cell_w); // 语句
+                            idx += 1; // 语句
+                        } // 块结束
+                    }); // 语句
+                    ui.add_space(GAP); // 语句
+                } // 块结束
+            }); // 语句
+    } // 块结束
+
+    fn ui_web_preview(&mut self, ui: &mut egui::Ui, id: u32) { // 函数 ui_web_preview
+        let view = self.web_view_items(); // 变量 view
+        let item = view.iter().find(|i| i.id == id).cloned(); // 变量 item
+        let fav = item.as_ref().map(|i| self.web_is_fav(i)).unwrap_or(false); // 变量 fav
+        let pos = view.iter().position(|i| i.id == id); // 变量 pos
+        let has_prev = matches!(pos, Some(p) if p > 0); // 变量 has_prev
+        let has_next = matches!(pos, Some(p) if p + 1 < view.len()); // 变量 has_next
+        let full = self.web_full.get(&id).cloned().flatten(); // 变量 full
+        let tex = self.web_preview_tex.as_ref().map(|t| (t.id(), t.size())); // 变量 tex
+        let busy = self.web_busy; // 变量 busy
+        let mut pending_apply: Option<WebApply> = None; // 变量 pending_apply
+        let mut close = false; // 变量 close
+        let mut toggle_fav = false; // 变量 toggle_fav
+        let mut toggle_playlist = false; // 变量 toggle_playlist
+
+        egui::Frame::none() // 调用 none
+            .fill(theme::card()) // 语句
+            .stroke(Stroke::new(1.0_f32, theme::border())) // 语句
+            .rounding(Rounding::same(16.0)) // 语句
+            .inner_margin(egui::Margin::symmetric(16.0, 16.0)) // 语句
+            .show(ui, |ui| { // 语句
+                let w = ui.available_width(); // 变量 w
+                let h = (ui.available_height() * 0.42).clamp(200.0, 460.0); // 变量 h
+                let (rect, _) = // 调用 let
+                    ui.allocate_exact_size(Vec2::new(w, h), egui::Sense::hover()); // 语句
+                { // 语句
+                    let p = ui.painter(); // 变量 p
+                    p.rect_filled(rect, Rounding::same(10.0), theme::extreme()); // 语句
+                    match tex { // 分支匹配
+                        Some((tid, ts)) => { // 匹配分支
+                            let tw = ts[0] as f32; // 变量 tw
+                            let th = ts[1] as f32; // 变量 th
+                            if tw > 0.0 && th > 0.0 { // 条件分支
+                                let s = (rect.width() / tw).min(rect.height() / th); // 变量 s
+                                let size = Vec2::new(tw * s, th * s); // 变量 size
+                                let ir = egui::Rect::from_center_size(rect.center(), size); // 变量 ir
+                                p.image( // 语句
+                                    tid, // 语句
+                                    ir, // 语句
+                                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), // 字段 egui
+                                    Color32::WHITE, // 字段 Color32
+                                ); // 块结束
+                            } // 块结束
+                        } // 块结束
+                        None => { // 匹配分支
+                            p.text( // 语句
+                                rect.center(), // 语句
+                                egui::Align2::CENTER_CENTER, // 字段 egui
+                                if busy { "正在下载原图…" } else { "正在准备…" }, // 语句
+                                egui::FontId::proportional(14.0), // 字段 egui
+                                theme::subtext(), // 字段 theme
+                            ); // 块结束
+                        } // 块结束
+                    } // 块结束
+                } // 块结束
+                ui.add_space(10.0); // 语句
+                ui.horizontal_wrapped(|ui| { // 语句
+                    let title = item.as_ref().map(|i| i.title.clone()).unwrap_or_default(); // 变量 title
+                    ui.label( // 语句
+                        RichText::new(ellipsis(&title, 46)).size(13.5).strong().color(theme::text()), // 字段 RichText
+                    ); // 块结束
+                    if let Some(f) = &full { // 条件分支
+                        ui.label( // 语句
+                            RichText::new(format!( // 调用 new
+                                "#{} · {} KB", // 语句
+                                f.id, // 语句
+                                std::fs::metadata(&f.path).map(|m| m.len() / 1024).unwrap_or(0) // 语句
+                            )) // 语句
+                            .size(10.5) // 语句
+                            .color(theme::subtext()), // 语句
+                        ); // 块结束
+                    } // 块结束
+                }); // 语句
+                ui.add_space(8.0); // 语句
+                ui.horizontal_wrapped(|ui| { // 语句
+                    if primary_button(ui, "设为桌面壁纸").clicked() { // 条件分支
+                        if full.is_some() { // 条件分支
+                            pending_apply = Some(WebApply::Wallpaper); // 语句
+                        } else { // 语句
+                            self.web_pending = Some((id, WebApply::Wallpaper)); // 语句
+                            self.web_prepare(id); // 语句
+                        } // 块结束
+                    } // 块结束
+                    if ghost_button(ui, "设为锁屏").clicked() { // 条件分支
+                        if full.is_some() { // 条件分支
+                            pending_apply = Some(WebApply::Lock); // 语句
+                        } else { // 语句
+                            self.web_pending = Some((id, WebApply::Lock)); // 语句
+                            self.web_prepare(id); // 语句
+                        } // 块结束
+                    } // 块结束
+                    if ghost_button(ui, "下载原图").clicked() { // 条件分支
+                        if full.is_some() { // 条件分支
+                            pending_apply = Some(WebApply::Save); // 语句
+                        } else { // 语句
+                            self.web_pending = Some((id, WebApply::Save)); // 语句
+                            self.web_prepare(id); // 语句
+                        } // 块结束
+                    } // 块结束
+                    if let Some(f) = &full { // 条件分支
+                        if let (Some(url), Some(name)) = (f.video.clone(), f.video_name.clone()) { // 条件分支
+                            if primary_button(ui, "下载动态壁纸 MP4").clicked() && !self.web_video_busy { // 条件分支
+                                self.web_video_download(url, name); // 语句
+                            } // 块结束
+                        } // 块结束
+                    } // 块结束
+                    if self.web_video_busy { // 条件分支
+                        chip(ui, "动态壁纸下载中…", theme::accent_soft(), theme::accent()); // 调用 chip
+                    } // 块结束
+                    if let Some(it) = &item { // 条件分支
+                        if ghost_button(ui, "打开图片页面").clicked() { // 条件分支
+                            open_url(&it.page); // 调用 open_url
+                        } // 块结束
+                    } // 块结束
+                    if star_button(ui, fav) { // 条件分支
+                        toggle_fav = true; // 语句
+                    } // 块结束
+                    if let Some(f) = &full { // 条件分支
+                        let in_pl = self.in_playlist(&f.path); // 变量 in_pl
+                        let lbl = if in_pl { "移出轮播" } else { "+ 加入轮播" }; // 变量 lbl
+                        if ghost_button(ui, lbl).clicked() { // 条件分支
+                            toggle_playlist = true; // 语句
+                        } // 块结束
+                    } // 块结束
+                    if ghost_button(ui, "‹ 上一张").clicked() && has_prev { // 条件分支
+                        self.web_step(&ui.ctx().clone(), -1); // 语句
+                    } // 块结束
+                    if ghost_button(ui, "下一张 ›").clicked() && has_next { // 条件分支
+                        self.web_step(&ui.ctx().clone(), 1); // 语句
+                    } // 块结束
+                    if ghost_button(ui, "关闭预览").clicked() { // 条件分支
+                        close = true; // 语句
+                    } // 块结束
+                    if full.is_none() { // 条件分支
+                        ui.label( // 语句
+                            RichText::new("原图下载中，完成后自动执行所选操作") // 调用 new
+                                .size(10.5) // 语句
+                                .color(theme::subtext()), // 语句
+                        ); // 块结束
+                    } // 块结束
+                }); // 语句
+            }); // 语句
+
+        if toggle_fav { // 条件分支
+            if let Some(it) = &item { // 条件分支
+                self.web_toggle_fav(it); // 语句
+            } // 块结束
+        } // 块结束
+        if toggle_playlist { // 条件分支
+            if let Some(f) = self.web_full.get(&id).cloned().flatten() { // 条件分支
+                if self.in_playlist(&f.path) { // 条件分支
+                    self.remove_from_playlist(&f.path); // 语句
+                } else { // 语句
+                    self.add_to_playlist(&f.path); // 语句
+                } // 块结束
+            } // 块结束
+        } // 块结束
+        if close { // 条件分支
+            self.web_preview_id = None; // 语句
+            self.web_preview_tex = None; // 语句
+        } // 块结束
+        if let Some(kind) = pending_apply { // 条件分支
+            if let Some(Some(f)) = self.web_full.get(&id).cloned() { // 条件分支
+                self.apply_web_full(kind, &f); // 语句
+            } // 块结束
+        } // 块结束
+    } // 块结束
+
+    fn web_card(&mut self, ui: &mut egui::Ui, it: &crate::websrc::Item, cell_w: f32) { // 函数 web_card
+        let referer = crate::websrc::SOURCES[it.src.min(crate::websrc::SOURCES.len() - 1)].referer; // 变量 referer
+        let img_h = (cell_w * 0.6).round().max(72.0); // 变量 img_h
+        let selected = self.web_preview_id == Some(it.id); // 变量 selected
+        let stroke = if selected { // 变量 stroke
+            Stroke::new(2.0_f32, theme::accent()) // 调用 new
+        } else { // 语句
+            Stroke::new(1.0_f32, theme::border()) // 调用 new
+        }; // 块结束
+        let inner = egui::Frame::none() // 变量 inner
+            .fill(theme::card()) // 语句
+            .stroke(stroke) // 语句
+            .rounding(Rounding::same(14.0)) // 语句
+            .inner_margin(egui::Margin::same(CARD_PAD + 2.0)) // 语句
+            .show(ui, |ui| { // 语句
+                ui.vertical(|ui| { // 语句
+                    ui.set_min_width(cell_w); // 语句
+                    ui.set_max_width(cell_w); // 语句
+                    let (rect, resp) = // 调用 let
+                        ui.allocate_exact_size(Vec2::new(cell_w, img_h), egui::Sense::click()); // 语句
+                    if ui.is_rect_visible(rect) // 条件分支
+                        && !self.web_thumbs.contains_key(&it.thumb) // 语句
+                        && !self.web_thumb.is_requested(&it.thumb) // 语句
+                    { // 语句
+                        self.web_thumb.request(&it.thumb, referer); // 语句
+                    } // 块结束
+                    { // 语句
+                        let painter = ui.painter(); // 变量 painter
+                        painter.rect_filled(rect, Rounding::same(9.0), theme::extreme()); // 语句
+                        match self.web_thumbs.get(&it.thumb) { // 分支匹配
+                            Some(Some(tex)) => { // 匹配分支
+                                let ts = tex.size(); // 变量 ts
+                                let tw = ts[0] as f32; // 变量 tw
+                                let th = ts[1] as f32; // 变量 th
+                                if tw > 0.0 && th > 0.0 { // 条件分支
+                                    let s = (rect.width() / tw).min(rect.height() / th); // 变量 s
+                                    let size = Vec2::new(tw * s, th * s); // 变量 size
+                                    let ir = egui::Rect::from_center_size(rect.center(), size); // 变量 ir
+                                    painter.image( // 语句
+                                        tex.id(), // 语句
+                                        ir, // 语句
+                                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), // 字段 egui
+                                        Color32::WHITE, // 字段 Color32
+                                    ); // 块结束
+                                } // 块结束
+                            } // 块结束
+                            Some(None) => { // 匹配分支
+                                painter.text( // 语句
+                                    rect.center(), // 语句
+                                    egui::Align2::CENTER_CENTER, // 字段 egui
+                                    "无法加载", // 语句
+                                    egui::FontId::proportional(12.0), // 字段 egui
+                                    theme::subtext(), // 字段 theme
+                                ); // 块结束
+                            } // 块结束
+                            None => { // 匹配分支
+                                painter.text( // 语句
+                                    rect.center(), // 语句
+                                    egui::Align2::CENTER_CENTER, // 字段 egui
+                                    "载入中…", // 语句
+                                    egui::FontId::proportional(12.0), // 字段 egui
+                                    theme::subtext(), // 字段 theme
+                                ); // 块结束
+                            } // 块结束
+                        } // 块结束
+                        if it.video_url.is_some() { // 条件分支
+                            let badge = egui::Rect::from_min_size(rect.left_top() + Vec2::new(6.0, 6.0), Vec2::new(48.0, 18.0)); // 变量 badge
+                            painter.rect_filled(badge, Rounding::same(9.0), theme::accent()); // 语句
+                            painter.text(badge.center(), egui::Align2::CENTER_CENTER, "▶ MP4", egui::FontId::proportional(10.5), Color32::WHITE); // 语句
+                        } // 块结束
+                        if resp.hovered() { // 条件分支
+                            painter.rect_filled(rect, Rounding::same(9.0), Color32::from_black_alpha(70)); // 语句
+                            let pill = egui::Rect::from_center_size(rect.center(), Vec2::new(104.0, 30.0)); // 变量 pill
+                            painter.rect_filled(pill, Rounding::same(15.0), theme::accent()); // 语句
+                            painter.text( // 语句
+                                pill.center(), // 语句
+                                egui::Align2::CENTER_CENTER, // 字段 egui
+                                "查看 / 操作", // 语句
+                                egui::FontId::proportional(12.5), // 字段 egui
+                                Color32::WHITE, // 字段 Color32
+                            ); // 块结束
+                        } // 块结束
+                    } // 块结束
+                    if resp.hovered() { // 条件分支
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand); // 语句
+                    } // 块结束
+                    if resp.clicked() { // 条件分支
+                        let ctx = ui.ctx().clone(); // 变量 ctx
+                        self.web_open_preview(&ctx, it.id); // 语句
+                    } // 块结束
+                    ui.add_space(8.0); // 语句
+                    ui.add(egui::Label::new( // 语句
+                        RichText::new(ellipsis(&it.title, 18)) // 调用 new
+                            .size(12.0) // 语句
+                            .strong() // 语句
+                            .color(theme::text()), // 语句
+                    )); // 语句
+                    ui.add_space(3.0); // 语句
+                    ui.horizontal_wrapped(|ui| { // 语句
+                        egui::Frame::none() // 调用 none
+                            .fill(theme::extreme()) // 语句
+                            .rounding(Rounding::same(6.0)) // 语句
+                            .inner_margin(egui::Margin::symmetric(7.0, 2.0)) // 语句
+                            .show(ui, |ui| { // 语句
+                                ui.label(RichText::new(format!("#{}", it.id)).size(9.5).color(theme::subtext())); // 语句
+                            }); // 语句
+                        let fav = self.web_is_fav(it); // 变量 fav
+                        if star_button(ui, fav) { // 条件分支
+                            self.web_toggle_fav(it); // 语句
+                        } // 块结束
+                        if selected { // 条件分支
+                            ui.label(RichText::new("● 预览中").size(11.0).color(theme::accent())); // 语句
+                        } // 块结束
+                    }); // 语句
+                }); // 语句
+            }); // 语句
+        if inner.response.hovered() && !selected { // 条件分支
+            ui.painter().rect_stroke( // 语句
+                inner.response.rect, // 语句
+                Rounding::same(14.0), // 字段 Rounding
+                Stroke::new(1.5_f32, theme::accent()), // 字段 Stroke
+            ); // 块结束
+        } // 块结束
+    } // 块结束
+
     fn draw_header(&self, ctx: &egui::Context, actions: &mut Vec<Action>) { // 函数 draw_header
         let (mx, my) = if self.compact { (12.0, 9.0) } else { (20.0, 13.0) }; // 调用 let
         egui::TopBottomPanel::top("hdr") // 调用 top
@@ -1123,7 +1986,11 @@ impl App { // 实现
                 ui.add_space(2.0); // 语句
                 ui.label(RichText::new("工作区").size(10.5).color(theme::subtext())); // 语句
                 ui.add_space(6.0); // 语句
-                if nav_button(ui, "🖼", "壁纸库", self.tab == Tab::Library) { // 条件分支
+                if nav_button(ui, "🌉", "网上壁纸库", self.tab == Tab::Web4k) { // 条件分支
+                    self.tab = Tab::Web4k; // 语句
+                } // 块结束
+                ui.add_space(3.0); // 语句
+                if nav_button(ui, "🖼", "本地壁纸库", self.tab == Tab::Library) { // 条件分支
                     self.tab = Tab::Library; // 语句
                 } // 块结束
                 ui.add_space(3.0); // 语句
@@ -1177,8 +2044,9 @@ impl App { // 实现
                     [r.left_top(), r.right_top()], // 语句
                     Stroke::new(1.0_f32, theme::border()), // 字段 Stroke
                 ); // 块结束
-                let items: [(Tab, &str, &str); 5] = [ // 变量 items
-                    (Tab::Library, "🖼", "壁纸库"), // 语句
+                let items: [(Tab, &str, &str); 6] = [ // 变量 items
+                    (Tab::Web4k, "🌉", "网上"), // 语句
+                    (Tab::Library, "🖼", "本地"), // 语句
                     (Tab::Slideshow, "🎞", "轮播"), // 语句
                     (Tab::Online, "🌐", "每日"), // 语句
                     (Tab::Settings, "⚙", "设置"), // 语句
@@ -1230,6 +2098,7 @@ impl App { // 实现
             .show(ctx, |ui| { // 语句
                 theme::paint_bg_gradient(ui, ui.max_rect()); // 调用 paint_bg_gradient
                 match self.tab { // 分支匹配
+                    Tab::Web4k => self.ui_web4k(ui), // 匹配分支
                     Tab::Library => self.ui_library(ui, actions), // 匹配分支
                     Tab::Slideshow => self.ui_slideshow(ui, actions), // 匹配分支
                     Tab::Online => { // 匹配分支
@@ -2083,7 +2952,7 @@ impl App { // 实现
                     }); // 语句
                     ui.add_space(6.0); // 语句
                     ui.label( // 语句
-                        RichText::new("固定模式：在「壁纸库」点击任意图片即可设为桌面壁纸。") // 调用 new
+                        RichText::new("固定模式：在「本地壁纸库」点击任意图片即可设为桌面壁纸。") // 调用 new
                             .size(12.0) // 语句
                             .color(theme::subtext()), // 语句
                     ); // 块结束
@@ -2125,19 +2994,19 @@ impl App { // 实现
                     ); // 块结束
                     chip(ui, &format!("{n} 张"), theme::accent_soft(), theme::accent()); // 调用 chip
                     if using_all { // 条件分支
-                        chip(ui, "默认 · 全部壁纸库", theme::extreme(), theme::subtext()); // 调用 chip
+                        chip(ui, "默认 · 全部本地壁纸库", theme::extreme(), theme::subtext()); // 调用 chip
                     } // 块结束
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { // 语句
-                        if !using_all && ghost_button(ui, "恢复为全部壁纸库").clicked() { // 条件分支
+                        if !using_all && ghost_button(ui, "恢复为全部本地壁纸库").clicked() { // 条件分支
                             self.cfg.slideshow.clear(); // 语句
-                            self.status = "轮播已恢复为全部壁纸库".to_string(); // 语句
+                            self.status = "轮播已恢复为全部本地壁纸库".to_string(); // 语句
                         } // 块结束
                     }); // 语句
                 }); // 语句
                 ui.add_space(4.0); // 语句
                 ui.label( // 语句
                     RichText::new(if using_all { // 调用 new
-                        "尚未自定义清单：当前轮播壁纸库全部图片。可在「壁纸库」或「每日壁纸」点「加入轮播 / 移出轮播」来自定义。" // 语句
+                        "尚未自定义清单：当前轮播本地壁纸库全部图片。可在「本地壁纸库」或「每日壁纸」点「加入轮播 / 移出轮播」来自定义。" // 语句
                     } else { // 语句
                         "以下图片将按顺序（或随机）轮播；点「移除」可从清单去掉，「设为当前」立即切换。" // 语句
                     }) // 语句
@@ -2147,7 +3016,7 @@ impl App { // 实现
                 ui.add_space(10.0); // 语句
                 if stored.is_empty() { // 条件分支
                     ui.label( // 语句
-                        RichText::new("清单为空，请到「壁纸库」或「每日壁纸」添加图片。") // 调用 new
+                        RichText::new("清单为空，请到「本地壁纸库」或「每日壁纸」添加图片。") // 调用 new
                             .size(12.0) // 语句
                             .color(theme::subtext()), // 语句
                     ); // 块结束
@@ -2223,7 +3092,7 @@ impl App { // 实现
                     if stored.len() > cap { // 条件分支
                         ui.label( // 语句
                             RichText::new(format!( // 调用 new
-                                "仅显示前 {cap} 张（共 {} 张），其余仍在轮播；可在壁纸库卡片上管理。", // 语句
+                                "仅显示前 {cap} 张（共 {} 张），其余仍在轮播；可在本地壁纸库卡片上管理。", // 语句
                                 stored.len() // 语句
                             )) // 语句
                             .size(11.0) // 语句
@@ -2313,7 +3182,7 @@ impl App { // 实现
                 section_header(ui, "行为"); // 调用 section_header
                 ui.add_space(12.0); // 语句
                 ui.horizontal(|ui| { // 语句
-                    setting_label(ui, "扫描包含子文件夹", "载入壁纸库时递归子目录"); // 调用 setting_label
+                    setting_label(ui, "扫描包含子文件夹", "载入本地壁纸库时递归子目录"); // 调用 setting_label
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { // 语句
                         let mut rc = self.cfg.recursive; // 变量 rc
                         if ui.checkbox(&mut rc, "").changed() { // 条件分支
@@ -2859,6 +3728,115 @@ impl eframe::App for App { // 实现
             } // 块结束
         } // 块结束
 
+        // 网上壁纸库：列表请求结果 → 换页 / 更新网格。
+        if let Some(res) = self.web_list_rx.as_ref().and_then(|rx| rx.try_recv().ok()) { // 条件分支
+            self.web_list_rx = None; // 语句
+            self.web_loading = false; // 语句
+            match res { // 分支匹配
+                Ok(p) => { // 匹配分支
+                    self.web_error = None; // 语句
+                    self.web_page = p.page.max(1); // 语句
+                    self.web_total_pages = p.total_pages; // 语句
+                    self.web_has_more = p.has_more; // 语句
+                    if p.search_id.is_some() { // 条件分支
+                        self.web_search_id = p.search_id; // 语句
+                    } // 块结束
+                    self.web_items = p.items; // 语句
+                    self.web_thumb.reset(); // 语句
+                    self.web_thumbs.clear(); // 语句
+                    self.web_thumb_order.clear(); // 语句
+                    self.web_preview_id = None; // 语句
+                    self.web_preview_tex = None; // 语句
+                    let src = self.web_source.min(crate::websrc::SOURCES.len() - 1); // 变量 src
+                    let name = crate::websrc::SOURCES[src].name; // 变量 name
+                    self.status = if self.web_total_pages > 0 { // 语句
+                        format!("{name}：第 {} / {} 页，本页 {} 张", self.web_page, self.web_total_pages, self.web_items.len()) // 语句
+                    } else { // 语句
+                        format!("{name}：第 {} 页，本页 {} 张", self.web_page, self.web_items.len()) // 语句
+                    }; // 块结束
+                } // 块结束
+                Err(e) => { // 匹配分支
+                    self.web_error = Some(e.clone()); // 语句
+                    self.status = format!("网上壁纸库获取失败：{e}"); // 语句
+                } // 块结束
+            } // 块结束
+        } // 块结束
+
+        // 网上壁纸库：缩略图下载结果 → 纹理。
+        for (url, t) in self.web_thumb.poll() { // 循环
+            match t { // 分支匹配
+                Some(t) => { // 匹配分支
+                    let img = ColorImage::from_rgba_unmultiplied([t.w, t.h], &t.rgba); // 变量 img
+                    let tex = ctx.load_texture( // 变量 tex
+                        format!("webt:{url}"), // 语句
+                        img, // 语句
+                        egui::TextureOptions::LINEAR, // 字段 egui
+                    ); // 块结束
+                    if !self.web_thumbs.contains_key(&url) { // 条件分支
+                        self.web_thumb_order.push(url.clone()); // 语句
+                    } // 块结束
+                    self.web_thumbs.insert(url, Some(tex)); // 语句
+                } // 块结束
+                None => { // 匹配分支
+                    if !self.web_thumbs.contains_key(&url) { // 条件分支
+                        self.web_thumb_order.push(url.clone()); // 语句
+                    } // 块结束
+                    self.web_thumbs.insert(url, None); // 语句
+                } // 块结束
+            } // 块结束
+        } // 块结束
+        self.enforce_web_tex_cap(); // 语句
+
+        // 网上壁纸库：原图下载结果 → 预览纹理 + 待办动作。
+        if let Some((id, res)) = self.web_full_rx.as_ref().and_then(|rx| rx.try_recv().ok()) { // 条件分支
+            self.web_full_rx = None; // 语句
+            self.web_busy = false; // 语句
+            match res { // 分支匹配
+                Ok(full) => { // 匹配分支
+                    if self.web_preview_id == Some(id) { // 条件分支
+                        if let Some(t) = crate::thumbs::load_image(&full.path, 1600) { // 条件分支
+                            let ci = ColorImage::from_rgba_unmultiplied([t.w, t.h], &t.rgba); // 变量 ci
+                            let tex = ctx.load_texture( // 变量 tex
+                                format!("webp:{}", full.path.display()), // 语句
+                                ci, // 语句
+                                egui::TextureOptions::LINEAR, // 字段 egui
+                            ); // 块结束
+                            self.web_preview_tex = Some(tex); // 语句
+                        } // 块结束
+                    } // 块结束
+                    self.status = format!("原图已就绪：{}", full.title); // 语句
+                    self.web_full.insert(id, Some(full.clone())); // 语句
+                    if let Some((pid, kind)) = self.web_pending { // 条件分支
+                        if pid == id { // 条件分支
+                            self.web_pending = None; // 语句
+                            self.apply_web_full(kind, &full); // 语句
+                        } // 块结束
+                    } // 块结束
+                } // 块结束
+                Err(e) => { // 匹配分支
+                    self.web_full.insert(id, None); // 语句
+                    self.web_pending = None; // 语句
+                    self.status = format!("原图下载失败：{e}"); // 语句
+                } // 块结束
+            } // 块结束
+        } // 块结束
+
+        // 网上壁纸库：动态壁纸（mp4）下载结果。
+        if let Some(res) = self.web_video_rx.as_ref().and_then(|rx| rx.try_recv().ok()) { // 条件分支
+            self.web_video_rx = None; // 语句
+            self.web_video_busy = false; // 语句
+            match res { // 分支匹配
+                Ok(path) => self.status = format!("动态壁纸已下载到 {}", path.display()), // 匹配分支
+                Err(e) => self.status = format!("动态壁纸下载失败：{e}"), // 匹配分支
+            } // 块结束
+        } // 块结束
+
+        // 首次进入「网上壁纸库」时自动载入第一页。
+        if self.tab == Tab::Web4k && !self.web_loaded_once && !self.web_loading { // 条件分支
+            self.web_loaded_once = true; // 语句
+            self.web_load(1); // 语句
+        } // 块结束
+
         let snap = Snapshot::of(&self.cfg); // 变量 snap
 
         // drain finished thumbnails
@@ -3014,7 +3992,8 @@ fn tab_from_index(i: usize) -> Tab { // 函数 tab_from_index
         1 => Tab::Slideshow, // 匹配分支
         2 => Tab::Online, // 匹配分支
         3 => Tab::Settings, // 匹配分支
-        _ => Tab::About, // 匹配分支
+        4 => Tab::About, // 匹配分支
+        _ => Tab::Web4k, // 匹配分支
     } // 块结束
 } // 块结束
 
@@ -3203,6 +4182,29 @@ fn segment(ui: &mut egui::Ui, selected: bool, text: &str) -> bool { // 函数 se
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand); // 语句
     } // 块结束
     resp.clicked() // 语句
+} // 块结束
+
+/// 卡片角落的收藏星标：已收藏为实心 ★（强调色），未收藏为空心 ☆。
+fn star_button(ui: &mut egui::Ui, fav: bool) -> bool { // 函数 star_button
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(24.0, 20.0), egui::Sense::click()); // 调用 let
+    let color = if fav { // 变量 color
+        theme::accent() // 调用 accent
+    } else if resp.hovered() { // 条件分支
+        theme::text() // 调用 text
+    } else { // 语句
+        theme::subtext() // 调用 subtext
+    }; // 块结束
+    ui.painter().text( // 语句
+        rect.center(), // 语句
+        egui::Align2::CENTER_CENTER, // 字段 egui
+        if fav { "★" } else { "☆" }, // 语句
+        egui::FontId::proportional(15.0), // 字段 egui
+        color, // 语句
+    ); // 块结束
+    if resp.hovered() { // 条件分支
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand); // 语句
+    } // 块结束
+    resp.on_hover_text(if fav { "取消收藏" } else { "收藏" }).clicked() // 语句
 } // 块结束
 
 fn collect_images( // 函数 collect_images
