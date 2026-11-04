@@ -6,6 +6,26 @@ use std::collections::BTreeSet; // 引入依赖
 use std::env; // 引入依赖
 use std::path::PathBuf; // 引入依赖
 
+/// 网上壁纸库的一条收藏（可跨站点，持久化保存）。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)] // 语句
+pub struct FavItem { // 结构体 FavItem
+    /// 所属站点 key（见 `crate::websrc::SOURCES`）。
+    pub key: String, // 字段 key
+    /// 站点内稳定的数字 id。
+    pub id: u32, // 字段 id
+    pub title: String, // 字段 title
+    /// 缩略图直链。
+    pub thumb: String, // 字段 thumb
+    /// 详情页地址。
+    pub page: String, // 字段 page
+    /// 已知原图（封面）直链。
+    #[serde(default)] // 语句
+    pub full_url: Option<String>, // 字段 full_url
+    /// 已知动态壁纸（mp4）直链。
+    #[serde(default)] // 语句
+    pub video_url: Option<String>, // 字段 video_url
+} // 块结束
+
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)] // 语句
 pub enum Mode { // 枚举 Mode
     Fixed, // 语句
@@ -63,6 +83,24 @@ pub struct Config { // 结构体 Config
     /// online daily wallpaper). Empty means "cycle through the whole library".
     #[serde(default)] // 语句
     pub slideshow: Vec<PathBuf>, // 字段 slideshow
+    /// 网上壁纸库：上次使用的站点 key（见 `crate::websrc::SOURCES`）。
+    #[serde(default)] // 语句
+    pub web_source_key: String, // 字段 web_source_key
+    /// 网上壁纸库：上次使用的分类下标。
+    #[serde(default)] // 语句
+    pub web_category: usize, // 字段 web_category
+    /// 网上壁纸库：上次的搜索关键词。
+    #[serde(default)] // 语句
+    pub web_query: String, // 字段 web_query
+    /// 网上壁纸库：上次是否处于搜索态。
+    #[serde(default)] // 语句
+    pub web_search_active: bool, // 字段 web_search_active
+    /// 网上壁纸库：是否只看收藏。
+    #[serde(default)] // 语句
+    pub web_only_fav: bool, // 字段 web_only_fav
+    /// 网上壁纸库：收藏列表。
+    #[serde(default)] // 语句
+    pub web_favorites: Vec<FavItem>, // 字段 web_favorites
 } // 块结束
 
 fn default_true() -> bool { // 函数 default_true
@@ -93,6 +131,12 @@ impl Default for Config { // 实现
             last_online_date: String::new(), // 字段 last_online_date
             wallpaper_only: true, // 字段 wallpaper_only
             slideshow: Vec::new(), // 字段 slideshow
+            web_source_key: String::new(), // 字段 web_source_key
+            web_category: 0, // 字段 web_category
+            web_query: String::new(), // 字段 web_query
+            web_search_active: false, // 字段 web_search_active
+            web_only_fav: false, // 字段 web_only_fav
+            web_favorites: Vec::new(), // 字段 web_favorites
         } // 块结束
     } // 块结束
 } // 块结束

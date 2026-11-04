@@ -16,7 +16,7 @@ pub const SETTLE_FRAMES: u32 = 14; // 常量 SETTLE_FRAMES
 
 pub struct ShotItem { // 结构体 ShotItem
     pub label: String, // 字段 label
-    /// Tab index: 0 Library, 1 Slideshow, 2 Online, 3 Settings, 4 About.
+    /// Tab index: 0 Library, 1 Slideshow, 2 Online, 3 Settings, 4 About, 5 Web4k.
     pub tab: usize, // 字段 tab
     pub w: f32, // 字段 w
     pub h: f32, // 字段 h
@@ -37,8 +37,8 @@ impl Shooter { // 实现
     pub fn new(dir: PathBuf) -> Self { // 函数 new
         let sizes: [(&str, f32, f32); 3] = // 变量 sizes
             [("phone", 390.0, 844.0), ("tablet", 834.0, 1112.0), ("desktop", 1440.0, 900.0)]; // 语句
-        let tabs: [(&str, usize); 4] = // 变量 tabs
-            [("library", 0), ("slideshow", 1), ("settings", 3), ("about", 4)]; // 语句
+        let tabs: [(&str, usize); 5] = // 变量 tabs
+            [("library", 0), ("web", 5), ("slideshow", 1), ("settings", 3), ("about", 4)]; // 语句
         let mut items = Vec::new(); // 变量 items
         for (sname, w, h) in sizes { // 循环
             for (tname, tab) in tabs.iter().copied() { // 循环
