@@ -143,6 +143,16 @@ cargo run --release -- --shots ./shots
 
 > 详细图文步骤见 [docs/用户操作手册.md](docs/用户操作手册.md)；完整文档索引、使用反馈与协作说明见 [docs/README.md](docs/README.md)、[docs/FEEDBACK.md](docs/FEEDBACK.md)。
 
+## 问题反馈（Issues）
+
+遇到问题或有建议？欢迎通过 GitHub Issues 反馈：<https://github.com/shuying-code/wallpaper-rs/issues/new/choose>。提交前请先阅读 **[使用反馈指南](docs/FEEDBACK.md)**。
+
+- **🐞 Bug / 问题反馈**：可复现的功能异常、崩溃、报错
+- **💡 功能建议**：新功能或改进
+- **❓ 使用咨询 / 反馈**：用法、配置与一般性反馈
+
+> 维护者通常**每周集中处理一次** issue。反馈越具体（版本、系统、复现步骤、报错、最小样例），反馈越有帮助，修复越快。
+
 ## 目录结构
 
 ```
