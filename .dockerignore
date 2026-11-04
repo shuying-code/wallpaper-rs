@@ -1,0 +1,15 @@
+# 统一 Docker 构建忽略清单
+target
+dist
+work
+work2
+.git
+.github
+.cargo/config.toml
+**/*.log
+*.log
+*.zip
+*.tar.gz
+*.exe
+*.dll
+*.pdb

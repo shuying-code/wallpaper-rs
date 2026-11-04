@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 📖 README / 使用文档
+    url: https://github.com/shuying-code/wallpaper-rs/#readme
+    about: 功能、平台、构建与常见问题（FAQ）
+  - name: 🧭 使用反馈指南（提交前必读）
+    url: https://github.com/shuying-code/wallpaper-rs/blob/main/docs/FEEDBACK.md
+    about: 如何写出可复现、可快速定位的问题报告
+  - name: 📦 已发布版本 / 下载
+    url: https://github.com/shuying-code/wallpaper-rs/releases
+    about: 各平台安装包与更新说明

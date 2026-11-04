@@ -1,0 +1,43 @@
+name: ❓ 使用咨询 / 反馈
+description: 使用方法疑问、配置问题或一般性使用反馈
+title: "[Question] "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        使用 / 配置类疑问，请先查看 [README](https://github.com/shuying-code/wallpaper-rs/blob/main/README.md) 与 [使用反馈指南](https://github.com/shuying-code/wallpaper-rs/blob/main/docs/FEEDBACK.md)。
+        > 如果是可复现的 Bug，请改用「Bug / 问题反馈」模板。
+
+  - type: textarea
+    id: question
+    attributes:
+      label: 你的问题 / 反馈
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / 构建号
+      placeholder: "v0.9.1 (commit abcdefg)"
+
+  - type: input
+    id: os
+    attributes:
+      label: 操作系统与架构
+      placeholder: "Windows 11 x64 / macOS 14 arm64 / Ubuntu 22.04 x64"
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充信息
+      description: 截图 / 日志 / 相关链接
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 确认事项
+      options:
+        - label: 我已搜索现有 issue 与文档，未找到答案
+          required: true
