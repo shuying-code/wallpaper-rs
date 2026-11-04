@@ -158,6 +158,11 @@ impl App { // 实现
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self { // 函数 new
         let cfg = Config::load(); // 变量 cfg
         theme::apply(&cc.egui_ctx, cfg.theme == 1); // 调用 apply
+        // 让滚动条常驻可见（实心、会占位）：右侧内容「可上下滑动」一目了然，
+        // 且不会像浮动滚动条那样遮住最右侧的内容。
+        cc.egui_ctx.style_mut(|s| { // 调用 style_mut
+            s.spacing.scroll = egui::style::ScrollStyle::solid(); // 语句
+        }); // 语句
         #[cfg(windows)] // 语句
         let window_hwnd = { // 变量 window_hwnd
             use raw_window_handle::{HasWindowHandle, RawWindowHandle}; // 引入依赖
@@ -1240,6 +1245,7 @@ impl App { // 实现
                             Tab::Settings => self.ui_settings(ui, actions), // 匹配分支
                             Tab::About => self.ui_about(ui), // 匹配分支
                         } // 块结束
+                        ui.add_space(24.0); // 底部留白，最后一项不被状态栏贴边
                     }); // 语句
             }); // 语句
     } // 块结束
