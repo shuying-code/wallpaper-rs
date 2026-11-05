@@ -72,6 +72,7 @@ jobs:
           path: |
             dist/wallpaper-rs-windows-x64.zip
             dist/wallpaper-rs-windows-x64-setup.exe
+            dist/wallpaper-rs-windows-x64.exe
 
   # ------------------------------------------------------------------ macOS --
   macos:
