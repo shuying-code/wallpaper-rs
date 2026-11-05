@@ -14,7 +14,6 @@ use crate::websrc::{
     SRC_NETBIAN,
 };
 use std::path::Path;
-use std::time::Duration;
 
 /// 站点根地址（4K 站）。
 pub const BASE: &str = "https://pic.netbian.com";
@@ -39,32 +38,15 @@ pub const CATEGORIES: &[Category] = &[
     Category { name: "4K极简", path: "/s/4Kjijian/" },
 ];
 
+/// 使用全站共享 agent（带 Cookie 罐）：彼岸图网在百度 WAF 之后，必须把首包下发的
+/// `abymg_id` 等 Cookie 回传，否则后续请求会被拦截（「接口访问不通」）。
 fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(8))
-        .timeout_read(Duration::from_secs(30))
-        .user_agent(crate::websrc::UA)
-        .build()
+    crate::websrc::agent()
 }
 
-/// 不自动跟随跳转的 agent，用于读取搜索接口的 302 `Location`。
-fn agent_noredirect() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(8))
-        .timeout_read(Duration::from_secs(30))
-        .user_agent(crate::websrc::UA)
-        .redirects(0)
-        .build()
-}
-
+/// 带浏览器式请求头 + 退避重试的 GET。
 fn get(url: &str) -> Result<String, String> {
-    agent()
-        .get(url)
-        .set("Referer", REFERER)
-        .call()
-        .map_err(|e| format!("请求失败：{e}"))?
-        .into_string()
-        .map_err(|e| format!("读取响应失败：{e}"))
+    crate::websrc::get_text(url, REFERER)
 }
 
 /// 把站点里可能出现的相对地址补全为绝对地址。
@@ -271,39 +253,24 @@ fn fetch_search(keyword: &str, page: u32, id: Option<u32>) -> Result<Page, Strin
     }
 
     // 第 1 页：POST 表单，站点 302 跳到 /search/{id}-0.html。
+    // 现在跟随跳转（沿用同一 Cookie 罐），再用最终 URL 解析搜索结果 id。
     let body = format!(
         "keyboard={}&tempid=1&tbname=photo&show=title",
         urlencode(keyword)
     );
-    let resp = agent_noredirect()
+    let resp = agent()
         .post(&format!("{BASE}/e/search/index.php"))
         .set("Content-Type", "application/x-www-form-urlencoded")
         .set("Referer", REFERER)
+        .set("Accept", crate::websrc::ACCEPT_HTML)
+        .set("Accept-Language", crate::websrc::ACCEPT_LANG)
         .send_string(&body)
         .map_err(|e| format!("搜索请求失败：{e}"))?;
-    let location = resp.header("Location").map(|s| s.to_string());
-    drop(resp);
-
-    let (html, search_id) = match location {
-        Some(loc) => {
-            let sid = parse_search_id(&loc);
-            let html = get(&absolute(&loc))?;
-            let sid = sid.or_else(|| parse_search_id(&html));
-            (html, sid)
-        }
-        None => {
-            let body = agent()
-                .post(&format!("{BASE}/e/search/index.php"))
-                .set("Content-Type", "application/x-www-form-urlencoded")
-                .set("Referer", REFERER)
-                .send_string(&body)
-                .map_err(|e| format!("搜索请求失败：{e}"))?
-                .into_string()
-                .map_err(|e| format!("读取响应失败：{e}"))?;
-            let sid = parse_search_id(&body);
-            (body, sid)
-        }
-    };
+    let final_url = resp.get_url().to_string();
+    let html = resp
+        .into_string()
+        .map_err(|e| format!("读取响应失败：{e}"))?;
+    let search_id = parse_search_id(&final_url).or_else(|| parse_search_id(&html));
 
     let total = parse_total_pages(&html, true).max(1);
     Ok(Page {

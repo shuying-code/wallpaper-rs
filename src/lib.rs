@@ -13,6 +13,7 @@ pub mod diskscan; // 模块 diskscan
 pub mod elevate; // 模块 elevate
 pub mod hotkey; // 模块 hotkey
 pub mod instances; // 模块 instances
+pub mod livewall; // 模块 livewall
 pub mod moewalls; // 模块 moewalls
 pub mod motionbgs; // 模块 motionbgs
 pub mod netbian; // 模块 netbian

@@ -13,7 +13,7 @@ use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
@@ -137,23 +137,53 @@ pub struct Full {
 pub const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
     (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 
+/// 浏览器式 `Accept`：部分站点（含百度 WAF 后的彼岸图网）会按请求头判定是否为脚本。
+pub const ACCEPT_HTML: &str =
+    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8";
+/// 浏览器式 `Accept-Language`。
+pub const ACCEPT_LANG: &str = "zh-CN,zh;q=0.9,en;q=0.8";
+
+/// 全站共享的 HTTP agent。
+///
+/// 关键：复用**同一个**底层 `ureq::Agent`（克隆共享 Arc 状态），让站点下发的
+/// Cookie 在同一会话内持久化、连接池复用。彼岸图网坐落在百度 WAF 之后，首包会
+/// 下发 `abymg_id` 等令牌；旧实现每次请求都新建 agent，令牌无法回传，后续请求
+/// 常被拦截，表现为「接口访问不通」。共享 agent 后即可稳定浏览。
 pub fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(8))
-        .timeout_read(Duration::from_secs(30))
-        .user_agent(UA)
-        .build()
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT
+        .get_or_init(|| {
+            ureq::AgentBuilder::new()
+                .timeout_connect(Duration::from_secs(10))
+                .timeout_read(Duration::from_secs(45))
+                .user_agent(UA)
+                .build()
+        })
+        .clone()
 }
 
-/// GET 文本（带 Referer）。
+/// GET 文本（带 Referer 与浏览器式请求头），失败自动重试 3 次（线性退避）。
 pub fn get_text(url: &str, referer: &str) -> Result<String, String> {
-    agent()
-        .get(url)
-        .set("Referer", referer)
-        .call()
-        .map_err(|e| format!("请求失败：{e}"))?
-        .into_string()
-        .map_err(|e| format!("读取响应失败：{e}"))
+    let mut last = String::new();
+    for attempt in 0..3u64 {
+        match agent()
+            .get(url)
+            .set("Referer", referer)
+            .set("Accept", ACCEPT_HTML)
+            .set("Accept-Language", ACCEPT_LANG)
+            .call()
+        {
+            Ok(resp) => {
+                return resp
+                    .into_string()
+                    .map_err(|e| format!("读取响应失败：{e}"));
+            }
+            Err(e) => last = format!("请求失败：{e}"),
+        }
+        // 短暂退避后重试（0.3s / 0.6s），避免瞬时抖动直接判定失败。
+        std::thread::sleep(Duration::from_millis(300 * (attempt + 1)));
+    }
+    Err(last)
 }
 
 /// 下载任意地址到 `dest`。
@@ -161,6 +191,8 @@ pub fn download_to(url: &str, dest: &Path, referer: &str) -> Result<(), String> 
     let resp = agent()
         .get(url)
         .set("Referer", referer)
+        .set("Accept", "*/*")
+        .set("Accept-Language", ACCEPT_LANG)
         .call()
         .map_err(|e| format!("下载失败：{e}"))?;
     let mut reader = resp.into_reader();

@@ -18,6 +18,10 @@ const CARD_PAD: f32 = 8.0; // 常量 CARD_PAD
 /// Below this content width (or on a phone/tablet) the layout switches to the
 /// compact, touch-friendly single-pane mode with a bottom navigation bar.
 const COMPACT_BREAK: f32 = 820.0; // 常量 COMPACT_BREAK
+/// 「窄桌面」断点：常见笔记本（1366×768 / 1280×720，或高 DPI 缩放后的较小逻辑
+/// 宽度）低于此宽度时，收紧侧栏宽度与页面留白，把更多空间让给内容区——但仍保留
+/// 桌面式侧栏（不进入手机/平板紧凑单栏）。
+const NARROW_BREAK: f32 = 1400.0; // 常量 NARROW_BREAK
 /// How many images each album shows before a "load more" button appears.
 /// Keeps very large folders from building thousands of card widgets per frame.
 const PAGE_IMAGES: usize = 48; // 常量 PAGE_IMAGES
@@ -179,6 +183,8 @@ pub struct App { // 结构体 App
     web_pending: Option<(u32, WebApply)>, // 字段 web_pending
     web_busy: bool, // 字段 web_busy
     web_video_busy: bool, // 动态壁纸（mp4）下载中
+    /// 动态壁纸（mp4）下载完成后是否立即「设为动态壁纸」。
+    web_video_then_live: bool, // 字段 web_video_then_live
     web_video_rx: Option<Receiver<Result<PathBuf, String>>>, // 字段 web_video_rx
     wallpaper_managers: Vec<String>, // 字段 wallpaper_managers
     /// Compact (phone/tablet or narrow window) layout with a bottom nav bar.
@@ -187,6 +193,8 @@ pub struct App { // 结构体 App
     album_limits: HashMap<String, usize>, // 字段 album_limits
     /// Active screen-size adaptation screenshot run (from `--shots <dir>`).
     shot: Option<crate::shot::Shooter>, // 字段 shot
+    /// 是否已按显示器可用范围校正过初始窗口尺寸（只做一次）。
+    window_fitted: bool, // 字段 window_fitted
 } // 块结束
 
 impl App { // 实现
@@ -270,11 +278,13 @@ impl App { // 实现
             web_pending: None, // 字段 web_pending
             web_busy: false, // 字段 web_busy
             web_video_busy: false, // 字段 web_video_busy
+            web_video_then_live: false, // 字段 web_video_then_live
             web_video_rx: None, // 字段 web_video_rx
             wallpaper_managers: wallpaper::conflicting_wallpaper_managers(), // 字段 wallpaper_managers
             compact: false, // 字段 compact
             album_limits: HashMap::new(), // 字段 album_limits
             shot: crate::shot::Shooter::from_env(), // 字段 shot
+            window_fitted: false, // 字段 window_fitted
         }; // 块结束
         // Optional deep-link to a tab, e.g. `wallpaper-rs --tab settings`.
         if let Some(pos) = std::env::args().position(|a| a == "--tab") { // 条件分支
@@ -684,6 +694,8 @@ impl App { // 实现
     fn hard_exit(&mut self) -> ! { // 函数 hard_exit
         self.force_quit = true; // 语句
         self.cfg.save(); // 语句
+        // 停掉动态壁纸宿主：结束 mpv 子进程并销毁桌面层窗口，避免残留。
+        let _ = crate::livewall::stop(); // 变量 _
         // Dropping the tray icon sends Shell_NotifyIcon(NIM_DELETE).
         self.tray = None; // 语句
         // "退出" means the whole app: take down every other wallpaper-rs copy
@@ -735,6 +747,13 @@ impl App { // 实现
             self.tab = tab_from_index(tab); // 语句
             if settle == 0 && !pending { // 条件分支
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h))); // 语句
+            } // 块结束
+            // In screenshot mode, open a preview on the web tab so the captured
+            // frame shows the "preview + list together" layout we are verifying.
+            if self.tab == Tab::Web4k && self.web_preview_id.is_none() { // 条件分支
+                if let Some(first) = self.web_items.first().map(|i| i.id) { // 条件分支
+                    self.web_open_preview(ctx, first); // 语句
+                } // 块结束
             } // 块结束
         } // 块结束
         false // 语句
@@ -952,7 +971,7 @@ impl App { // 实现
             .inner_margin(egui::Margin::symmetric(16.0, 16.0)) // 语句
             .show(ui, |ui| { // 语句
                 let w = ui.available_width(); // 变量 w
-                let h = (ui.available_height() * 0.5).clamp(180.0, 420.0); // 变量 h
+                let h = preview_img_height(ui.ctx(), 0.5); // 变量 h
                 let (rect, _) = // 调用 let
                     ui.allocate_exact_size(Vec2::new(w, h), egui::Sense::hover()); // 语句
                 { // 语句
@@ -1159,6 +1178,14 @@ impl App { // 实现
         }
     }
 
+    /// 把已下载的 mp4 设为动态壁纸（Windows 自建桌面宿主 + mpv）。
+    fn apply_live_wallpaper(&mut self, path: &Path) {
+        match crate::livewall::set_live_wallpaper(path) {
+            Ok(_) => self.status = format!("已设为动态壁纸：{}", path.display()),
+            Err(e) => self.status = format!("动态壁纸设置失败：{e}"),
+        }
+    }
+
     /// 当前站点的保存目录：`图片/网上壁纸库/<站点>`。
     fn web_save_dir(&self) -> PathBuf {
         let src = self.web_source.min(crate::websrc::SOURCES.len() - 1);
@@ -1185,11 +1212,13 @@ impl App { // 实现
     }
 
     /// 下载动态壁纸（mp4）到「图片/网上壁纸库/<站点>」目录。
-    fn web_video_download(&mut self, url: String, name: String) {
+    /// `then_live` 为真时，下载完成后立即「设为动态壁纸」。
+    fn web_video_download(&mut self, url: String, name: String, then_live: bool) {
         if self.web_video_busy {
             return;
         }
         self.web_video_busy = true;
+        self.web_video_then_live = then_live;
         let src = self.web_source.min(crate::websrc::SOURCES.len() - 1);
         let referer = crate::websrc::SOURCES[src].referer;
         let dir = self.web_save_dir();
@@ -1348,6 +1377,47 @@ impl App { // 实现
     } // 块结束
 
     fn ui_web4k(&mut self, ui: &mut egui::Ui) { // 函数 ui_web4k
+        // 「预览 + 操作」常驻：点开大图后固定成独立区域（宽屏在右侧、窄屏在底部），
+        // 主列的来源选择 / 工具条 / 网格各自滚动——上下滑动列表时预览与操作按钮始终存在，
+        // 不会像以前那样随整页滚出屏幕、变成「一滑动就没了」。
+        if let Some(id) = self.web_preview_id { // 条件分支
+            if self.compact { // 条件分支
+                egui::TopBottomPanel::bottom("web_preview") // 调用 bottom
+                    .resizable(false) // 语句
+                    .frame(egui::Frame::none().inner_margin(egui::Margin::symmetric(0.0, 6.0))) // 语句
+                    .show_inside(ui, |ui| { // 语句
+                        egui::ScrollArea::vertical() // 调用 vertical
+                            .scroll_bar_visibility(egui::containers::scroll_area::ScrollBarVisibility::AlwaysVisible) // 语句
+                            .max_height((ui.available_height() * 0.55).max(200.0)) // 语句
+                            .show(ui, |ui| self.ui_web_preview(ui, id)); // 语句
+                    }); // 语句
+            } else { // 语句
+                // 笔记本窄屏时预览栏收窄，给左侧列表留出更多列。
+                let narrow = is_narrow(ui.ctx()); // 变量 narrow
+                let frac = if narrow { 0.30 } else { 0.34 }; // 变量 frac
+                let max_w = if narrow { 380.0 } else { 460.0 }; // 变量 max_w
+                let w = (ui.available_width() * frac).clamp(280.0, max_w); // 变量 w
+                egui::SidePanel::right("web_preview") // 调用 right
+                    .resizable(false) // 语句
+                    .exact_width(w) // 语句
+                    .frame(egui::Frame::none().inner_margin(egui::Margin { left: 12.0, right: 0.0, top: 0.0, bottom: 0.0 })) // 语句
+                    .show_inside(ui, |ui| { // 语句
+                        vscroll() // 调用 vscroll
+                            .show(ui, |ui| self.ui_web_preview(ui, id)); // 语句
+                    }); // 语句
+            } // 块结束
+        } // 块结束
+
+        // 主列单独滚动：来源选择 / 工具条 / 网格自上而下一起滚动（不再嵌套独立滚动区）。
+        // 滚动条常驻可见：点开预览 / 操作后主列依然能上下滑动，不会「一操作就没有了」。
+        vscroll() // 调用 vscroll
+            .show(ui, |ui| { // 语句
+                self.ui_web4k_body(ui); // 语句
+                ui.add_space(24.0); // 底部留白，最后一行不被状态栏贴边
+            }); // 语句
+    } // 块结束
+
+    fn ui_web4k_body(&mut self, ui: &mut egui::Ui) { // 函数 ui_web4k_body
         let src = self.web_source.min(crate::websrc::SOURCES.len() - 1);
         let s = &crate::websrc::SOURCES[src];
         ui.horizontal(|ui| { // 语句
@@ -1359,7 +1429,7 @@ impl App { // 实现
         }); // 语句
         ui.add_space(2.0); // 语句
         let note = if s.video { // 变量 note
-            "联网浏览动态壁纸站：支持关键词搜索、按分类浏览、分页翻页；可下载封面设为桌面/锁屏，也可下载动态 MP4 壁纸。" // 语句
+            "联网浏览动态壁纸站：支持关键词搜索、按分类浏览、分页翻页；可下载封面设为桌面/锁屏，也可下载动态 MP4，或直接「设为动态壁纸」。" // 语句
         } else { // 语句
             "联网浏览高清壁纸：支持关键词搜索、按分类浏览、分页翻页；可下载原图、设为桌面壁纸或锁屏。" // 语句
         }; // 块结束
@@ -1527,12 +1597,7 @@ impl App { // 实现
             }); // 语句
         ui.add_space(12.0); // 语句
 
-        // 预览 + 操作 ---------------------------------------------------
-        if let Some(id) = self.web_preview_id { // 条件分支
-            self.ui_web_preview(ui, id); // 语句
-            ui.add_space(12.0); // 语句
-        } // 块结束
-
+        // 预览 + 操作已移到主列之外常驻渲染（见 ui_web4k），这里只渲染网格。
         let items = self.web_view_items(); // 变量 items
         if items.is_empty() { // 条件分支
             ui.add_space(20.0); // 语句
@@ -1551,35 +1616,24 @@ impl App { // 实现
             return; // 返回
         } // 块结束
 
-        // 网格
+        // 网格：直接跟随整页滚动（不再嵌套独立滚动区，避免出现「滑动即消失」）。
         let avail = ui.available_width(); // 变量 avail
-        let (cols, cell_w) = if self.compact { // 调用 let
-            let n = if avail < 470.0 { 2 } else { 3 }; // 变量 n
-            let cw = ((avail - GAP * (n as f32 - 1.0)) / n as f32 - CARD_PAD * 2.0).max(120.0); // 变量 cw
-            (n, cw) // 语句
-        } else { // 语句
-            let item_w = CELL_W + CARD_PAD * 2.0; // 变量 item_w
-            let n = (((avail + GAP) / (item_w + GAP)).floor() as usize).max(1); // 变量 n
-            (n, CELL_W) // 语句
-        }; // 块结束
-        egui::ScrollArea::vertical() // 调用 vertical
-            .auto_shrink([false, false]) // 语句
-            .show(ui, |ui| { // 语句
-                let mut idx = 0usize; // 变量 idx
-                while idx < items.len() { // 循环
-                    ui.horizontal(|ui| { // 语句
-                        for _ in 0..cols { // 循环
-                            if idx >= items.len() { // 条件分支
-                                break; // 语句
-                            } // 块结束
-                            let it = items[idx].clone(); // 变量 it
-                            self.web_card(ui, &it, cell_w); // 语句
-                            idx += 1; // 语句
-                        } // 块结束
-                    }); // 语句
-                    ui.add_space(GAP); // 语句
+        let cols = grid_cols(avail, self.compact); // 变量 cols
+        let cell_w = grid_cell_w(avail, self.compact); // 变量 cell_w
+        let mut idx = 0usize; // 变量 idx
+        while idx < items.len() { // 循环
+            ui.horizontal(|ui| { // 语句
+                for _ in 0..cols { // 循环
+                    if idx >= items.len() { // 条件分支
+                        break; // 语句
+                    } // 块结束
+                    let it = items[idx].clone(); // 变量 it
+                    self.web_card(ui, &it, cell_w); // 语句
+                    idx += 1; // 语句
                 } // 块结束
             }); // 语句
+            ui.add_space(GAP); // 语句
+        } // 块结束
     } // 块结束
 
     fn ui_web_preview(&mut self, ui: &mut egui::Ui, id: u32) { // 函数 ui_web_preview
@@ -1604,7 +1658,9 @@ impl App { // 实现
             .inner_margin(egui::Margin::symmetric(16.0, 16.0)) // 语句
             .show(ui, |ui| { // 语句
                 let w = ui.available_width(); // 变量 w
-                let h = (ui.available_height() * 0.42).clamp(200.0, 460.0); // 变量 h
+                // 侧栏 / 底部常驻面板里给更紧凑的预览高度（窄屏尤其要省空间）。
+                let frac = if self.compact { 0.24 } else { 0.42 }; // 变量 frac
+                let h = preview_img_height(ui.ctx(), frac); // 变量 h
                 let (rect, _) = // 调用 let
                     ui.allocate_exact_size(Vec2::new(w, h), egui::Sense::hover()); // 语句
                 { // 语句
@@ -1684,8 +1740,23 @@ impl App { // 实现
                     if let Some(f) = &full { // 条件分支
                         if let (Some(url), Some(name)) = (f.video.clone(), f.video_name.clone()) { // 条件分支
                             if primary_button(ui, "下载动态壁纸 MP4").clicked() && !self.web_video_busy { // 条件分支
-                                self.web_video_download(url, name); // 语句
+                                self.web_video_download(url.clone(), name.clone(), false); // 语句
                             } // 块结束
+                            // 设为动态壁纸：已下载过就直接设置，否则先下载再自动设置。
+                            if ghost_button(ui, "设为动态壁纸").clicked() && !self.web_video_busy { // 条件分支
+                                let dest = self.web_save_dir().join(&name); // 变量 dest
+                                if dest.is_file() { // 条件分支
+                                    self.apply_live_wallpaper(&dest); // 语句
+                                } else { // 语句
+                                    self.web_video_download(url, name, true); // 语句
+                                } // 块结束
+                            } // 块结束
+                        } // 块结束
+                    } // 块结束
+                    if crate::livewall::active_video().is_some() { // 条件分支
+                        if ghost_button(ui, "停止动态壁纸").clicked() { // 条件分支
+                            let _ = crate::livewall::stop(); // 变量 _
+                            self.status = "已停止动态壁纸".to_string(); // 语句
                         } // 块结束
                     } // 块结束
                     if self.web_video_busy { // 条件分支
@@ -1876,7 +1947,13 @@ impl App { // 实现
     } // 块结束
 
     fn draw_header(&self, ctx: &egui::Context, actions: &mut Vec<Action>) { // 函数 draw_header
-        let (mx, my) = if self.compact { (12.0, 9.0) } else { (20.0, 13.0) }; // 调用 let
+        let (mx, my) = if self.compact { // 调用 let
+            (12.0, 9.0) // 语句
+        } else if is_narrow(ctx) { // 条件分支
+            (14.0, 10.0) // 语句
+        } else { // 语句
+            (20.0, 13.0) // 语句
+        }; // 块结束
         egui::TopBottomPanel::top("hdr") // 调用 top
             .frame( // 语句
                 egui::Frame::none() // 调用 none
@@ -1981,7 +2058,7 @@ impl App { // 实现
         } // 块结束
         egui::SidePanel::left("nav") // 调用 left
             .resizable(false) // 语句
-            .exact_width(214.0) // 语句
+            .exact_width(if is_narrow(ctx) { 188.0 } else { 214.0 }) // 语句
             .frame( // 语句
                 egui::Frame::none() // 调用 none
                     .fill(theme::surface()) // 语句
@@ -2094,11 +2171,12 @@ impl App { // 实现
     } // 块结束
 
     fn draw_center(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) { // 函数 draw_center
+        let cx = if is_narrow(ctx) { 12.0 } else { 18.0 }; // 变量 cx
         egui::CentralPanel::default() // 调用 default
             .frame( // 语句
                 egui::Frame::none() // 调用 none
                     .fill(theme::bg()) // 语句
-                    .inner_margin(egui::Margin::symmetric(18.0, 14.0)), // 语句
+                    .inner_margin(egui::Margin::symmetric(cx, 14.0)), // 语句
             ) // 块结束
             .show(ctx, |ui| { // 语句
                 theme::paint_bg_gradient(ui, ui.max_rect()); // 调用 paint_bg_gradient
@@ -2108,8 +2186,7 @@ impl App { // 实现
                     Tab::Web4k => self.ui_web4k(ui), // 匹配分支
                     // 其余页面统一包一层可垂直滚动区域，并在底部补留白。
                     _ => { // 语句
-                        egui::ScrollArea::vertical() // 调用 vertical
-                            .auto_shrink([false, false]) // 语句
+                        vscroll() // 调用 vscroll
                             .show(ui, |ui| { // 语句
                                 match self.tab { // 分支匹配
                                     Tab::Library => self.ui_library(ui, actions), // 匹配分支
@@ -2730,7 +2807,7 @@ impl App { // 实现
             .map(|(p, _)| p.clone()) // 语句
             .or_else(|| self.current_path()); // 语句
         let w = ui.available_width(); // 变量 w
-        let h = (ui.available_height() * 0.56).clamp(200.0, 460.0); // 变量 h
+        let h = preview_img_height(ui.ctx(), 0.56); // 变量 h
 
         // Preview card ------------------------------------------------------
         egui::Frame::none() // 调用 none
@@ -3607,6 +3684,25 @@ impl eframe::App for App { // 实现
             self.applied_theme = self.cfg.theme; // 语句
         } // 块结束
 
+        // 适配笔记本等不同屏幕尺寸：首帧把窗口收进当前显示器的可用范围
+        // （预留任务栏 / 标题栏），只缩小不放大，也不打扰已最大化的窗口。
+        if !self.window_fitted && self.shot.is_none() { // 条件分支
+            self.window_fitted = true; // 语句
+            let (mon, maximized, cur) = ctx.input(|i| { // 调用 let
+                let v = i.viewport(); // 变量 v
+                (v.monitor_size, v.maximized, v.inner_rect.map(|r| r.size())) // 语句
+            }); // 块结束
+            if let (Some(mon), Some(cur)) = (mon, cur) { // 条件分支
+                if !maximized.unwrap_or(false) && mon.x > 1.0 && mon.y > 1.0 { // 条件分支
+                    let max = egui::vec2((mon.x - 48.0).max(360.0), (mon.y - 96.0).max(560.0)); // 变量 max
+                    let want = egui::vec2(cur.x.min(max.x), cur.y.min(max.y)); // 变量 want
+                    if (want.x - cur.x).abs() > 1.0 || (want.y - cur.y).abs() > 1.0 { // 条件分支
+                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(want)); // 语句
+                    } // 块结束
+                } // 块结束
+            } // 块结束
+        } // 块结束
+
         // Screen-size adaptation screenshot mode (`--shots <dir>`): drive the
         // resize / capture state machine every frame and keep repainting.
         if self.shot.is_some() { // 条件分支
@@ -3829,8 +3925,15 @@ impl eframe::App for App { // 实现
         if let Some(res) = self.web_video_rx.as_ref().and_then(|rx| rx.try_recv().ok()) { // 条件分支
             self.web_video_rx = None; // 语句
             self.web_video_busy = false; // 语句
+            let then_live = std::mem::take(&mut self.web_video_then_live); // 变量 then_live
             match res { // 分支匹配
-                Ok(path) => self.status = format!("动态壁纸已下载到 {}", path.display()), // 匹配分支
+                Ok(path) => { // 匹配分支
+                    if then_live { // 条件分支
+                        self.apply_live_wallpaper(&path); // 语句
+                    } else { // 语句
+                        self.status = format!("动态壁纸已下载到 {}", path.display()); // 语句
+                    } // 块结束
+                } // 块结束
                 Err(e) => self.status = format!("动态壁纸下载失败：{e}"), // 匹配分支
             } // 块结束
         } // 块结束
@@ -4324,6 +4427,52 @@ fn evict_plan(order: &[PathBuf], cap: usize) -> Vec<PathBuf> { // 函数 evict_p
     } // 块结束
     order[..order.len() - cap].to_vec() // 语句
 } // 块结束
+
+/// 网格列数：紧凑布局固定 2–3 列，桌面布局按可用宽度自适应（宽屏笔记本一屏放更多张）。
+fn grid_cols(avail: f32, compact: bool) -> usize {
+    if compact {
+        if avail < 470.0 {
+            2
+        } else {
+            3
+        }
+    } else {
+        let item_w = CELL_W + CARD_PAD * 2.0;
+        (((avail + GAP) / (item_w + GAP)).floor() as usize).max(1)
+    }
+}
+
+/// 网格单元宽度：紧凑布局把可用宽度按列数均分，桌面布局用固定宽度。
+fn grid_cell_w(avail: f32, compact: bool) -> f32 {
+    if compact {
+        let n = grid_cols(avail, compact) as f32;
+        ((avail - GAP * (n - 1.0)) / n - CARD_PAD * 2.0).max(120.0)
+    } else {
+        CELL_W
+    }
+}
+
+/// 预览大图区高度：按窗口高度自适应。矮屏笔记本给更矮的预览，避免把下方列表挤出
+/// 可视区（这样在大图预览打开时列表依然能正常上下滑动查看）。
+fn preview_img_height(ctx: &egui::Context, frac: f32) -> f32 {
+    let vh = ctx.screen_rect().height();
+    (vh * frac).clamp(150.0, 420.0)
+}
+
+/// 常驻可见的垂直滚动区：滚动条始终显示（内容不足一屏也保留轨道），
+/// 并占满可用高度。这样右侧「可上下滑动」一目了然，点击预览 / 操作后也不会消失。
+fn vscroll() -> egui::ScrollArea {
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .scroll_bar_visibility(egui::containers::scroll_area::ScrollBarVisibility::AlwaysVisible)
+}
+
+/// 「窄桌面」布局判定：窗口宽度介于紧凑阈值与笔记本阈值之间（1366×768 / 1280×720
+/// 等小尺寸笔记本，或高 DPI 缩放后的较小逻辑宽度）。用于收紧侧栏与页面留白。
+fn is_narrow(ctx: &egui::Context) -> bool {
+    let w = ctx.screen_rect().width();
+    w >= COMPACT_BREAK && w < NARROW_BREAK
+}
 
 #[cfg(test)] // 语句
 mod tests { // 模块 tests

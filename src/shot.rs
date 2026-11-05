@@ -35,8 +35,10 @@ pub struct Shooter { // 结构体 Shooter
 
 impl Shooter { // 实现
     pub fn new(dir: PathBuf) -> Self { // 函数 new
-        let sizes: [(&str, f32, f32); 3] = // 变量 sizes
-            [("phone", 390.0, 844.0), ("tablet", 834.0, 1112.0), ("desktop", 1440.0, 900.0)]; // 语句
+        // 覆盖手机 / 平板 / 常见笔记本（1366×768、1536×864）与桌面尺寸，便于核对
+        // 「不同尺寸屏幕」下的自适应布局（笔记本逻辑分辨率可能因缩放而更小）。
+        let sizes: [(&str, f32, f32); 5] = // 变量 sizes
+            [("phone", 390.0, 844.0), ("tablet", 834.0, 1112.0), ("laptop", 1366.0, 768.0), ("laptop-hd", 1536.0, 864.0), ("desktop", 1440.0, 900.0)]; // 语句
         let tabs: [(&str, usize); 5] = // 变量 tabs
             [("library", 0), ("web", 5), ("slideshow", 1), ("settings", 3), ("about", 4)]; // 语句
         let mut items = Vec::new(); // 变量 items

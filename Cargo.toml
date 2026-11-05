@@ -1,6 +1,6 @@
 [package]
 name = "wallpaper-rs"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2021"
 description = "Cross-platform desktop wallpaper app (Windows/macOS/Linux): fixed wallpaper or slideshow/rotation, built with Rust + egui."
 license = "MIT"
@@ -18,6 +18,13 @@ name = "wallpaper_rs"
 path = "src/lib.rs"
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = []
+# 把便携 mpv 内嵌进可执行文件（「单文件自带 mpv」发行版）。
+# 需要构建前把 mpv 放到 `bundled-mpv/`（含 mpv.exe、d3dcompiler_43.dll），
+# 运行时按需释放到用户缓存目录再调用。见 .github/workflows/build.yml。
+bundled-mpv = []
+
 [dependencies]
 eframe = { version = "0.29", default-features = false, features = ["glow", "default_fonts", "android-native-activity"] }
 egui = "0.29"
@@ -25,7 +32,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rand = "0.8"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "bmp", "gif", "tiff"] }
-ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+# `cookies`：在同一个 agent 内持久化站点下发的 Cookie。彼岸图网（pic.netbian.com）
+# 位于百度 WAF 之后，会下发 abymg_id 等令牌；缺少 Cookie 时后续请求会被拦截，
+# 表现为「接口访问不通」。共享带 Cookie 罐的 agent 后可稳定长期浏览。
+ureq = { version = "2", default-features = false, features = ["tls", "json", "cookies"] }
 raw-window-handle = "0.6"
 
 [target.'cfg(not(target_os = "android"))'.dependencies]

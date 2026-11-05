@@ -2,6 +2,22 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.11.0] - 2026-11-05
+
+### 新增
+- **动态壁纸（Windows）**：网上壁纸库预览面板新增「**设为动态壁纸** / **停止动态壁纸**」。自建桌面宿主——定位桌面图标层（`WorkerW` / `Progman`）并在其下铺一个无边框子窗口，调用 **mpv** 把 MP4 循环渲染进去（`--wid=<hwnd>`），窗口压到同级最底部、位于桌面图标之下。新增 `src/livewall.rs`；App 退出时自动停止。
+- **发行包内置 mpv**：Windows 便携包与安装器把便携 mpv 放进程序目录的 `mpv/` 子文件夹；另提供**单文件 exe**（`bundled-mpv` feature 把 mpv 编进可执行文件，首次运行时释放到 `%LOCALAPPDATA%\wallpaper-rs\mpv-runtime`），动态壁纸开箱即用。`find_mpv()` 查找顺序：`WALLPAPER_MPV` → exe 旁 `mpv/` → PATH → 常见安装目录 → 内嵌 mpv。
+
+### 修复
+- **彼岸图网（`pic.netbian.com`，网上壁纸库第 2 个站点）访问不通**：该站点在百度 WAF 之后，首包会下发 `abymg_id` 等 Cookie；改为复用**同一个带 Cookie 罐的共享 agent** + 浏览器式请求头 + 退避重试，搜索接口改为跟随跳转并用最终 URL 解析结果 id。
+- **网上壁纸库点开预览 / 操作后无法上下滑动**：预览与操作区改为**常驻**（宽屏固定在右侧、窄屏固定在底部），主列表单独滚动且**滚动条常驻可见**，不再「一操作就滑不动」。
+- **笔记本尺寸适配**：新增「窄桌面」断点，收紧侧栏宽度与页面留白；首帧按显示器可用范围收敛窗口尺寸（只缩不放、不影响最大化）；网格列数按可用宽度自适应。
+
+### 变更
+- `ureq` 启用 `cookies` feature（持久化站点 Cookie）。
+- 打包：新增 `bundled-mpv` cargo feature；CI windows job 下载便携 mpv，并纳入便携 zip、Inno 安装器与单文件 exe；新增 `THIRD-PARTY-NOTICES.md` 与 `mpv-LICENSE-GPLv2.txt`（mpv 为 GPL-2.0-or-later 第三方组件）。
+- `--shots` 自检尺寸新增笔记本（1366×768 / 1536×864）。
+
 ## [0.10.0] - 2026-11-04
 
 ### 新增

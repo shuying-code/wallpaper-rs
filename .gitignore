@@ -7,6 +7,9 @@
 /work
 /work2
 
+# 打包时下载的第三方便携程序（mpv），见 .github/workflows/build.yml
+/bundled-mpv
+
 # 日志
 *.log
 
