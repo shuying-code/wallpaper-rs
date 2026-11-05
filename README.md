@@ -23,7 +23,7 @@
 
 | 平台 | 便携版 | 安装包 |
 |---|---|---|
-| Windows (x64) | [.zip](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-windows-x64.zip) | [安装器 setup.exe](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-windows-x64-setup.exe) |
+| Windows (x64) | [.zip](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-windows-x64.zip) · [单文件 exe（自带 mpv）](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-windows-x64.exe) | [安装器 setup.exe](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-windows-x64-setup.exe) |
 | macOS (Universal, Intel+M 芯片) | [.tar.gz](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-macos-universal.tar.gz) | [.dmg](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-macos-universal.dmg) |
 | Linux / Ubuntu (x64) | [.tar.gz](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-linux-x64.tar.gz) | [.deb](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-linux-x64.deb) · [.AppImage](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-linux-x64.AppImage) |
 | Android | — | [.apk](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-android-universal.apk) |
@@ -38,6 +38,7 @@
 ## 功能
 
 - **网上壁纸库（多站点在线）**：联网浏览四个真实壁纸站点，顶部一键切换来源——**① 微软必应每日壁纸 4K**（`bing.ioliu.cn`，每日更新，可下载 3840×2160 原图）、**② 彼岸图网**（`pic.netbian.com`，4K / 5K / 8K）、**③ MoeWalls**（`moewalls.com`）、**④ MotionBGs**（`motionbgs.com`）。每个站点均支持**关键词搜索**、**按分类 / 标签浏览**、**分页翻页**；缩略图懒加载，点开大图预览后可**下载原图 / 设为桌面壁纸 / 设为锁屏**，原图下载完成后自动执行所选操作。MoeWalls / MotionBGs 为动态壁纸站，除可下载封面静图外，还额外提供**「下载动态壁纸 MP4」**按钮（保存到 `图片/网上壁纸库/<站点>`）；Windows 端还提供**「设为动态壁纸」**（自建桌面宿主把 MP4 铺到图标层之下循环播放，依赖 mpv——Windows 便携包 / 安装包已内置 mpv，源码运行可用 WALLPAPER_MPV 指定路径，见随包 THIRD-PARTY-NOTICES.md）。
+- **动态壁纸（Windows，自建桌面宿主）**：在动态壁纸站（MoeWalls / MotionBGs）的预览里点「**设为动态壁纸**」，程序会在桌面**图标层之下**自建一个宿主窗口（`WorkerW` / `Progman`），用 **mpv** 循环播放 MP4（`--wid`），桌面图标与任务栏照常使用；点「**停止动态壁纸**」或退出程序即恢复。**Windows 发行包已内置 mpv**——便携包 / 安装器放在 `mpv/` 子目录，**单文件 exe 内嵌 mpv**（首次运行释放到 `%LOCALAPPDATA%\wallpaper-rs\mpv-runtime`），开箱即用；mpv 为第三方 GPL 组件，见随包 `THIRD-PARTY-NOTICES.md`。
 - **本地壁纸库（按文件夹相册）**：从本地文件夹批量扫描图片（可含子文件夹），自动按所在文件夹分组为相册；每个相册可单独**展开 / 折叠**，顶部提供「全部展开 / 全部折叠」，并支持按文件名搜索过滤。
 - **侧栏显隐**：点击标题栏左上角 `☰` 可一键隐藏 / 显示左侧导航栏，专注看图；状态自动记忆。
 - **权限请求与授权引导**：扫描遇到无读取权限的目录时不再静默忽略，而是显示提示条，可「请求权限 / 重试」（macOS 触发系统隐私授权）、「打开文件夹位置 / 打开授权设置」跳到系统授权页面或资源管理器，由操作人确认授权。
@@ -89,7 +90,7 @@
 
 | 平台 | 状态 | 设置壁纸的实现 |
 |---|---|---|
-| Windows x64 | ✅ 已构建验证 | `SystemParametersInfoW` + 注册表 `Control Panel\Desktop` |
+| Windows x64 | ✅ 已构建验证 | `SystemParametersInfoW` + 注册表 `Control Panel\Desktop`；**动态壁纸**：桌面图标层之下自建宿主窗口 + `mpv` 循环播放 MP4 |
 | macOS | ✅ 源码支持 | `osascript` 调用 System Events 设置桌面图片 |
 | Linux / Ubuntu | ✅ 源码支持 | GNOME/Ubuntu `gsettings`（含 `picture-options`），或回退到 `feh` |
 | Android | 🧩 界面适配（需移动端工具链） | 移动宿主经 `WallpaperManager` 设置（需 `SET_WALLPAPER` 权限）；界面已做触控 / 窄屏适配 |
@@ -168,7 +169,7 @@ wallpaper-rs/
 │  ├─ wallpaper.rs   # 各平台设置壁纸实现
 │  ├─ autostart.rs   # 开机自启（Windows 注册表 / LaunchAgent / autostart）
 │  ├─ thumbs.rs      # 缩略图工作线程
-│  └─ 其他模块：albums / diskscan / hotkey / tray / elevate / permissions / platform / shot / online / android / instances / winhide
+│  └─ 其他模块：websrc / bing / netbian / moewalls / motionbgs（网上壁纸库）、livewall（动态壁纸）、albums / diskscan / hotkey / tray / elevate / permissions / platform / shot / online / android / instances / winhide
 ├─ tests/            # 集成测试
 ├─ packaging/        # Windows / macOS / Linux 打包脚本与资源
 ├─ docs/             # 用户操作手册、使用反馈与文档索引

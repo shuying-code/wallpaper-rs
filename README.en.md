@@ -24,16 +24,20 @@ Get the latest build from the [latest Release](https://github.com/shuying-code/w
 
 | Platform | Portable | Installer |
 |---|---|---|
-| Windows (x64) | [.zip](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-windows-x64.zip) | [setup.exe](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-windows-x64-setup.exe) |
+| Windows (x64) | [.zip](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-windows-x64.zip) · [single-file exe (bundled mpv)](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-windows-x64.exe) | [setup.exe](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-windows-x64-setup.exe) |
 | macOS (Universal, Intel + Apple Silicon) | [.tar.gz](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-macos-universal.tar.gz) | [.dmg](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-macos-universal.dmg) |
 | Linux / Ubuntu (x64) | [.tar.gz](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-linux-x64.tar.gz) | [.deb](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-linux-x64.deb) · [.AppImage](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-linux-x64.AppImage) |
 | Android | — | [.apk](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-android-universal.apk) |
 | All versions |  | [Releases page](https://github.com/shuying-code/wallpaper-rs/releases/latest) |
 
+> Windows also ships a **single-file exe with mpv embedded** (`wallpaper-rs-windows-x64.exe`, ~130 MB): live wallpaper works out of the box, and on first use the embedded mpv is extracted to `%LOCALAPPDATA%\wallpaper-rs\mpv-runtime`. mpv is a third-party GPL component — see `THIRD-PARTY-NOTICES.md`.
+
 You can also click the download links in the in-app **About** page.
 
 ## Features
 
+- **Online wallpaper library (multi-site)**: browse four real wallpaper sites and switch the source in one click — **① Bing Daily Wallpaper 4K** (`bing.ioliu.cn`, updated daily, download the 3840×2160 original), **② Netbian** (`pic.netbian.com`, 4K / 5K / 8K), **③ MoeWalls** (`moewalls.com`), **④ MotionBGs** (`motionbgs.com`). Every site supports **keyword search**, **category / tag browsing** and **pagination**; thumbnails lazy-load, and opening the preview lets you **download the original / set as desktop / set as lock screen**, with the chosen action running automatically once the original finishes downloading. Live sites (MoeWalls / MotionBGs) additionally offer **"Download live wallpaper MP4"** (saved to `Pictures/网上壁纸库/<site>`).
+- **Live wallpaper (Windows, self-hosted desktop layer)**: on a live site (MoeWalls / MotionBGs) click **"Set as live wallpaper"** — the app creates a host window **behind the desktop icons** (`WorkerW` / `Progman`) and plays the MP4 on loop with **mpv** (`--wid`), while icons and the taskbar keep working; **"Stop live wallpaper"** or quitting the app restores everything. The Windows packages **bundle mpv** — the portable package / installer ship it in an `mpv/` folder, and the **single-file exe embeds it** (extracted on first use to `%LOCALAPPDATA%\wallpaper-rs\mpv-runtime`). mpv is a third-party GPL component — see `THIRD-PARTY-NOTICES.md`.
 - **Library (folder albums)**: scan a local folder (optionally recursive) and group images into albums by their containing folder; each album can be **expanded / collapsed**, with "Expand all / Collapse all" in the toolbar and filename search.
 - **Collapsible sidebar**: the `☰` button in the title bar hides / shows the left navigation to focus on the images; the state is remembered.
 - **Permission request & authorization guidance**: when a scan hits folders it cannot read, instead of silently skipping them the app shows a banner with "Request permission / Retry" (on macOS this triggers the system privacy prompt) and "Open folder location / Open authorization settings" to jump to the OS authorization page or the file manager, letting the operator grant access.
@@ -82,7 +86,7 @@ Mobile compact layout (bottom tab bar):
 
 | Platform | Status | How the wallpaper is set |
 |---|---|---|
-| Windows x64 | ✅ Built & verified | `SystemParametersInfoW` + registry `Control Panel\Desktop` |
+| Windows x64 | ✅ Built & verified | `SystemParametersInfoW` + registry `Control Panel\Desktop`; **live wallpaper**: self-hosted window behind the desktop icons + `mpv` looping the MP4 |
 | macOS | ✅ Source supported | `osascript` via System Events |
 | Linux | ✅ Source supported | GNOME `gsettings`, falling back to `feh` |
 | Android | 🧩 UI adapted (mobile toolchain required) | mobile host applies via `WallpaperManager` (needs `SET_WALLPAPER`); touch/narrow layout supported |
