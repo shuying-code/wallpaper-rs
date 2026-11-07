@@ -1274,7 +1274,9 @@ impl App { // 实现
             return;
         }
         self.mpv_dl_busy = true;
-        self.status = "正在按需下载动态壁纸所需的 mpv 播放器…（仅首次，约 30 MB）".to_string();
+        self.status =
+            "正在按需下载动态壁纸所需的 mpv 播放器…（自动选择最快镜像，仅首次，约 30 MB）"
+                .to_string();
         let (tx, rx) = std::sync::mpsc::channel();
         self.mpv_dl_rx = Some(rx);
         std::thread::spawn(move || {

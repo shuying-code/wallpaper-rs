@@ -400,7 +400,8 @@ mod imp {
         let dir = mpv_cache_dir().ok_or_else(|| "无法确定 mpv 缓存目录".to_string())?;
         std::fs::create_dir_all(&dir).map_err(|e| format!("创建 mpv 缓存目录失败：{e}"))?;
         let archive = dir.join("mpv-download.7z");
-        let urls = mpv_download_urls();
+        // 先并发探测各地址的响应速度，挑最快的那个下载；其余作为兜底。
+        let urls = order_by_speed(mpv_download_urls());
         download_from_any(&urls, &archive)?;
         extract_7z(&archive, &dir)?;
         let _ = std::fs::remove_file(&archive);
@@ -464,12 +465,13 @@ mod imp {
         "https://mirror.ghproxy.com/",
     ];
 
-    /// mpv 的候选下载地址列表（按尝试顺序）：
+    /// mpv 的候选下载地址列表：
     /// 1. 环境变量 `WALLPAPER_MPV_URL` 指定的自定义地址（若设置）；
-    /// 2. 多个 GitHub 加速镜像（同一个文件的代理地址，通常最快）；
-    /// 3. 官方直连地址（作为最后的兜底）。
+    /// 2. 多个 GitHub 加速镜像（同一个文件的代理地址）；
+    /// 3. 官方直连地址。
     ///
-    /// [`download_from_any`] 会依次尝试，任意一个成功即停止。
+    /// 这里只给出候选集合；实际下载前会由 [`order_by_speed`] **并发测速**，
+    /// 按「最快 → 最慢」排序，优先用最快的地址下载，失败再顺次回退。
     fn mpv_download_urls() -> Vec<String> {
         let mut urls: Vec<String> = Vec::new();
         if let Ok(u) = std::env::var("WALLPAPER_MPV_URL") {
@@ -486,6 +488,58 @@ mod imp {
         // 官方直连兜底。
         urls.push(direct);
         urls
+    }
+
+    /// 探测单个地址的速度：发一个只取前 4 KB 的 Range 请求，返回「从发起请求到
+    /// 收完这一小段」的耗时。只有当返回内容确实是 mpv 的 7z 开头（魔数校验通过）
+    /// 才视为可用；超时 / 出错 / 返回错误页都返回 `None`。
+    fn probe_speed(url: &str) -> Option<std::time::Duration> {
+        use std::io::Read;
+        let agent = ureq::AgentBuilder::new()
+            .user_agent("wallpaper-rs")
+            .timeout_connect(std::time::Duration::from_secs(6))
+            .timeout_read(std::time::Duration::from_secs(8))
+            .build();
+        let t0 = std::time::Instant::now();
+        let resp = agent.get(url).set("Range", "bytes=0-4095").call().ok()?;
+        let mut buf = Vec::new();
+        resp.into_reader()
+            .take(4096)
+            .read_to_end(&mut buf)
+            .ok()?;
+        (buf.len() >= 6 && buf[..6] == [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C])
+            .then(|| t0.elapsed())
+    }
+
+    /// 并发探测所有候选地址，按速度从快到慢排序返回。探测失败的地址（可能只是
+    /// 瞬时抖动或不允许 Range）排在最后，仍作为下载兜底。
+    fn order_by_speed(urls: Vec<String>) -> Vec<String> {
+        if urls.len() <= 1 {
+            return urls;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        for (i, u) in urls.iter().enumerate() {
+            let u = u.clone();
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send((i, probe_speed(&u)));
+            });
+        }
+        drop(tx);
+        let mut ok: Vec<(usize, std::time::Duration)> = Vec::new();
+        let mut bad: Vec<usize> = Vec::new();
+        for (i, d) in rx {
+            match d {
+                Some(dt) => ok.push((i, dt)),
+                None => bad.push(i),
+            }
+        }
+        ok.sort_by_key(|(_, dt)| *dt);
+        let mut out: Vec<String> = ok.into_iter().map(|(i, _)| urls[i].clone()).collect();
+        for i in bad {
+            out.push(urls[i].clone());
+        }
+        out
     }
 
     /// 依次尝试 `urls` 中的地址下载到 `dest`，任意一个成功即返回。
@@ -733,6 +787,22 @@ mod imp {
             let len = p.metadata().map(|m| m.len()).unwrap_or(0);
             eprintln!("mpv = {}（{} 字节）", p.display(), len);
             assert!(p.is_file(), "应得到可用的 mpv.exe");
+        }
+
+        /// 测速排序冒烟（只发小 Range 请求，不解压）：打印各候选地址的探测结果与排序。
+        ///   cargo test --lib order_by_speed_smoke -- --ignored --nocapture
+        #[test]
+        #[ignore]
+        fn order_by_speed_smoke() {
+            let urls = mpv_download_urls();
+            for u in &urls {
+                eprintln!("probe {:>8?}  {}", probe_speed(u), u);
+            }
+            let ordered = order_by_speed(urls);
+            eprintln!("--- 排序后（最快在前）---");
+            for (i, u) in ordered.iter().enumerate() {
+                eprintln!("{}: {}", i + 1, u);
+            }
         }
     }
 }
