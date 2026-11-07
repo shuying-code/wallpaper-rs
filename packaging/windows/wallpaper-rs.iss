@@ -39,11 +39,6 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Files]
 Source: "..\..\target\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\packaging\windows\THIRD-PARTY-NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
-; 可选：pass /DMpvDir=<folder> to bundle a portable mpv (动态壁纸需要用到的播放器)。
-#ifdef MpvDir
-Source: "{#MpvDir}\*"; DestDir: "{app}\mpv"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\..\packaging\windows\mpv-LICENSE-GPLv2.txt"; DestDir: "{app}\mpv"; Flags: ignoreversion
-#endif
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

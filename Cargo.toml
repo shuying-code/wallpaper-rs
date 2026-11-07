@@ -1,6 +1,6 @@
 [package]
 name = "wallpaper-rs"
-version = "0.12.3"
+version = "0.13.0"
 edition = "2021"
 description = "Cross-platform desktop wallpaper app (Windows/macOS/Linux): fixed wallpaper or slideshow/rotation, built with Rust + egui."
 license = "MIT"
@@ -20,12 +20,6 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []
-# 把便携 mpv 内嵌进可执行文件（「单文件自带 mpv」发行版）。
-# 需要构建前把 mpv 放到 `bundled-mpv/`（含 mpv.exe、d3dcompiler_43.dll），
-# 运行时按需释放到用户缓存目录再调用。见 .github/workflows/build.yml。
-# 内嵌的是「构建期 gzip 压缩」后的数据（见 build.rs），运行时再解压，
-# 从而让单文件体积大幅减小（mpv 约 116 MB → 约 45 MB）。
-bundled-mpv = ["dep:flate2"]
 
 [dependencies]
 eframe = { version = "0.29", default-features = false, features = ["glow", "default_fonts", "android-native-activity"] }
@@ -37,14 +31,11 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 # `cookies`：在同一个 agent 内持久化站点下发的 Cookie。彼岸图网（pic.netbian.com）
 # 位于百度 WAF 之后，会下发 abymg_id 等令牌；缺少 Cookie 时后续请求会被拦截，
 # 表现为「接口访问不通」。共享带 Cookie 罐的 agent 后可稳定长期浏览。
-ureq = { version = "2", default-features = false, features = ["tls", "json", "cookies"] }
+# `native-certs`：rustls 改用「系统证书存储」而非仅内置根证书。部分环境（如经过
+# 企业/运营商 TLS 中间代理时）GitHub 等站点的证书链不在内置根列表里，用系统存储
+# 才能正常校验（否则 mpv 按需下载会报 UnknownIssuer）。
+ureq = { version = "2", default-features = false, features = ["tls", "native-certs", "json", "cookies"] }
 raw-window-handle = "0.6"
-# 仅用于 `bundled-mpv` feature：运行时解压内嵌的 mpv（构建期由 build.rs 压缩）。
-flate2 = { version = "1", optional = true }
-
-[build-dependencies]
-# build.rs 在 `bundled-mpv` 构建时把 mpv 预压缩后内嵌。
-flate2 = "1"
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 rfd = "0.14"

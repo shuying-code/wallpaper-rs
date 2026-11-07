@@ -62,6 +62,15 @@ enum WebVideoAfter { // 枚举 WebVideoAfter
     Lock, // 语句
 } // 块结束
 
+/// mpv 缺失时按需下载完成后要执行的动作（Windows 动态壁纸宿主依赖 mpv）。
+#[derive(Clone)] // 语句
+enum AfterMpv { // 枚举 AfterMpv
+    /// 下载完成后把该视频设为动态壁纸。
+    LiveWallpaper(PathBuf), // 语句
+    /// 下载完成后从该视频截帧设为锁屏。
+    LockVideo(PathBuf), // 语句
+} // 块结束
+
 enum Action { // 枚举 Action
     SetPath(PathBuf), // 调用 SetPath
     Next, // 语句
@@ -202,6 +211,11 @@ pub struct App { // 结构体 App
     /// 动态壁纸（mp4）下载完成后要执行的动作（保存 / 设为动态壁纸 / 加入轮播）。
     web_video_after: WebVideoAfter, // 字段 web_video_after
     web_video_rx: Option<Receiver<Result<PathBuf, String>>>, // 字段 web_video_rx
+    /// mpv 按需下载中（仅 Windows；不随安装包分发，缺失时联网下载）。
+    mpv_dl_busy: bool, // 字段 mpv_dl_busy
+    /// mpv 下载完成后要执行的动作（设为动态壁纸 / 设为锁屏）。
+    mpv_after: Option<AfterMpv>, // 字段 mpv_after
+    mpv_dl_rx: Option<Receiver<Result<PathBuf, String>>>, // 字段 mpv_dl_rx
     wallpaper_managers: Vec<String>, // 字段 wallpaper_managers
     /// Compact (phone/tablet or narrow window) layout with a bottom nav bar.
     compact: bool, // 字段 compact
@@ -296,6 +310,9 @@ impl App { // 实现
             web_video_busy: false, // 字段 web_video_busy
             web_video_after: WebVideoAfter::default(), // 字段 web_video_after
             web_video_rx: None, // 字段 web_video_rx
+            mpv_dl_busy: false, // 字段 mpv_dl_busy
+            mpv_after: None, // 字段 mpv_after
+            mpv_dl_rx: None, // 字段 mpv_dl_rx
             wallpaper_managers: wallpaper::conflicting_wallpaper_managers(), // 字段 wallpaper_managers
             compact: false, // 字段 compact
             album_limits: HashMap::new(), // 字段 album_limits
@@ -488,11 +505,8 @@ impl App { // 实现
             .map(|s| s.to_string_lossy().to_string()) // 语句
             .unwrap_or_default(); // 语句
         if crate::thumbs::is_video_file(path) { // 条件分支
-            // 视频 -> 动态壁纸宿主（Windows + mpv 循环渲染）。
-            match crate::livewall::set_live_wallpaper(path) { // 分支匹配
-                Ok(_) => self.status = format!("已设为动态壁纸：{}", name), // 匹配分支
-                Err(e) => self.status = format!("动态壁纸设置失败：{e}"), // 匹配分支
-            } // 块结束
+            // 视频 -> 动态壁纸宿主（Windows + mpv 循环渲染）；mpv 缺失时按需下载。
+            self.with_mpv_or_download(AfterMpv::LiveWallpaper(path.to_path_buf())); // 语句
         } else { // 语句
             // 从视频切回静态图：先停掉动态壁纸宿主，否则 mpv 的画面会继续盖住新壁纸。
             if crate::livewall::active_video().is_some() { // 条件分支
@@ -655,7 +669,7 @@ impl App { // 实现
                         self.set_current(ctx, i); // 语句
                     } // 块结束
                 } // 块结束
-                Action::LockVideo(p) => self.set_lock_from_video(&p), // 匹配分支
+                Action::LockVideo(p) => self.with_mpv_or_download(AfterMpv::LockVideo(p)), // 匹配分支
             } // 块结束
         } // 块结束
     } // 块结束
@@ -863,7 +877,7 @@ impl App { // 实现
         }; // 块结束
         // 当前是动态壁纸视频时，先截取一帧再设置（锁屏只支持静态图片）。
         if crate::thumbs::is_video_file(&path) { // 条件分支
-            self.set_lock_from_video(&path); // 语句
+            self.with_mpv_or_download(AfterMpv::LockVideo(path)); // 语句
         } else { // 语句
             self.apply_lock_screen(&path); // 语句
         } // 块结束
@@ -1240,6 +1254,39 @@ impl App { // 实现
         match crate::livewall::set_live_wallpaper(path) {
             Ok(_) => self.status = format!("已设为动态壁纸：{}", path.display()),
             Err(e) => self.status = format!("动态壁纸设置失败：{e}"),
+        }
+    }
+
+    /// 需要 mpv 的动态壁纸 / 锁屏动作：mpv 已就绪则直接执行；缺失时（Windows）先在
+    /// 后台按需下载 mpv，下载完成后再执行 `after`。mpv 不随安装包分发。
+    fn with_mpv_or_download(&mut self, after: AfterMpv) {
+        if crate::livewall::mpv_available() || !crate::livewall::supported() {
+            self.run_after_mpv(after);
+            return;
+        }
+        self.mpv_after = Some(after);
+        self.start_mpv_download();
+    }
+
+    /// 后台按需下载 mpv 到用户缓存目录（仅本机缺失时，第一次需要）。
+    fn start_mpv_download(&mut self) {
+        if self.mpv_dl_busy {
+            return;
+        }
+        self.mpv_dl_busy = true;
+        self.status = "正在按需下载动态壁纸所需的 mpv 播放器…（仅首次，约 30 MB）".to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.mpv_dl_rx = Some(rx);
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::livewall::ensure_mpv());
+        });
+    }
+
+    /// 执行「下载 mpv 完成后」的待办动作。
+    fn run_after_mpv(&mut self, after: AfterMpv) {
+        match after {
+            AfterMpv::LiveWallpaper(p) => self.apply_live_wallpaper(&p),
+            AfterMpv::LockVideo(p) => self.set_lock_from_video(&p),
         }
     }
 
@@ -1803,7 +1850,7 @@ impl App { // 实现
                             if ghost_button(ui, "设为动态壁纸").clicked() && !self.web_video_busy { // 条件分支
                                 let dest = self.web_save_dir().join(&name); // 变量 dest
                                 if dest.is_file() { // 条件分支
-                                    self.apply_live_wallpaper(&dest); // 语句
+                                    self.with_mpv_or_download(AfterMpv::LiveWallpaper(dest)); // 语句
                                 } else { // 语句
                                     self.web_video_download(url.clone(), name.clone(), WebVideoAfter::Live); // 语句
                                 } // 块结束
@@ -1812,7 +1859,7 @@ impl App { // 实现
                             if ghost_button(ui, "设为锁屏(动态)").clicked() && !self.web_video_busy { // 条件分支
                                 let dest = self.web_save_dir().join(&name); // 变量 dest
                                 if dest.is_file() { // 条件分支
-                                    self.set_lock_from_video(&dest); // 语句
+                                    self.with_mpv_or_download(AfterMpv::LockVideo(dest)); // 语句
                                 } else { // 语句
                                     self.web_video_download(url.clone(), name.clone(), WebVideoAfter::Lock); // 语句
                                 } // 块结束
@@ -1841,6 +1888,9 @@ impl App { // 实现
                     } // 块结束
                     if self.web_video_busy { // 条件分支
                         chip(ui, "动态壁纸下载中…", theme::accent_soft(), theme::accent()); // 调用 chip
+                    } // 块结束
+                    if self.mpv_dl_busy { // 条件分支
+                        chip(ui, "正在下载 mpv…", theme::accent_soft(), theme::accent()); // 调用 chip
                     } // 块结束
                     if let Some(it) = &item { // 条件分支
                         if ghost_button(ui, "打开图片页面").clicked() { // 条件分支
@@ -4073,18 +4123,37 @@ impl eframe::App for App { // 实现
             match res { // 分支匹配
                 Ok(path) => { // 匹配分支
                     match after { // 分支匹配
-                        WebVideoAfter::Live => self.apply_live_wallpaper(&path), // 匹配分支
+                        WebVideoAfter::Live => self.with_mpv_or_download(AfterMpv::LiveWallpaper(path)), // 匹配分支
                         WebVideoAfter::Playlist => { // 匹配分支
                             self.add_to_playlist(&path); // 语句
                             self.status = format!("原视频已加入轮播：{}", path.display()); // 语句
                         } // 块结束
-                        WebVideoAfter::Lock => self.set_lock_from_video(&path), // 匹配分支
+                        WebVideoAfter::Lock => self.with_mpv_or_download(AfterMpv::LockVideo(path)), // 匹配分支
                         WebVideoAfter::Save => { // 匹配分支
                             self.status = format!("动态壁纸已下载到 {}", path.display()); // 语句
                         } // 块结束
                     } // 块结束
                 } // 块结束
                 Err(e) => self.status = format!("动态壁纸下载失败：{e}"), // 匹配分支
+            } // 块结束
+        } // 块结束
+
+        // mpv 按需下载结果：完成后若有待办动作（设为动态壁纸 / 锁屏）就执行。
+        if let Some(res) = self.mpv_dl_rx.as_ref().and_then(|rx| rx.try_recv().ok()) { // 条件分支
+            self.mpv_dl_rx = None; // 语句
+            self.mpv_dl_busy = false; // 语句
+            match res { // 分支匹配
+                Ok(path) => { // 匹配分支
+                    if let Some(after) = self.mpv_after.take() { // 条件分支
+                        self.run_after_mpv(after); // 语句
+                    } else { // 语句
+                        self.status = format!("mpv 已就绪：{}", path.display()); // 语句
+                    } // 块结束
+                } // 块结束
+                Err(e) => { // 匹配分支
+                    self.mpv_after = None; // 语句
+                    self.status = format!("mpv 下载失败：{e}"); // 语句
+                } // 块结束
             } // 块结束
         } // 块结束
 

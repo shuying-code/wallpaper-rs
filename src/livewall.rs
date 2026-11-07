@@ -15,7 +15,9 @@
 use std::path::{Path, PathBuf};
 
 #[cfg(windows)]
-pub use imp::{active_video, poster_frame, set_live_wallpaper, stop, supported};
+pub use imp::{
+    active_video, ensure_mpv, mpv_available, poster_frame, set_live_wallpaper, stop, supported,
+};
 
 #[cfg(not(windows))]
 pub fn supported() -> bool {
@@ -44,6 +46,17 @@ pub fn active_video() -> Option<PathBuf> {
 #[cfg(not(windows))]
 pub fn poster_frame(_video: &Path, _out: &Path) -> Result<(), String> {
     Err("动态壁纸锁屏目前仅支持 Windows".to_string())
+}
+
+/// 非 Windows：没有动态壁纸宿主，也就没有 mpv。
+#[cfg(not(windows))]
+pub fn mpv_available() -> bool {
+    false
+}
+
+#[cfg(not(windows))]
+pub fn ensure_mpv() -> Result<PathBuf, String> {
+    Err("动态壁纸目前仅支持 Windows".to_string())
 }
 
 #[cfg(windows)]
@@ -347,45 +360,138 @@ mod imp {
         if let Some(p) = cands.into_iter().find(|p| p.is_file()) {
             return Some(p);
         }
-        // 「单文件自带 mpv」发行版：释放内嵌的 mpv 到用户缓存后再使用。
-        #[cfg(feature = "bundled-mpv")]
-        if let Some(p) = materialize_bundled_mpv() {
+        // 按需下载的 mpv 缓存（见 ensure_mpv）：已解压到用户缓存目录时直接使用。
+        if let Some(p) = cached_mpv() {
             return Some(p);
         }
         None
     }
 
-    /// 内嵌 mpv（`bundled-mpv` feature）：把编进可执行文件、且经过 gzip 压缩的 mpv
-    /// 解压并释放到用户缓存目录，返回 `mpv.exe` 路径。用于单文件、免安装、自带 mpv 的
-    /// 发行版。压缩由 `build.rs` 在构建期完成（mpv ~116 MB → ~45 MB），大幅减小单文件体积。
-    #[cfg(feature = "bundled-mpv")]
-    fn materialize_bundled_mpv() -> Option<PathBuf> {
-        use std::io::Read;
-        const MPV_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mpv.exe.gz"));
-        const DLL_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/d3dcompiler_43.dll.gz"));
-        // 解压后的原始大小（由 build.rs 通过 rustc-env 注入）。
-        let mpv_len: u64 = env!("WPRS_MPV_LEN").parse().ok()?;
-        let dll_len: u64 = env!("WPRS_DLL_LEN").parse().ok()?;
+    /// 缓存的 mpv 目录：`%LOCALAPPDATA%\wallpaper-rs\mpv-runtime`。
+    fn mpv_cache_dir() -> Option<PathBuf> {
         let base = std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))?;
-        let dir = base.join("wallpaper-rs").join("mpv-runtime");
-        std::fs::create_dir_all(&dir).ok()?;
-        let exe = dir.join("mpv.exe");
-        let dll = dir.join("d3dcompiler_43.dll");
-        // 目标文件已存在且大小正确则跳过（避免每次启动都解压上百 MB）。
-        let ready = |p: &Path, n: u64| p.metadata().map(|m| m.len() == n).unwrap_or(false);
-        if !ready(&exe, mpv_len) {
-            let mut out = Vec::with_capacity(mpv_len as usize);
-            flate2::read::GzDecoder::new(MPV_GZ).read_to_end(&mut out).ok()?;
-            std::fs::write(&exe, &out).ok()?;
+        Some(base.join("wallpaper-rs").join("mpv-runtime"))
+    }
+
+    /// 之前由 [`ensure_mpv`] 下载并解压好的 mpv（若存在）。
+    fn cached_mpv() -> Option<PathBuf> {
+        let dir = mpv_cache_dir()?;
+        [dir.join("mpv.exe"), dir.join("mpv").join("mpv.exe")]
+            .into_iter()
+            .find(|p| p.is_file())
+    }
+
+    /// mpv 是否已就绪（本机已安装、PATH 中可用，或已下载到缓存）。
+    pub fn mpv_available() -> bool {
+        find_mpv().is_some()
+    }
+
+    /// 确保有可用的 mpv：本机已安装则直接返回；否则从 GitHub 下载便携版并解压到用户
+    /// 缓存目录（`%LOCALAPPDATA%\wallpaper-rs\mpv-runtime`），不随安装包分发。
+    ///
+    /// **阻塞调用**（含网络下载与解压），应在后台线程中执行。
+    pub fn ensure_mpv() -> Result<PathBuf, String> {
+        if let Some(p) = find_mpv() {
+            return Ok(p);
         }
-        if !ready(&dll, dll_len) {
-            let mut out = Vec::with_capacity(dll_len as usize);
-            flate2::read::GzDecoder::new(DLL_GZ).read_to_end(&mut out).ok()?;
-            std::fs::write(&dll, &out).ok()?;
+        let dir = mpv_cache_dir().ok_or_else(|| "无法确定 mpv 缓存目录".to_string())?;
+        std::fs::create_dir_all(&dir).map_err(|e| format!("创建 mpv 缓存目录失败：{e}"))?;
+        let url = resolve_mpv_url();
+        let archive = dir.join("mpv-download.7z");
+        download_file(&url, &archive)?;
+        extract_7z(&archive, &dir)?;
+        let _ = std::fs::remove_file(&archive);
+        // 只保留运行所需文件，删掉文档 / 安装脚本 / 更新器，省空间。
+        for junk in [
+            "doc",
+            "installer",
+            "mpv-register.bat",
+            "mpv-unregister.bat",
+            "updater.bat",
+        ] {
+            let p = dir.join(junk);
+            if p.is_dir() {
+                let _ = std::fs::remove_dir_all(&p);
+            } else {
+                let _ = std::fs::remove_file(&p);
+            }
         }
-        exe.is_file().then_some(exe)
+        cached_mpv().ok_or_else(|| "下载完成但未找到 mpv.exe".to_string())
+    }
+
+    /// 解析便携 mpv 的下载地址：优先 GitHub 最新发行版中的 x86_64 `.7z`（排除 `-v3-`
+    /// 变体以保证老 CPU 兼容），失败时回退到内置的固定版本地址。
+    fn resolve_mpv_url() -> String {
+        const FALLBACK: &str =
+            "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261107/mpv-x86_64-20261107-git-9028187538.7z";
+        let call = ureq::get(
+            "https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest",
+        )
+        .set("User-Agent", "wallpaper-rs")
+        .timeout(std::time::Duration::from_secs(30))
+        .call();
+        if let Ok(resp) = call {
+            if let Ok(v) = resp.into_json::<serde_json::Value>() {
+                if let Some(assets) = v.get("assets").and_then(|a| a.as_array()) {
+                    for a in assets {
+                        let name = a.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                        if name.starts_with("mpv-x86_64-")
+                            && name.ends_with(".7z")
+                            && !name.contains("-v3-")
+                        {
+                            if let Some(u) = a.get("browser_download_url").and_then(|u| u.as_str())
+                            {
+                                return u.to_string();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        FALLBACK.to_string()
+    }
+
+    /// 下载 `url` 到 `dest`（先写 `.part` 再改名，避免半截文件被误用）。
+    fn download_file(url: &str, dest: &Path) -> Result<(), String> {
+        // 用「单次读取超时」而非「整体超时」：慢速网络下 30 MB 可能要十几分钟，
+        // 整体超时会把正常下载也掐断；只在数据停滞（单次读取超时）时才算失败。
+        let agent = ureq::AgentBuilder::new()
+            .user_agent("wallpaper-rs")
+            .timeout_connect(std::time::Duration::from_secs(30))
+            .timeout_read(std::time::Duration::from_secs(120))
+            .timeout(std::time::Duration::from_secs(3600))
+            .build();
+        let resp = agent
+            .get(url)
+            .call()
+            .map_err(|e| format!("下载 mpv 失败：{e}"))?;
+        let mut reader = resp.into_reader();
+        let tmp = dest.with_extension("part");
+        let mut file =
+            std::fs::File::create(&tmp).map_err(|e| format!("创建下载文件失败：{e}"))?;
+        std::io::copy(&mut reader, &mut file).map_err(|e| format!("写入下载文件失败：{e}"))?;
+        drop(file);
+        std::fs::rename(&tmp, dest).map_err(|e| format!("保存下载文件失败：{e}"))?;
+        Ok(())
+    }
+
+    /// 用系统自带的 `tar.exe`（bsdtar / libarchive，Windows 10 1803+ 内置，支持 7z）
+    /// 解压 `.7z` 到 `dir`。
+    fn extract_7z(archive: &Path, dir: &Path) -> Result<(), String> {
+        use std::os::windows::process::CommandExt;
+        let mut cmd = Command::new("tar");
+        cmd.arg("-xf").arg(archive).arg("-C").arg(dir);
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let status = cmd
+            .status()
+            .map_err(|e| format!("调用系统 tar 解压失败：{e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("解压 mpv 失败（系统 tar 无法处理该压缩包）".to_string())
+        }
     }
 
     fn which_in_path(exe: &str) -> Option<PathBuf> {
@@ -526,6 +632,36 @@ mod imp {
             stop().expect("stop 失败");
             assert!(active_video().is_none(), "停止后应无活动动态壁纸");
             eprintln!("live wallpaper roundtrip OK");
+        }
+
+        /// 解压 `.7z` 的离线冒烟：先把 `WALLPAPER_TEST_7Z` 指向便携 mpv 压缩包，再
+        ///   cargo test --lib extract_7z_smoke -- --ignored --nocapture
+        #[test]
+        #[ignore]
+        fn extract_7z_smoke() {
+            let z = std::env::var("WALLPAPER_TEST_7Z").expect("先设置 WALLPAPER_TEST_7Z");
+            let dir = std::env::temp_dir().join("wprs_extract_smoke");
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            extract_7z(Path::new(&z), &dir).expect("解压失败");
+            assert!(dir.join("mpv.exe").is_file(), "解压后应存在 mpv.exe");
+            eprintln!("extract 7z OK -> {}", dir.display());
+        }
+
+        /// 下载 + 解压 mpv 的端到端冒烟（走网络，默认 `#[ignore]`）：可先用
+        /// `WALLPAPER_TEST_CACHE` 指定一个干净的缓存目录，再
+        ///   cargo test --lib ensure_mpv_smoke -- --ignored --nocapture
+        #[test]
+        #[ignore]
+        fn ensure_mpv_smoke() {
+            if let Ok(dir) = std::env::var("WALLPAPER_TEST_CACHE") {
+                std::env::set_var("LOCALAPPDATA", &dir);
+            }
+            std::env::remove_var("WALLPAPER_MPV");
+            let p = ensure_mpv().expect("ensure_mpv 失败");
+            let len = p.metadata().map(|m| m.len()).unwrap_or(0);
+            eprintln!("mpv = {}（{} 字节）", p.display(), len);
+            assert!(p.is_file(), "应得到可用的 mpv.exe");
         }
     }
 }

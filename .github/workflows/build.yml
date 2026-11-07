@@ -26,18 +26,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build (release)
         run: cargo build --release
-      - name: Fetch portable mpv (bundled for live wallpaper)
-        shell: pwsh
-        run: |
-          $ver = "20261105"; $asset = "mpv-x86_64-$ver-git-3138fc8eea.7z"
-          $url = "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/$ver/$asset"
-          Invoke-WebRequest -Uri $url -OutFile mpv.7z
-          New-Item -ItemType Directory -Force -Path bundled-mpv | Out-Null
-          if (Get-Command 7z -ErrorAction SilentlyContinue) { 7z x mpv.7z -obundled-mpv -y | Out-Null }
-          else { tar -xf mpv.7z -C bundled-mpv }
-          Remove-Item bundled-mpv\doc, bundled-mpv\installer -Recurse -Force -ErrorAction SilentlyContinue
-          Remove-Item bundled-mpv\*.bat -Force -ErrorAction SilentlyContinue
-          Copy-Item packaging\windows\mpv-LICENSE-GPLv2.txt bundled-mpv\LICENSE-GPLv2.txt
       - name: Package (portable zip)
         shell: pwsh
         run: |
@@ -46,7 +34,6 @@ jobs:
           Copy-Item target/release/wallpaper-rs.exe "$pkg/wallpaper-rs.exe"
           Copy-Item README.md "$pkg/README.md"
           Copy-Item packaging/windows/THIRD-PARTY-NOTICES.md "$pkg/"
-          Copy-Item bundled-mpv "$pkg/mpv" -Recurse -Force
           Compress-Archive -Path "$pkg/*" -DestinationPath dist/wallpaper-rs-windows-x64.zip -Force
       - name: Build installer (Inno Setup)
         shell: pwsh
@@ -59,12 +46,12 @@ jobs:
             $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
           }
           Write-Host "Using $iscc for v$ver"
-          & $iscc "/DMyAppVersion=$ver" "/DMpvDir=$((Get-Location).Path)\bundled-mpv" packaging\windows\wallpaper-rs.iss
-      - name: Build single-file exe (mpv embedded)
+          & $iscc "/DMyAppVersion=$ver" packaging\windows\wallpaper-rs.iss
+      - name: Single-file exe (轻量：运行时按需下载 mpv)
         shell: pwsh
         run: |
-          # 单文件发行版：把 mpv 编进可执行文件，运行时释放到用户缓存再调用。
-          cargo build --release --features bundled-mpv
+          # 单文件发行版不再内嵌 mpv（体积从 ~52 MB 降到 ~5 MB）：
+          # 首次使用动态壁纸 / 锁屏时按需把 mpv 下载到用户缓存目录。
           Copy-Item target/release/wallpaper-rs.exe dist/wallpaper-rs-windows-x64.exe -Force
       - uses: actions/upload-artifact@v4
         with:

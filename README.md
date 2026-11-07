@@ -28,13 +28,13 @@
 
 | 平台 | 便携版 | 安装包 |
 |---|---|---|
-| Windows (x64) | [.zip](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-windows-x64.zip) · [单文件 exe（自带 mpv）](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-windows-x64.exe) | [安装器 setup.exe](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-windows-x64-setup.exe) |
+| Windows (x64) | [.zip](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-windows-x64.zip) · [单文件 exe](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-windows-x64.exe) | [安装器 setup.exe](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-windows-x64-setup.exe) |
 | macOS (Universal, Intel+M 芯片) | [.tar.gz](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-macos-universal.tar.gz) | [.dmg](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-macos-universal.dmg) |
 | Linux / Ubuntu (x64) | [.tar.gz](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-linux-x64.tar.gz) | [.deb](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-linux-x64.deb) · [.AppImage](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-linux-x64.AppImage) |
 | Android | — | [.apk](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-android-universal.apk) |
 | 全部版本 |  | [Releases 页面](https://github.com/shuying-code/wallpaper-rs/releases/latest) |
 
-> Windows 还提供**自带 mpv 的单文件 exe**（`wallpaper-rs-windows-x64.exe`，约 55 MB）：动态壁纸开箱即用，首次使用时会把内置的 mpv 释放到用户缓存目录（`%LOCALAPPDATA%\wallpaper-rs\mpv-runtime`）。内置的 mpv 在打包时经过压缩以缩小体积。mpv 为第三方 GPL 组件，见随包 `THIRD-PARTY-NOTICES.md`。
+> Windows 的**单文件 exe**（`wallpaper-rs-windows-x64.exe`，约 5 MB）**不再内嵌 mpv**：安装包体积大幅减小。首次使用动态壁纸 / 锁屏时，程序会**检测本机是否已有 mpv**，没有的话再从上游官方发行版**按需下载**便携版 mpv 到用户缓存目录（`%LOCALAPPDATA%\wallpaper-rs\mpv-runtime`）。mpv 为第三方 GPL 组件，见随包 `THIRD-PARTY-NOTICES.md`。
 
 在应用内「关于」页也可直接点击下载。
 
@@ -42,8 +42,8 @@
 
 ## 功能
 
-- **网上壁纸库（多站点在线）**：联网浏览四个真实壁纸站点，顶部一键切换来源——**① 微软必应每日壁纸 4K**（`bing.ioliu.cn`，每日更新，可下载 3840×2160 原图）、**② 彼岸图网**（`pic.netbian.com`，4K / 5K / 8K）、**③ MoeWalls**（`moewalls.com`）、**④ MotionBGs**（`motionbgs.com`）。每个站点均支持**关键词搜索**、**按分类 / 标签浏览**、**分页翻页**；缩略图懒加载，点开大图预览后可**下载原图 / 设为桌面壁纸 / 设为锁屏**，原图下载完成后自动执行所选操作。MoeWalls / MotionBGs 为动态壁纸站，除可下载封面静图外，还额外提供**「下载动态壁纸 MP4」**按钮（保存到 `图片/网上壁纸库/<站点>`）；Windows 端还提供**「设为动态壁纸」**（自建桌面宿主把 MP4 铺到图标层之下循环播放，依赖 mpv——Windows 便携包 / 安装包已内置 mpv，源码运行可用 WALLPAPER_MPV 指定路径，见随包 THIRD-PARTY-NOTICES.md）。
-- **动态壁纸（Windows，自建桌面宿主）**：在动态壁纸站（MoeWalls / MotionBGs）的预览里点「**设为动态壁纸**」，程序会在桌面**图标层之下**自建一个宿主窗口（`WorkerW` / `Progman`），用 **mpv** 循环播放 MP4（`--wid`），桌面图标与任务栏照常使用；点「**停止动态壁纸**」或退出程序即恢复。**Windows 发行包已内置 mpv**——便携包 / 安装器放在 `mpv/` 子目录，**单文件 exe 内嵌 mpv**（首次运行释放到 `%LOCALAPPDATA%\wallpaper-rs\mpv-runtime`），开箱即用；mpv 为第三方 GPL 组件，见随包 `THIRD-PARTY-NOTICES.md`。
+- **网上壁纸库（多站点在线）**：联网浏览四个真实壁纸站点，顶部一键切换来源——**① 微软必应每日壁纸 4K**（`bing.ioliu.cn`，每日更新，可下载 3840×2160 原图）、**② 彼岸图网**（`pic.netbian.com`，4K / 5K / 8K）、**③ MoeWalls**（`moewalls.com`）、**④ MotionBGs**（`motionbgs.com`）。每个站点均支持**关键词搜索**、**按分类 / 标签浏览**、**分页翻页**；缩略图懒加载，点开大图预览后可**下载原图 / 设为桌面壁纸 / 设为锁屏**，原图下载完成后自动执行所选操作。MoeWalls / MotionBGs 为动态壁纸站，除可下载封面静图外，还额外提供**「下载动态壁纸 MP4」**按钮（保存到 `图片/网上壁纸库/<站点>`）；Windows 端还提供**「设为动态壁纸」**（自建桌面宿主把 MP4 铺到图标层之下循环播放，依赖 mpv——Windows 便携包 / 安装包会检测本机 mpv（PATH / 常见安装目录），缺失时再从上游按需下载到用户缓存目录；也可用 WALLPAPER_MPV 指定路径，见随包 THIRD-PARTY-NOTICES.md）。
+- **动态壁纸（Windows，自建桌面宿主）**：在动态壁纸站（MoeWalls / MotionBGs）的预览里点「**设为动态壁纸**」，程序会在桌面**图标层之下**自建一个宿主窗口（`WorkerW` / `Progman`），用 **mpv** 循环播放 MP4（`--wid`），桌面图标与任务栏照常使用；点「**停止动态壁纸**」或退出程序即恢复。**mpv 不随发行包分发**——程序会检测本机 mpv，缺失时从上游按需下载到 `%LOCALAPPDATA%\wallpaper-rs\mpv-runtime`，之后开箱即用；mpv 为第三方 GPL 组件，见随包 `THIRD-PARTY-NOTICES.md`。
 - **本地壁纸库（按文件夹相册）**：从本地文件夹批量扫描图片（可含子文件夹），自动按所在文件夹分组为相册；每个相册可单独**展开 / 折叠**，顶部提供「全部展开 / 全部折叠」，并支持按文件名搜索过滤。
 - **侧栏显隐**：点击标题栏左上角 `☰` 可一键隐藏 / 显示左侧导航栏，专注看图；状态自动记忆。
 - **权限请求与授权引导**：扫描遇到无读取权限的目录时不再静默忽略，而是显示提示条，可「请求权限 / 重试」（macOS 触发系统隐私授权）、「打开文件夹位置 / 打开授权设置」跳到系统授权页面或资源管理器，由操作人确认授权。
