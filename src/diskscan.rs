@@ -44,7 +44,10 @@ pub fn start(wallpaper_only: bool) -> Receiver<Vec<PathBuf>> { // 函数 start
         found.sort(); // 语句
         found.dedup(); // 语句
         if wallpaper_only { // 条件分支
-            found.retain(|p| crate::thumbs::is_wallpaper_file(p)); // 语句
+            // 视频（动态壁纸）无法用图片头判断尺寸，直接保留。
+            found.retain(|p| { // 调用 retain
+                crate::thumbs::is_video_file(p) || crate::thumbs::is_wallpaper_file(p) // 语句
+            }); // 语句
         } // 块结束
         let _ = tx.send(found); // 变量 _
     }); // 语句
@@ -99,13 +102,17 @@ fn walk(dir: &Path, found: &mut Vec<PathBuf>, visited: &mut u64) { // 函数 wal
                 continue; // 语句
             } // 块结束
             walk(&p, found, visited); // 调用 walk
-        } else if md.is_file() && md.len() >= MIN_BYTES && is_image(&p) { // 条件分支
+        } else if md.is_file() && md.len() >= MIN_BYTES && is_media(&p) { // 条件分支
             found.push(p); // 语句
         } // 块结束
     } // 块结束
 } // 块结束
 
-fn is_image(p: &Path) -> bool { // 函数 is_image
+/// 图片或视频（动态壁纸）。视频扩展名见 [`crate::thumbs::is_video_file`]。
+fn is_media(p: &Path) -> bool { // 函数 is_media
+    if crate::thumbs::is_video_file(p) { // 条件分支
+        return true; // 返回
+    } // 块结束
     match p.extension().and_then(|s| s.to_str()).map(|s| s.to_ascii_lowercase()) { // 分支匹配
         Some(ext) => matches!( // 匹配分支
             ext.as_str(), // 语句

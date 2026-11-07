@@ -34,6 +34,21 @@ pub fn is_wallpaper_file(path: &Path) -> bool { // 函数 is_wallpaper_file
     } // 块结束
 } // 块结束
 
+/// 是否为视频（动态壁纸）文件。这些文件由 `livewall`（Windows + mpv）循环
+/// 渲染为桌面壁纸，也可以像静态图片一样加入轮播清单。
+///
+/// 只按扩展名判定：无需预解码即可在扫描 / 过滤时快速区分静态图与视频。
+pub fn is_video_file(path: &Path) -> bool { // 函数 is_video_file
+    match path.extension().and_then(|s| s.to_str()).map(|s| s.to_ascii_lowercase()) { // 分支匹配
+        Some(ext) => matches!( // 匹配分支
+            ext.as_str(), // 语句
+            "mp4" | "webm" | "mkv" | "mov" | "m4v" | "avi" | "wmv" | "flv" | "ts"
+                | "mpg" | "mpeg" | "ogv" | "3gp" // 语句
+        ), // 语句
+        None => false, // 匹配分支
+    } // 块结束
+} // 块结束
+
 pub struct Thumb { // 结构体 Thumb
     pub w: usize, // 字段 w
     pub h: usize, // 字段 h
@@ -158,5 +173,14 @@ mod tests { // 模块 tests
         assert!(is_wallpaper_file(&big), "1920x1080 should qualify"); // 语句
         assert!(!is_wallpaper_file(&small), "64x64 icon should be filtered"); // 语句
         let _ = std::fs::remove_dir_all(&dir); // 变量 _
+    } // 块结束
+
+    #[test] // 语句
+    fn video_detected_by_extension() { // 函数 video_detected_by_extension
+        assert!(is_video_file(Path::new("a.mp4"))); // 语句
+        assert!(is_video_file(Path::new("C:/x/B.MP4"))); // 大小写不敏感
+        assert!(is_video_file(Path::new("clip.webm"))); // 语句
+        assert!(!is_video_file(Path::new("photo.jpg"))); // 语句
+        assert!(!is_video_file(Path::new("noext"))); // 语句
     } // 块结束
 } // 块结束
