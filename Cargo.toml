@@ -1,6 +1,6 @@
 [package]
 name = "wallpaper-rs"
-version = "0.14.4"
+version = "0.14.5"
 edition = "2021"
 description = "Cross-platform desktop wallpaper app (Windows/macOS/Linux): fixed wallpaper or slideshow/rotation, built with Rust + egui."
 license = "MIT"

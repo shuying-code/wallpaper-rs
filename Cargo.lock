@@ -3715,7 +3715,7 @@ dependencies = [
 
 [[package]]
 name = "wallpaper-rs"
-version = "0.14.4"
+version = "0.14.5"
 dependencies = [
  "android_logger",
  "eframe",
