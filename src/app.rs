@@ -62,7 +62,7 @@ enum WebVideoAfter { // 枚举 WebVideoAfter
     Lock, // 语句
 } // 块结束
 
-/// mpv 缺失时按需下载完成后要执行的动作（Windows 动态壁纸宿主依赖 mpv）。
+/// mpv 缺失时按需下载完成后要执行的动作（桌面动态壁纸宿主依赖 mpv）。
 #[derive(Clone)] // 语句
 enum AfterMpv { // 枚举 AfterMpv
     /// 下载完成后把该视频设为动态壁纸。
@@ -505,7 +505,7 @@ impl App { // 实现
             .map(|s| s.to_string_lossy().to_string()) // 语句
             .unwrap_or_default(); // 语句
         if crate::thumbs::is_video_file(path) { // 条件分支
-            // 视频 -> 动态壁纸宿主（Windows + mpv 循环渲染）；mpv 缺失时按需下载。
+            // 视频 -> 动态壁纸宿主（mpv 循环渲染）；mpv 缺失时（Windows）按需下载。
             self.with_mpv_or_download(AfterMpv::LiveWallpaper(path.to_path_buf())); // 语句
         } else { // 语句
             // 从视频切回静态图：先停掉动态壁纸宿主，否则 mpv 的画面会继续盖住新壁纸。
@@ -1249,7 +1249,7 @@ impl App { // 实现
         }
     }
 
-    /// 把已下载的 mp4 设为动态壁纸（Windows 自建桌面宿主 + mpv）。
+    /// 把已下载的 mp4 设为动态壁纸（自建桌面宿主 + mpv，Windows/macOS/Linux）。
     fn apply_live_wallpaper(&mut self, path: &Path) {
         match crate::livewall::set_live_wallpaper(path) {
             Ok(_) => self.status = format!("已设为动态壁纸：{}", path.display()),
@@ -1274,9 +1274,8 @@ impl App { // 实现
             return;
         }
         self.mpv_dl_busy = true;
-        self.status =
-            "正在按需下载动态壁纸所需的 mpv 播放器…（自动选择最快镜像，仅首次，约 30 MB）"
-                .to_string();
+        self.status = "正在准备动态壁纸所需的 mpv 播放器…（Windows 缺失时会按需下载）"
+            .to_string();
         let (tx, rx) = std::sync::mpsc::channel();
         self.mpv_dl_rx = Some(rx);
         std::thread::spawn(move || {
@@ -4154,7 +4153,7 @@ impl eframe::App for App { // 实现
                 } // 块结束
                 Err(e) => { // 匹配分支
                     self.mpv_after = None; // 语句
-                    self.status = format!("mpv 下载失败：{e}"); // 语句
+                    self.status = format!("mpv 不可用：{e}"); // 语句
                 } // 块结束
             } // 块结束
         } // 块结束

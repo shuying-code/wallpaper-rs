@@ -3715,7 +3715,7 @@ dependencies = [
 
 [[package]]
 name = "wallpaper-rs"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "android_logger",
  "eframe",
@@ -3723,6 +3723,7 @@ dependencies = [
  "global-hotkey",
  "image",
  "log",
+ "objc",
  "rand",
  "raw-window-handle",
  "rfd",

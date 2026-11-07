@@ -42,8 +42,8 @@
 
 ## 功能
 
-- **网上壁纸库（多站点在线）**：联网浏览四个真实壁纸站点，顶部一键切换来源——**① 微软必应每日壁纸 4K**（`bing.ioliu.cn`，每日更新，可下载 3840×2160 原图）、**② 彼岸图网**（`pic.netbian.com`，4K / 5K / 8K）、**③ MoeWalls**（`moewalls.com`）、**④ MotionBGs**（`motionbgs.com`）。每个站点均支持**关键词搜索**、**按分类 / 标签浏览**、**分页翻页**；缩略图懒加载，点开大图预览后可**下载原图 / 设为桌面壁纸 / 设为锁屏**，原图下载完成后自动执行所选操作。MoeWalls / MotionBGs 为动态壁纸站，除可下载封面静图外，还额外提供**「下载动态壁纸 MP4」**按钮（保存到 `图片/网上壁纸库/<站点>`）；Windows 端还提供**「设为动态壁纸」**（自建桌面宿主把 MP4 铺到图标层之下循环播放，依赖 mpv——Windows 便携包 / 安装包会检测本机 mpv（PATH / 常见安装目录），缺失时再从上游按需下载到用户缓存目录；也可用 WALLPAPER_MPV 指定路径，见随包 THIRD-PARTY-NOTICES.md）。
-- **动态壁纸（Windows，自建桌面宿主）**：在动态壁纸站（MoeWalls / MotionBGs）的预览里点「**设为动态壁纸**」，程序会在桌面**图标层之下**自建一个宿主窗口（`WorkerW` / `Progman`），用 **mpv** 循环播放 MP4（`--wid`），桌面图标与任务栏照常使用；点「**停止动态壁纸**」或退出程序即恢复。**mpv 不随发行包分发**——程序会检测本机 mpv，缺失时从上游按需下载到 `%LOCALAPPDATA%\wallpaper-rs\mpv-runtime`，之后开箱即用；mpv 为第三方 GPL 组件，见随包 `THIRD-PARTY-NOTICES.md`。
+- **网上壁纸库（多站点在线）**：联网浏览四个真实壁纸站点，顶部一键切换来源——**① 微软必应每日壁纸 4K**（`bing.ioliu.cn`，每日更新，可下载 3840×2160 原图）、**② 彼岸图网**（`pic.netbian.com`，4K / 5K / 8K）、**③ MoeWalls**（`moewalls.com`）、**④ MotionBGs**（`motionbgs.com`）。每个站点均支持**关键词搜索**、**按分类 / 标签浏览**、**分页翻页**；缩略图懒加载，点开大图预览后可**下载原图 / 设为桌面壁纸 / 设为锁屏**，原图下载完成后自动执行所选操作。MoeWalls / MotionBGs 为动态壁纸站，除可下载封面静图外，还额外提供**「下载动态壁纸 MP4」**按钮（保存到 `图片/网上壁纸库/<站点>`）；还提供**「设为动态壁纸」**（Windows / macOS / Linux-X11：自建桌面宿主把 MP4 铺在图标层之下循环播放，依赖 mpv——Windows 会检测本机 mpv，缺失时按需下载；macOS / Linux 需本机已安装 mpv，可用 WALLPAPER_MPV 指定路径，见随包 THIRD-PARTY-NOTICES.md）。
+- **动态壁纸（Windows / macOS / Linux-X11，自建桌面宿主）**：在动态壁纸站（MoeWalls / MotionBGs）的预览里点「**设为动态壁纸**」，程序会在桌面**图标层之下**自建一个宿主窗口（Windows `WorkerW` / `Progman`；macOS 桌面层 `NSWindow`；Linux X11 `_NET_WM_WINDOW_TYPE_DESKTOP`），用 **mpv** 循环播放 MP4（`--wid`），桌面图标与任务栏照常使用；点「**停止动态壁纸**」或退出程序即恢复。**mpv 不随发行包分发**——Windows 会检测本机 mpv，缺失时从上游按需下载到 `%LOCALAPPDATA%\wallpaper-rs\mpv-runtime`；macOS / Linux 需本机已安装 mpv（`brew install mpv` / `apt install mpv`）。mpv 为第三方 GPL 组件，见随包 `THIRD-PARTY-NOTICES.md`。
 - **本地壁纸库（按文件夹相册）**：从本地文件夹批量扫描图片（可含子文件夹），自动按所在文件夹分组为相册；每个相册可单独**展开 / 折叠**，顶部提供「全部展开 / 全部折叠」，并支持按文件名搜索过滤。
 - **侧栏显隐**：点击标题栏左上角 `☰` 可一键隐藏 / 显示左侧导航栏，专注看图；状态自动记忆。
 - **权限请求与授权引导**：扫描遇到无读取权限的目录时不再静默忽略，而是显示提示条，可「请求权限 / 重试」（macOS 触发系统隐私授权）、「打开文件夹位置 / 打开授权设置」跳到系统授权页面或资源管理器，由操作人确认授权。
@@ -95,9 +95,9 @@
 
 | 平台 | 状态 | 设置壁纸的实现 |
 |---|---|---|
-| Windows x64 | ✅ 已构建验证 | `SystemParametersInfoW` + 注册表 `Control Panel\Desktop`；**动态壁纸**：桌面图标层之下自建宿主窗口 + `mpv` 循环播放 MP4 |
-| macOS | ✅ 源码支持 | `osascript` 调用 System Events 设置桌面图片 |
-| Linux / Ubuntu | ✅ 源码支持 | GNOME/Ubuntu `gsettings`（含 `picture-options`），或回退到 `feh` |
+| Windows x64 | ✅ 已构建验证 | `SystemParametersInfoW` + 注册表 `Control Panel\Desktop`；**动态壁纸**：桌面图标层之下自建宿主窗口 + `mpv` 循环播放 MP4（mpv 缺失时按需下载） |
+| macOS | ✅ 源码支持 | `osascript` 调用 System Events 设置桌面图片；**动态壁纸**：桌面层（`kCGDesktopWindowLevel`）无边框窗口 + `mpv` |
+| Linux / Ubuntu | ✅ 源码支持 | GNOME/Ubuntu `gsettings`（含 `picture-options`），或回退到 `feh`；**动态壁纸**：X11 `_NET_WM_WINDOW_TYPE_DESKTOP` 窗口 + `mpv`（Wayland 会话暂不支持） |
 | Android | 🧩 界面适配（需移动端工具链） | 移动宿主经 `WallpaperManager` 设置（需 `SET_WALLPAPER` 权限）；界面已做触控 / 窄屏适配 |
 | iOS / iPadOS | 🧩 界面适配（仅浏览） | 系统不允许 App 直接改壁纸，需「导出到相册」后手动设为墙纸；界面已做触控 / 窄屏适配 |
 

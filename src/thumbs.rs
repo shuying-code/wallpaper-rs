@@ -34,7 +34,7 @@ pub fn is_wallpaper_file(path: &Path) -> bool { // 函数 is_wallpaper_file
     } // 块结束
 } // 块结束
 
-/// 是否为视频（动态壁纸）文件。这些文件由 `livewall`（Windows + mpv）循环
+/// 是否为视频（动态壁纸）文件。这些文件由 `livewall`（mpv，Windows/macOS/Linux）循环
 /// 渲染为桌面壁纸，也可以像静态图片一样加入轮播清单。
 ///
 /// 只按扩展名判定：无需预解码即可在扫描 / 过滤时快速区分静态图与视频。

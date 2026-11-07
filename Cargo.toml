@@ -1,6 +1,6 @@
 [package]
 name = "wallpaper-rs"
-version = "0.13.2"
+version = "0.14.0"
 edition = "2021"
 description = "Cross-platform desktop wallpaper app (Windows/macOS/Linux): fixed wallpaper or slideshow/rotation, built with Rust + egui."
 license = "MIT"
@@ -43,6 +43,10 @@ tray-icon = "0.26"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# macOS 动态壁纸宿主用 Cocoa 建桌面层无边框窗口（objc 提供 msg_send! 宏）。
+objc = "0.2"
 
 [target.'cfg(all(not(windows), not(target_os = "android")))'.dependencies]
 global-hotkey = "0.6"

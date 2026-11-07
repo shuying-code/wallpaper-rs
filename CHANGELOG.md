@@ -2,6 +2,18 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.14.0] - 2026-11-07
+
+### 新增
+- **动态壁纸多平台适配**：动态壁纸宿主从「仅 Windows」扩展为跨平台——
+  - **Windows**：桌面图标层 `SHELLDLL_DefView` 之下的宿主窗口（行为不变）；
+  - **macOS**：桌面层（`kCGDesktopWindowLevel`）无边框 `NSWindow`，mpv 渲染进其 `contentView`；
+  - **Linux (X11)**：`_NET_WM_WINDOW_TYPE_DESKTOP` 类型的全屏窗口并压到最底层，mpv 渲染进该窗口；Wayland 会话暂不支持；
+  - **其他平台**：明确提示不支持。
+- mpv 获取方式按平台区分：Windows 缺失时仍**按需联网下载**（多镜像 + 测速选最快）；macOS / Linux 使用本机已安装的 mpv（`brew install mpv` / `apt install mpv`），也可用 `WALLPAPER_MPV` 指定路径。动态壁纸轮播、「设为锁屏(动态)」的视频截帧在三个桌面平台均可用。
+
+> 说明：Windows 分支已在本机构建验证；macOS / Linux 分支为新增实现，已通过全文件语法解析，但**尚未在对应真机运行验证**。
+
 ## [0.13.2] - 2026-11-07
 
 ### 变更

@@ -1,62 +1,515 @@
-//! Windows 动态壁纸宿主。
+//! 动态壁纸宿主（跨平台）。
 //!
-//! Windows 没有把视频设为桌面壁纸的原生 API，因此这里自建一个宿主：
-//! 1. 通过 `Progman` 的 `0x052C` 消息让桌面生成/刷新 `WorkerW`，找到承载桌面图标
-//!    (`SHELLDLL_DefView`) 的那个 `WorkerW` 之后的同级 `WorkerW` —— 即图标层「下面」
-//!    的那层窗口；
-//! 2. 在它下面 `CreateWindowExW` 一个无边框子窗口，铺满整个虚拟桌面；
-//! 3. 调用 **mpv**（`--wid=<hwnd>`）把 MP4 循环渲染进该窗口，实现动态壁纸。
+//! 各平台都没有「把视频设为桌面壁纸」的原生 API，因此这里统一自建一个「桌面层宿主
+//! 窗口」，再用 **mpv**（`--wid=<window>`）把 MP4 循环渲染进去：
 //!
-//! 宿主窗口属于本进程，因此动态壁纸会在 App 运行期间常驻（App 支持托盘常驻后台）。
-//! mpv 通过 PATH / 常见安装目录自动查找，也可用环境变量 `WALLPAPER_MPV` 指定路径。
-//! 非 Windows 平台仅提供「不支持」的空实现。
-
-#[cfg(not(windows))]
-use std::path::{Path, PathBuf};
+//! - **Windows**：在桌面图标层 `SHELLDLL_DefView` 之下 `CreateWindowExW` 一个无边框
+//!   子窗口；mpv 缺失时按需联网下载（见 `ensure_mpv`）。
+//! - **macOS**：用 Cocoa 建一个位于桌面层（`kCGDesktopWindowLevel`）的无边框
+//!   `NSWindow`，把 mpv 渲染进其 `contentView`。
+//! - **Linux (X11)**：建一个 `_NET_WM_WINDOW_TYPE_DESKTOP` 类型的 X11 窗口，并压到
+//!   最底层；mpv 渲染进该窗口。（Wayland 会话暂不支持，可用 `mpvpaper` 等外部工具。）
+//! - 其他平台：不支持。
+//!
+//! 宿主窗口属于本进程，动态壁纸在 App 运行期间常驻（App 支持托盘常驻后台）。
+//! mpv 通过 `WALLPAPER_MPV` / PATH / 常见安装目录自动查找；仅 Windows 支持缺省时联网下载。
 
 #[cfg(windows)]
 pub use imp::{
     active_video, ensure_mpv, mpv_available, poster_frame, set_live_wallpaper, stop, supported,
 };
 
+#[cfg(target_os = "macos")]
+pub use macos::{
+    active_video, ensure_mpv, mpv_available, poster_frame, set_live_wallpaper, stop, supported,
+};
+
+#[cfg(all(unix, not(target_os = "macos"), not(target_os = "android")))]
+pub use linux::{
+    active_video, ensure_mpv, mpv_available, poster_frame, set_live_wallpaper, stop, supported,
+};
+
+#[cfg(not(any(
+    windows,
+    target_os = "macos",
+    all(unix, not(target_os = "macos"), not(target_os = "android"))
+)))]
+pub use unsupported::{
+    active_video, ensure_mpv, mpv_available, poster_frame, set_live_wallpaper, stop, supported,
+};
+
+/// 非 Windows 平台共用的 mpv 查找：`WALLPAPER_MPV` → exe 同目录 `mpv` → PATH →
+/// 常见安装目录。
 #[cfg(not(windows))]
-pub fn supported() -> bool {
-    false
+fn find_mpv_local() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    if let Ok(p) = std::env::var("WALLPAPER_MPV") {
+        let pb = PathBuf::from(p);
+        if pb.is_file() {
+            return Some(pb);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let sib = dir.join("mpv");
+            if sib.is_file() {
+                return Some(sib);
+            }
+        }
+    }
+    if let Some(p) = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|d| d.join("mpv"))
+            .find(|p| p.is_file())
+    }) {
+        return Some(p);
+    }
+    [
+        "/usr/bin/mpv",
+        "/usr/local/bin/mpv",
+        "/snap/bin/mpv",
+        "/opt/homebrew/bin/mpv",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .find(|p| p.is_file())
+}
+
+/// 非 Windows：有 mpv 即可用；缺失时提示安装（不自动下载）。
+#[cfg(not(windows))]
+fn ensure_mpv_shared() -> Result<std::path::PathBuf, String> {
+    find_mpv_local().ok_or_else(|| {
+        "未找到 mpv 播放器：请先安装（Debian/Ubuntu: sudo apt install mpv；macOS: brew install mpv），或用环境变量 WALLPAPER_MPV 指定路径".to_string()
+    })
+}
+
+/// 非 Windows 共用的「从视频截取一帧作为海报图」（锁屏用）。
+#[cfg(not(windows))]
+fn poster_frame_shared(video: &Path, out: &Path) -> Result<(), String> {
+    if !video.is_file() {
+        return Err(format!("视频文件不存在：{}", video.display()));
+    }
+    let mpv = find_mpv_local()
+        .ok_or_else(|| "未找到 mpv：请先安装 mpv，或用 WALLPAPER_MPV 指定路径".to_string())?;
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("创建海报目录失败：{e}"))?;
+    }
+    let _ = std::fs::remove_file(out);
+    let status = std::process::Command::new(mpv)
+        .arg("--no-config")
+        .arg("--no-audio")
+        .arg("--no-osc")
+        .arg("--no-input-default-bindings")
+        .arg(format!("--o={}", out.display()))
+        .arg("--frames=1")
+        .arg("--start=1.0")
+        .arg(video)
+        .status()
+        .map_err(|e| format!("启动 mpv 失败：{e}"))?;
+    if out.is_file() {
+        Ok(())
+    } else {
+        Err(format!("截取视频帧失败（mpv 退出码 {:?}）", status.code()))
+    }
 }
 
 #[cfg(not(windows))]
-pub fn set_live_wallpaper(_video: &Path) -> Result<(), String> {
-    Err("动态壁纸宿主目前仅支持 Windows".to_string())
+use std::path::{Path, PathBuf};
+
+/// Linux（X11）动态壁纸宿主：创建 `_NET_WM_WINDOW_TYPE_DESKTOP` 类型的全屏窗口并
+/// 压到最底层，再用 mpv 渲染进去。Wayland 会话（没有 `DISPLAY`）不支持。
+#[cfg(all(unix, not(target_os = "macos"), not(target_os = "android")))]
+mod linux {
+    use std::ffi::c_void;
+    use std::path::{Path, PathBuf};
+    use std::process::{Child, Command};
+    use std::sync::Mutex;
+
+    type XDisplay = *mut c_void;
+    type XWindow = u64;
+
+    /// 当前宿主：X11 窗口 + 播放它的 mpv 子进程。指针以整数保存，避免 Send 约束。
+    struct Host {
+        display: usize,
+        window: XWindow,
+        child: Child,
+        video: PathBuf,
+    }
+
+    static HOST: Mutex<Option<Host>> = Mutex::new(None);
+
+    const PROP_MODE_REPLACE: i32 = 0;
+    const XA_ATOM: u64 = 4;
+
+    #[link(name = "X11")]
+    extern "C" {
+        fn XOpenDisplay(name: *const c_void) -> XDisplay;
+        fn XCloseDisplay(d: XDisplay) -> i32;
+        fn XDefaultScreen(d: XDisplay) -> i32;
+        fn XRootWindow(d: XDisplay, screen: i32) -> XWindow;
+        fn XDisplayWidth(d: XDisplay, screen: i32) -> i32;
+        fn XDisplayHeight(d: XDisplay, screen: i32) -> i32;
+        fn XCreateSimpleWindow(
+            d: XDisplay,
+            parent: XWindow,
+            x: i32,
+            y: i32,
+            w: u32,
+            h: u32,
+            border_width: u32,
+            border: u64,
+            background: u64,
+        ) -> XWindow;
+        fn XInternAtom(d: XDisplay, name: *const c_void, only_if_exists: i32) -> u64;
+        fn XChangeProperty(
+            d: XDisplay,
+            w: XWindow,
+            property: u64,
+            type_: u64,
+            format: i32,
+            mode: i32,
+            data: *const u8,
+            nelements: i32,
+        ) -> i32;
+        fn XMapWindow(d: XDisplay, w: XWindow) -> i32;
+        fn XLowerWindow(d: XDisplay, w: XWindow) -> i32;
+        fn XFlush(d: XDisplay) -> i32;
+        fn XDestroyWindow(d: XDisplay, w: XWindow) -> i32;
+    }
+
+    pub fn supported() -> bool {
+        std::env::var_os("DISPLAY").is_some()
+    }
+
+    pub fn active_video() -> Option<PathBuf> {
+        let mut guard = HOST.lock().ok()?;
+        if let Some(h) = guard.as_mut() {
+            match h.child.try_wait() {
+                Ok(Some(_)) => {
+                    unsafe {
+                        XDestroyWindow(h.display as XDisplay, h.window);
+                        XCloseDisplay(h.display as XDisplay);
+                    }
+                    *guard = None;
+                }
+                _ => return Some(h.video.clone()),
+            }
+        }
+        None
+    }
+
+    pub fn stop() -> Result<(), String> {
+        let mut guard = HOST.lock().map_err(|_| "动态壁纸状态锁失效".to_string())?;
+        if let Some(mut h) = guard.take() {
+            let _ = h.child.kill();
+            let _ = h.child.wait();
+            unsafe {
+                XDestroyWindow(h.display as XDisplay, h.window);
+                XCloseDisplay(h.display as XDisplay);
+            }
+        }
+        Ok(())
+    }
+
+    unsafe fn create_host_window() -> Result<(XDisplay, XWindow), String> {
+        let display = XOpenDisplay(std::ptr::null());
+        if display.is_null() {
+            return Err(
+                "无法连接 X11 显示（Wayland 会话暂不支持动态壁纸，可改用 X11 会话或 mpvpaper）"
+                    .to_string(),
+            );
+        }
+        let screen = XDefaultScreen(display);
+        let root = XRootWindow(display, screen);
+        let w = XDisplayWidth(display, screen).max(1) as u32;
+        let h = XDisplayHeight(display, screen).max(1) as u32;
+        let win = XCreateSimpleWindow(display, root, 0, 0, w, h, 0, 0, 0);
+        if win == 0 {
+            XCloseDisplay(display);
+            return Err("创建 X11 窗口失败".to_string());
+        }
+        // 标记为「桌面」类型窗口：位于壁纸层、桌面图标之下。
+        let prop = XInternAtom(display, b"_NET_WM_WINDOW_TYPE\0".as_ptr() as *const c_void, 0);
+        let desktop = XInternAtom(
+            display,
+            b"_NET_WM_WINDOW_TYPE_DESKTOP\0".as_ptr() as *const c_void,
+            0,
+        );
+        XChangeProperty(
+            display,
+            win,
+            prop,
+            XA_ATOM,
+            32,
+            PROP_MODE_REPLACE,
+            &desktop as *const u64 as *const u8,
+            1,
+        );
+        XMapWindow(display, win);
+        XLowerWindow(display, win);
+        XFlush(display);
+        Ok((display, win))
+    }
+
+    fn spawn_mpv(mpv: &Path, win: XWindow, video: &Path) -> Result<Child, String> {
+        Command::new(mpv)
+            .arg(format!("--wid={win}"))
+            .arg("--loop-file=inf")
+            .arg("--no-audio")
+            .arg("--no-osc")
+            .arg("--no-input-default-bindings")
+            .arg("--keep-open=yes")
+            .arg("--really-quiet")
+            .arg("--vo=gpu")
+            .arg("--hwdec=auto-safe")
+            .arg(video)
+            .spawn()
+            .map_err(|e| format!("启动 mpv 失败：{e}"))
+    }
+
+    pub fn set_live_wallpaper(video: &Path) -> Result<(), String> {
+        if !video.is_file() {
+            return Err(format!("视频文件不存在：{}", video.display()));
+        }
+        let mpv = super::find_mpv_local().ok_or_else(|| {
+            "未找到 mpv 播放器：请先安装（Debian/Ubuntu: sudo apt install mpv），或用 WALLPAPER_MPV 指定路径".to_string()
+        })?;
+        stop()?;
+        let (display, window) = unsafe { create_host_window() }?;
+        let child = match spawn_mpv(&mpv, window, video) {
+            Ok(c) => c,
+            Err(e) => {
+                unsafe {
+                    XDestroyWindow(display, window);
+                    XCloseDisplay(display);
+                }
+                return Err(e);
+            }
+        };
+        let mut guard = HOST.lock().map_err(|_| "动态壁纸状态锁失效".to_string())?;
+        *guard = Some(Host {
+            display: display as usize,
+            window,
+            child,
+            video: video.to_path_buf(),
+        });
+        Ok(())
+    }
+
+    pub fn mpv_available() -> bool {
+        super::find_mpv_local().is_some()
+    }
+
+    pub fn ensure_mpv() -> Result<PathBuf, String> {
+        super::ensure_mpv_shared()
+    }
+
+    pub fn poster_frame(video: &Path, out: &Path) -> Result<(), String> {
+        super::poster_frame_shared(video, out)
+    }
 }
 
-#[cfg(not(windows))]
-pub fn stop() -> Result<(), String> {
-    Ok(())
+/// macOS 动态壁纸宿主：用 Cocoa 建一个位于桌面层（`kCGDesktopWindowLevel`）的无边框
+/// `NSWindow`，把 mpv 渲染进其 `contentView`。
+#[cfg(target_os = "macos")]
+mod macos {
+    use objc::runtime::Object;
+    use objc::{class, msg_send, sel, sel_impl};
+    use std::path::{Path, PathBuf};
+    use std::process::{Child, Command};
+    use std::sync::Mutex;
+
+    /// 当前宿主：NSWindow + 其 contentView（NSView）+ mpv 子进程。指针存整数以规避 Send。
+    struct Host {
+        window: usize,
+        view: usize,
+        child: Child,
+        video: PathBuf,
+    }
+
+    static HOST: Mutex<Option<Host>> = Mutex::new(None);
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct NSPoint {
+        x: f64,
+        y: f64,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct NSSize {
+        width: f64,
+        height: f64,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct NSRect {
+        origin: NSPoint,
+        size: NSSize,
+    }
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        /// `kCGDesktopWindowLevelKey` = 2。
+        fn CGWindowLevelForKey(key: i32) -> i32;
+    }
+
+    pub fn supported() -> bool {
+        true
+    }
+
+    pub fn active_video() -> Option<PathBuf> {
+        let mut guard = HOST.lock().ok()?;
+        if let Some(h) = guard.as_mut() {
+            match h.child.try_wait() {
+                Ok(Some(_)) => {
+                    unsafe { destroy_window(h.window as *mut Object) };
+                    *guard = None;
+                }
+                _ => return Some(h.video.clone()),
+            }
+        }
+        None
+    }
+
+    pub fn stop() -> Result<(), String> {
+        let mut guard = HOST.lock().map_err(|_| "动态壁纸状态锁失效".to_string())?;
+        if let Some(mut h) = guard.take() {
+            let _ = h.child.kill();
+            let _ = h.child.wait();
+            unsafe { destroy_window(h.window as *mut Object) };
+        }
+        Ok(())
+    }
+
+    unsafe fn destroy_window(window: *mut Object) {
+        if !window.is_null() {
+            let _: () = msg_send![window, orderOut: std::ptr::null::<Object>()];
+            let _: () = msg_send![window, close];
+        }
+    }
+
+    unsafe fn create_host_window() -> Result<(*mut Object, *mut Object), String> {
+        // 确保 AppKit 已初始化（eframe 运行时已创建 NSApplication）。
+        let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
+        if app.is_null() {
+            return Err("无法获取 NSApplication".to_string());
+        }
+        let screen: *mut Object = msg_send![class!(NSScreen), mainScreen];
+        if screen.is_null() {
+            return Err("无法获取 NSScreen".to_string());
+        }
+        let frame: NSRect = msg_send![screen, frame];
+        let allocated: *mut Object = msg_send![class!(NSWindow), alloc];
+        let window: *mut Object = msg_send![
+            allocated,
+            initWithContentRect: frame
+            styleMask: 0usize
+            backing: 2usize
+            defer: false
+        ];
+        if window.is_null() {
+            return Err("创建 NSWindow 失败".to_string());
+        }
+        // 放到桌面层、固定不随空间切换、忽略鼠标事件。
+        let level = CGWindowLevelForKey(2) as isize;
+        let _: () = msg_send![window, setLevel: level];
+        let behavior: usize = 1 | 16; // CanJoinAllSpaces | Stationary
+        let _: () = msg_send![window, setCollectionBehavior: behavior];
+        let _: () = msg_send![window, setIgnoresMouseEvents: true];
+        let _: () = msg_send![window, setReleasedWhenClosed: false];
+        let _: () = msg_send![window, setHasShadow: false];
+        let _: () = msg_send![window, orderFrontRegardless];
+        let view: *mut Object = msg_send![window, contentView];
+        Ok((window, view))
+    }
+
+    fn spawn_mpv(mpv: &Path, view: *mut Object, video: &Path) -> Result<Child, String> {
+        Command::new(mpv)
+            .arg(format!("--wid={}", view as usize))
+            .arg("--loop-file=inf")
+            .arg("--no-audio")
+            .arg("--no-osc")
+            .arg("--no-input-default-bindings")
+            .arg("--keep-open=yes")
+            .arg("--really-quiet")
+            .arg("--vo=gpu")
+            .arg("--hwdec=auto-safe")
+            .arg(video)
+            .spawn()
+            .map_err(|e| format!("启动 mpv 失败：{e}"))
+    }
+
+    pub fn set_live_wallpaper(video: &Path) -> Result<(), String> {
+        if !video.is_file() {
+            return Err(format!("视频文件不存在：{}", video.display()));
+        }
+        let mpv = super::find_mpv_local().ok_or_else(|| {
+            "未找到 mpv 播放器：请先安装（brew install mpv），或用 WALLPAPER_MPV 指定路径"
+                .to_string()
+        })?;
+        stop()?;
+        let (window, view) = unsafe { create_host_window() }?;
+        let child = match spawn_mpv(&mpv, view, video) {
+            Ok(c) => c,
+            Err(e) => {
+                unsafe { destroy_window(window) };
+                return Err(e);
+            }
+        };
+        let mut guard = HOST.lock().map_err(|_| "动态壁纸状态锁失效".to_string())?;
+        *guard = Some(Host {
+            window: window as usize,
+            view: view as usize,
+            child,
+            video: video.to_path_buf(),
+        });
+        Ok(())
+    }
+
+    pub fn mpv_available() -> bool {
+        super::find_mpv_local().is_some()
+    }
+
+    pub fn ensure_mpv() -> Result<PathBuf, String> {
+        super::ensure_mpv_shared()
+    }
+
+    pub fn poster_frame(video: &Path, out: &Path) -> Result<(), String> {
+        super::poster_frame_shared(video, out)
+    }
 }
 
-#[cfg(not(windows))]
-pub fn active_video() -> Option<PathBuf> {
-    None
-}
+/// 其他平台（Android / 未知）：不支持桌面动态壁纸宿主。
+#[cfg(not(any(
+    windows,
+    target_os = "macos",
+    all(unix, not(target_os = "macos"), not(target_os = "android"))
+)))]
+mod unsupported {
+    use std::path::{Path, PathBuf};
 
-/// 从视频中截取一帧作为静态海报图（PNG），用于「动态壁纸锁屏」。
-///
-/// Windows 锁屏只能设置静态图片、无法直接播放视频，因此这里用 mpv 把视频的
-/// 一帧导出为图片，再交给锁屏设置逻辑。
-#[cfg(not(windows))]
-pub fn poster_frame(_video: &Path, _out: &Path) -> Result<(), String> {
-    Err("动态壁纸锁屏目前仅支持 Windows".to_string())
-}
-
-/// 非 Windows：没有动态壁纸宿主，也就没有 mpv。
-#[cfg(not(windows))]
-pub fn mpv_available() -> bool {
-    false
-}
-
-#[cfg(not(windows))]
-pub fn ensure_mpv() -> Result<PathBuf, String> {
-    Err("动态壁纸目前仅支持 Windows".to_string())
+    pub fn supported() -> bool {
+        false
+    }
+    pub fn set_live_wallpaper(_video: &Path) -> Result<(), String> {
+        Err("当前平台暂不支持桌面动态壁纸".to_string())
+    }
+    pub fn stop() -> Result<(), String> {
+        Ok(())
+    }
+    pub fn active_video() -> Option<PathBuf> {
+        None
+    }
+    pub fn mpv_available() -> bool {
+        false
+    }
+    pub fn ensure_mpv() -> Result<PathBuf, String> {
+        Err("当前平台暂不支持桌面动态壁纸".to_string())
+    }
+    pub fn poster_frame(_video: &Path, _out: &Path) -> Result<(), String> {
+        Err("当前平台暂不支持视频截帧".to_string())
+    }
 }
 
 #[cfg(windows)]
