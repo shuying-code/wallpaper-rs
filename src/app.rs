@@ -264,7 +264,7 @@ impl App { // 实现
             last_switch: Instant::now(), // 字段 last_switch
             posters_warmed: false, // 字段 posters_warmed
             status: String::new(), // 字段 status
-            tab: Tab::Library, // 字段 tab
+            tab: Tab::Web4k, // 字段 tab（默认进入「网上壁纸库」）
             thumb: Thumbnailer::new(), // 字段 thumb
             tex_cache: HashMap::new(), // 字段 tex_cache
             tex_order: Vec::new(), // 字段 tex_order
@@ -356,6 +356,11 @@ impl App { // 实现
                 std::thread::sleep(Duration::from_secs(1)); // 调用 sleep
                 c.request_repaint(); // 语句
             }); // 语句
+        } // 块结束
+        // 打开软件时若播放模式已是「轮播」，默认就开始轮播（一张一张地换），
+        // 不必再点「▶ 开始轮播」。
+        if app.cfg.mode == Mode::Slideshow { // 条件分支
+            app.cfg.running = true; // 语句
         } // 块结束
         app.scan(); // 语句
         app // 语句
