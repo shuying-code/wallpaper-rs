@@ -17,6 +17,10 @@ subscription, no telemetry.**
 </p>
 
 <p align="center">
+  <img src="assets/screenshot-online.png" width="100%" alt="Online library">
+</p>
+
+<p align="center">
   <img src="assets/screenshot-library.png" width="49%" alt="Library">
   <img src="assets/screenshot-slideshow.png" width="49%" alt="Slideshow · live wallpaper">
 </p>

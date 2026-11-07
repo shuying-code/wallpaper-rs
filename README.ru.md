@@ -14,6 +14,7 @@
   <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
 </p>
 
+![Онлайн-библиотека](assets/screenshot-online.png)
 ![Библиотека](assets/screenshot-library.png)
 
 ---

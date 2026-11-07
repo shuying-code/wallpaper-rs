@@ -13,6 +13,7 @@
   <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
 </p>
 
+![網路桌布庫](assets/screenshot-online.png)
 ![桌布庫](assets/screenshot-library.png)
 
 ---

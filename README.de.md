@@ -14,6 +14,7 @@ Abo, keine Telemetrie.**
   <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
 </p>
 
+![Online-Bibliothek](assets/screenshot-online.png)
 ![Bibliothek](assets/screenshot-library.png)
 
 ---

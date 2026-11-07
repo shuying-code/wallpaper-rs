@@ -14,6 +14,7 @@ de sesión, sin suscripción, sin telemetría.**
   <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
 </p>
 
+![Biblioteca en línea](assets/screenshot-online.png)
 ![Biblioteca](assets/screenshot-library.png)
 
 ---

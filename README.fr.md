@@ -14,6 +14,7 @@ aucune télémétrie.**
   <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
 </p>
 
+![Bibliothèque en ligne](assets/screenshot-online.png)
 ![Bibliothèque](assets/screenshot-library.png)
 
 ---

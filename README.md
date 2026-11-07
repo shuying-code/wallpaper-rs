@@ -16,6 +16,10 @@
 </p>
 
 <p align="center">
+  <img src="assets/screenshot-online.png" width="100%" alt="网上壁纸库">
+</p>
+
+<p align="center">
   <img src="assets/screenshot-library.png" width="49%" alt="壁纸库">
   <img src="assets/screenshot-slideshow.png" width="49%" alt="轮播 · 动态壁纸">
 </p>
