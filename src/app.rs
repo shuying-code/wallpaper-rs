@@ -3768,6 +3768,10 @@ impl App { // 实现
 
 impl eframe::App for App { // 实现
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) { // 函数 update
+        // 本帧开始时的配置基线：必须在处理任何后台任务结果（下载完成 → 加入轮播 /
+        // 在线壁纸日期等）之前取，否则这些异步改动会被算进基线，末尾的自动保存
+        // 认为「没有变化」而不落盘——表现为「＋ 轮播(原视频)」提示已加入、重启后却丢失。
+        let snap = Snapshot::of(&self.cfg); // 变量 snap
         if self.applied_theme != self.cfg.theme { // 条件分支
             theme::apply(ctx, self.cfg.theme == 1); // 调用 apply
             self.applied_theme = self.cfg.theme; // 语句
@@ -4037,8 +4041,6 @@ impl eframe::App for App { // 实现
             self.web_loaded_once = true; // 语句
             self.web_load(1); // 语句
         } // 块结束
-
-        let snap = Snapshot::of(&self.cfg); // 变量 snap
 
         // drain finished thumbnails
         for (p, t) in self.thumb.poll() { // 循环
