@@ -132,6 +132,58 @@ impl Thumbnailer { // 实现
     } // 块结束
 } // 块结束
 
+ /// 大图预览的后台解码器（库/轮播「当前壁纸」大图、网上壁纸库详情大图）。
+ ///
+ /// 解码一张 4K 级 JPEG/PNG 是纯 CPU 重活；之前它在 UI 线程里同步进行，是「点击
+ /// 浏览时窗口未响应 / 卡顿」的主因。这里放到后台线程串行解码，UI 只负责在结果
+ /// 就绪后上传纹理。
+ pub struct Previewer { // 结构体 Previewer
+     tx: Sender<(PathBuf, u32)>, // 字段 tx
+     rx: Receiver<(PathBuf, u32, Option<Thumb>)>, // 字段 rx
+     requested: HashSet<(PathBuf, u32)>, // 字段 requested
+ } // 块结束
+
+ impl Previewer { // 实现
+     pub fn new() -> Self { // 函数 new
+         let (tx, rx_req) = channel::<(PathBuf, u32)>(); // 调用 let
+         let (tx_res, rx) = channel::<(PathBuf, u32, Option<Thumb>)>(); // 调用 let
+         thread::spawn(move || { // 调用 spawn
+             while let Ok((p, max)) = rx_req.recv() { // 循环
+                 let t = load_image(&p, max); // 变量 t
+                 if tx_res.send((p, max, t)).is_err() { // 条件分支
+                     break; // 语句
+                 } // 块结束
+             } // 块结束
+         }); // 语句
+         Self { // 语句
+             tx, // 语句
+             rx, // 语句
+             requested: HashSet::new(), // 字段 requested
+         } // 块结束
+     } // 块结束
+
+     /// 请求解码 `p`（最长边 <= `max`）。同一 (路径, 尺寸) 只排队一次。
+     pub fn request(&mut self, p: &Path, max: u32) { // 函数 request
+         if self.requested.insert((p.to_path_buf(), max)) { // 条件分支
+             let _ = self.tx.send((p.to_path_buf(), max)); // 变量 _
+         } // 块结束
+     } // 块结束
+
+     /// 允许同一路径重新排队（例如海报生成后内容有更新）。
+     pub fn forget(&mut self, p: &Path, max: u32) { // 函数 forget
+         self.requested.remove(&(p.to_path_buf(), max)); // 语句
+     } // 块结束
+
+     /// 非阻塞取出已完成的结果 `(路径, 尺寸, 解码结果)`。
+     pub fn poll(&mut self) -> Vec<(PathBuf, u32, Option<Thumb>)> { // 函数 poll
+         let mut v = Vec::new(); // 变量 v
+         while let Ok(r) = self.rx.try_recv() { // 循环
+             v.push(r); // 语句
+         } // 块结束
+         v // 语句
+     } // 块结束
+ } // 块结束
+
 #[cfg(test)] // 语句
 mod tests { // 模块 tests
     use super::*; // 引入依赖
@@ -182,5 +234,27 @@ mod tests { // 模块 tests
         assert!(is_video_file(Path::new("clip.webm"))); // 语句
         assert!(!is_video_file(Path::new("photo.jpg"))); // 语句
         assert!(!is_video_file(Path::new("noext"))); // 语句
+    } // 块结束
+
+    #[test] // 语句
+    fn previewer_decodes_off_thread() { // 函数 previewer_decodes_off_thread
+        let dir = std::env::temp_dir().join("wp_preview_test"); // 变量 dir
+        std::fs::create_dir_all(&dir).unwrap(); // 调用 create_dir_all
+        let p = dir.join("p.png"); // 变量 p
+        image::RgbaImage::new(64, 48).save(&p).unwrap(); // 调用 new
+        let mut pv = Previewer::new(); // 变量 pv
+        pv.request(&p, 128); // 调用 request
+        let mut got = false; // 变量 got
+        for _ in 0..200 { // 循环
+            if let Some((path, _max, Some(t))) = pv.poll().into_iter().next() { // 条件分支
+                assert_eq!(path, p); // 语句
+                assert!(t.w > 0 && t.h > 0 && t.w <= 128 && t.h <= 128); // 语句
+                got = true; // 语句
+                break; // 语句
+            } // 块结束
+            std::thread::sleep(std::time::Duration::from_millis(10)); // 调用 sleep
+        } // 块结束
+        assert!(got, "previewer should decode the requested image"); // 语句
+        let _ = std::fs::remove_dir_all(&dir); // 变量 _
     } // 块结束
 } // 块结束

@@ -71,6 +71,25 @@ enum AfterMpv { // 枚举 AfterMpv
     LockVideo(PathBuf), // 语句
 } // 块结束
 
+ /// 交给后台线程执行的「会阻塞 UI」的壁纸操作。
+ ///
+ /// `wallpaper::set_wallpaper` 在 Windows 上会带 `SPIF_SENDCHANGE` 广播
+ /// `WM_SETTINGCHANGE`（同步等待所有顶层窗口响应），在老旧/繁忙系统上可能阻塞
+ /// 数秒；`poster_frame` 需要启动 mpv 截帧，最长可达 20 秒。两者都曾直接跑在
+ /// UI 线程上，是「未响应」的主因——现在统一丢给后台工作线程。
+ enum WallJob { // 枚举 WallJob
+     /// 设置静态壁纸（含显示方式）。
+     SetStatic(PathBuf, Fit), // 语句
+     /// 从视频截取一帧作为海报；`to_lock` 表示截好后设为锁屏。
+     Poster { video: PathBuf, out: PathBuf, to_lock: bool }, // 语句
+ } // 块结束
+
+ /// 后台壁纸操作的结果。
+ enum WallDone { // 枚举 WallDone
+     Static { path: PathBuf, name: String, result: Result<(), String> }, // 语句
+     Poster { out: PathBuf, to_lock: bool, result: Result<(), String> }, // 语句
+ } // 块结束
+
 enum Action { // 枚举 Action
     SetPath(PathBuf), // 调用 SetPath
     Next, // 语句
@@ -148,6 +167,61 @@ impl Snapshot { // 实现
     } // 块结束
 } // 块结束
 
+/// 启动「壁纸操作」后台工作线程：串行执行会阻塞的静态壁纸设置与视频截帧，
+/// 结果经通道回传由 UI 线程消费。串行是刻意的——SPI 广播本就不该并发，且
+/// mpv 截帧很吃 CPU。
+fn spawn_wall_worker() -> (
+    std::sync::mpsc::Sender<WallJob>,
+    Receiver<WallDone>,
+) {
+    let (tx, rx) = std::sync::mpsc::channel::<WallJob>(); // 调用 let
+    let (dtx, drx) = std::sync::mpsc::channel::<WallDone>(); // 调用 let
+    std::thread::spawn(move || { // 调用 spawn
+        while let Ok(job) = rx.recv() { // 循环
+            let done = match job { // 变量 done
+                WallJob::SetStatic(p, fit) => { // 匹配分支
+                    let name = p // 变量 name
+                        .file_name() // 语句
+                        .map(|s| s.to_string_lossy().to_string()) // 语句
+                        .unwrap_or_default(); // 语句
+                    WallDone::Static { // 语句
+                        path: p.clone(), // 字段 path
+                        name, // 语句
+                        result: wallpaper::set_wallpaper(&p, fit), // 字段 result
+                    } // 块结束
+                } // 块结束
+                WallJob::Poster { video, out, to_lock } => WallDone::Poster { // 匹配分支
+                    out: out.clone(), // 字段 out
+                    to_lock, // 字段 to_lock
+                    result: crate::livewall::poster_frame(&video, &out), // 字段 result
+                }, // 块结束
+            }; // 块结束
+            if dtx.send(done).is_err() { // 条件分支
+                break; // 语句
+            } // 块结束
+        } // 块结束
+    }); // 语句
+    (tx, drx) // 语句
+} // 块结束
+
+/// 启动「动态壁纸首帧海报」后台生成线程（单线程，尽力而为）。
+fn spawn_poster_worker() -> (
+    std::sync::mpsc::Sender<(PathBuf, PathBuf)>,
+    Receiver<(PathBuf, bool)>,
+) {
+    let (tx, rx) = std::sync::mpsc::channel::<(PathBuf, PathBuf)>(); // 调用 let
+    let (dtx, drx) = std::sync::mpsc::channel::<(PathBuf, bool)>(); // 调用 let
+    std::thread::spawn(move || { // 调用 spawn
+        while let Ok((video, out)) = rx.recv() { // 循环
+            let ok = out.is_file() || crate::livewall::poster_frame(&video, &out).is_ok(); // 变量 ok
+            if dtx.send((out, ok)).is_err() { // 条件分支
+                break; // 语句
+            } // 块结束
+        } // 块结束
+    }); // 语句
+    (tx, drx) // 语句
+} // 块结束
+
 pub struct App { // 结构体 App
     cfg: Config, // 字段 cfg
     images: Vec<PathBuf>, // 字段 images
@@ -158,6 +232,25 @@ pub struct App { // 结构体 App
     current: Option<usize>, // 字段 current
     last_switch: Instant, // 字段 last_switch
     posters_warmed: bool, // 动态壁纸首帧海报是否已后台预热
+    /// 后台大图预览解码（库/轮播大图、网上壁纸库详情大图）。
+    previewer: crate::thumbs::Previewer, // 字段 previewer
+    /// 预览来源映射：`(逻辑路径, 实际解码路径)`——动态壁纸的逻辑路径是视频，
+    /// 实际解码的是它的首帧海报 PNG。
+    preview_src: Option<(PathBuf, PathBuf)>, // 字段 preview_src
+    /// 后台「设置壁纸 / 视频截帧」工作线程。
+    wall_tx: std::sync::mpsc::Sender<WallJob>, // 字段 wall_tx
+    wall_rx: Receiver<WallDone>, // 字段 wall_rx
+    /// 待启动的动态壁纸 `(视频, 海报)`：等底层首帧海报铺好（后台完成回调）再启动
+    /// 宿主，避免「先停旧宿主、后铺海报」之间的空档闪出旧壁纸。
+    pending_live: Option<(PathBuf, PathBuf)>, // 字段 pending_live
+    /// 从动态壁纸切回静态图时：等底层静态壁纸真的设好，再收掉动态壁纸宿主，
+    /// 才不会「闪过」上一张固定壁纸。
+    stop_live_after_set: Option<PathBuf>, // 字段 stop_live_after_set
+    /// 后台动态壁纸首帧海报生成（单线程队列）。
+    poster_tx: std::sync::mpsc::Sender<(PathBuf, PathBuf)>, // 字段 poster_tx
+    poster_rx: Receiver<(PathBuf, bool)>, // 字段 poster_rx
+    /// 已排入生成队列、尚未出结果的海报路径（去重，避免重复启动 mpv）。
+    posters_pending: std::collections::HashSet<PathBuf>, // 字段 posters_pending
     status: String, // 字段 status
     tab: Tab, // 字段 tab
     thumb: Thumbnailer, // 字段 thumb
@@ -206,12 +299,12 @@ pub struct App { // 结构体 App
     web_full_rx: Option<Receiver<(u32, Result<crate::websrc::Full, String>)>>, // 字段 web_full_rx
     web_preview_id: Option<u32>, // 字段 web_preview_id
     web_preview_tex: Option<TextureHandle>, // 字段 web_preview_tex
+    /// 网上壁纸库详情预览要解码的本地原图路径（后台解码完成后上传纹理）。
+    web_preview_want: Option<PathBuf>, // 字段 web_preview_want
     web_pending: Option<(u32, WebApply)>, // 字段 web_pending
     web_busy: bool, // 字段 web_busy
-    web_video_busy: bool, // 动态壁纸（mp4）下载中
-    /// 动态壁纸（mp4）下载完成后要执行的动作（保存 / 设为动态壁纸 / 加入轮播）。
-    web_video_after: WebVideoAfter, // 字段 web_video_after
-    web_video_rx: Option<Receiver<Result<PathBuf, String>>>, // 字段 web_video_rx
+    /// 进行中的动态壁纸（mp4）下载：可并发多个，每个各自带「下载完成后动作」。
+    web_video_jobs: Vec<(Receiver<Result<PathBuf, String>>, WebVideoAfter)>, // 字段 web_video_jobs
     /// mpv 按需下载中（仅 Windows；不随安装包分发，缺失时联网下载）。
     mpv_dl_busy: bool, // 字段 mpv_dl_busy
     /// mpv 下载完成后要执行的动作（设为动态壁纸 / 设为锁屏）。
@@ -243,6 +336,9 @@ impl App { // 实现
         let web_query = cfg.web_query.clone(); // 变量 web_query
         let web_search_active = cfg.web_search_active; // 变量 web_search_active
         let web_only_fav = cfg.web_only_fav; // 变量 web_only_fav
+        // 后台工作线程：静态壁纸设置 / 视频截帧、动态壁纸首帧海报生成。
+        let (wall_tx, wall_rx) = spawn_wall_worker(); // 调用 let
+        let (poster_tx, poster_rx) = spawn_poster_worker(); // 调用 let
         #[cfg(windows)] // 语句
         let window_hwnd = { // 变量 window_hwnd
             use raw_window_handle::{HasWindowHandle, RawWindowHandle}; // 引入依赖
@@ -263,6 +359,15 @@ impl App { // 实现
             current: None, // 字段 current
             last_switch: Instant::now(), // 字段 last_switch
             posters_warmed: false, // 字段 posters_warmed
+            previewer: crate::thumbs::Previewer::new(), // 字段 previewer
+            preview_src: None, // 字段 preview_src
+            wall_tx, // 字段 wall_tx
+            wall_rx, // 字段 wall_rx
+            pending_live: None, // 字段 pending_live
+            stop_live_after_set: None, // 字段 stop_live_after_set
+            poster_tx, // 字段 poster_tx
+            poster_rx, // 字段 poster_rx
+            posters_pending: std::collections::HashSet::new(), // 字段 posters_pending
             status: String::new(), // 字段 status
             tab: Tab::Web4k, // 字段 tab（默认进入「网上壁纸库」）
             thumb: Thumbnailer::new(), // 字段 thumb
@@ -307,11 +412,10 @@ impl App { // 实现
             web_full_rx: None, // 字段 web_full_rx
             web_preview_id: None, // 字段 web_preview_id
             web_preview_tex: None, // 字段 web_preview_tex
+            web_preview_want: None, // 字段 web_preview_want
             web_pending: None, // 字段 web_pending
             web_busy: false, // 字段 web_busy
-            web_video_busy: false, // 字段 web_video_busy
-            web_video_after: WebVideoAfter::default(), // 字段 web_video_after
-            web_video_rx: None, // 字段 web_video_rx
+            web_video_jobs: Vec::new(), // 字段 web_video_jobs
             mpv_dl_busy: false, // 字段 mpv_dl_busy
             mpv_after: None, // 字段 mpv_after
             mpv_dl_rx: None, // 字段 mpv_dl_rx
@@ -423,29 +527,31 @@ impl App { // 实现
         self.last_switch = Instant::now(); // 语句
     } // 块结束
 
-    fn load_preview(&mut self, ctx: &egui::Context, path: &Path) { // 函数 load_preview
-        // 视频（动态壁纸）没有静态预览：清空即可，避免每帧白白尝试解码。
-        if crate::thumbs::is_video_file(path) { // 条件分支
-            self.preview = None; // 语句
-            return; // 返回
-        } // 块结束
+    fn load_preview(&mut self, _ctx: &egui::Context, path: &Path) { // 函数 load_preview
+        // 已经是这张（逻辑路径一致）→ 无需重复解码。
         if let Some((p, _)) = &self.preview { // 条件分支
             if p == path { // 条件分支
                 return; // 返回
             } // 块结束
         } // 块结束
-        match crate::thumbs::load_image(path, 1400) { // 分支匹配
-            Some(t) => { // 匹配分支
-                let img = ColorImage::from_rgba_unmultiplied([t.w, t.h], &t.rgba); // 变量 img
-                let tex = ctx.load_texture( // 变量 tex
-                    format!("preview:{}", path.display()), // 语句
-                    img, // 语句
-                    egui::TextureOptions::LINEAR, // 字段 egui
-                ); // 块结束
-                self.preview = Some((path.to_path_buf(), tex)); // 语句
+        // 解码来源：动态壁纸（视频）没有静态图，改用已缓存的「首帧海报」当预览；
+        // 海报还没生成就先在后台排队，本轮先清空，生成完成后自然会被重新请求。
+        let src = if crate::thumbs::is_video_file(path) { // 变量 src
+            let poster = self.live_poster_path(path); // 变量 poster
+            if poster.is_file() { // 条件分支
+                poster // 语句
+            } else { // 语句
+                self.queue_poster(path); // 语句
+                self.preview = None; // 语句
+                self.preview_src = None; // 语句
+                return; // 返回
             } // 块结束
-            None => self.preview = None, // 匹配分支
-        } // 块结束
+        } else { // 语句
+            path.to_path_buf() // 语句
+        }; // 块结束
+        // 交给后台解码；UI 线程只等结果（在 `update` 里轮询上传纹理）。
+        self.preview_src = Some((path.to_path_buf(), src.clone())); // 语句
+        self.previewer.request(&src, 1400); // 调用 request
     } // 块结束
 
     /// The set of images the slideshow cycles through. When the user has curated
@@ -479,6 +585,10 @@ impl App { // 实现
         } // 块结束
         if !self.cfg.slideshow.iter().any(|p| p == path) { // 条件分支
             self.cfg.slideshow.push(path.to_path_buf()); // 语句
+        } // 块结束
+        // 视频：后台生成首帧海报，供清单 / 卡片缩略图与进入动态壁纸时秒切。
+        if crate::thumbs::is_video_file(path) { // 条件分支
+            self.queue_poster(path); // 语句
         } // 块结束
         self.status = "已加入轮播清单".to_string(); // 语句
     } // 块结束
@@ -516,18 +626,47 @@ impl App { // 实现
             // 视频 -> 动态壁纸宿主（mpv 循环渲染）；mpv 缺失时（Windows）按需下载。
             self.with_mpv_or_download(AfterMpv::LiveWallpaper(path.to_path_buf())); // 语句
         } else { // 语句
-            // 从视频切回静态图：先把新壁纸铺到底层（此刻动态壁纸仍在播放、盖在上面，
-            // 看不到切换过程），再停掉动态壁纸宿主——露出桌面时就已经是新壁纸，
-            // 不会「闪过」上一张固定壁纸。
-            match wallpaper::set_wallpaper(path, self.cfg.fit) { // 分支匹配
-                Ok(_) => self.status = format!("已设置壁纸：{}", name), // 匹配分支
-                Err(e) => self.status = format!("设置失败：{e}"), // 匹配分支
-            } // 块结束
+            // 静态壁纸设置放到后台（SPI 广播可能阻塞 UI 数秒）。从视频切回静态图时，
+            // 要等新壁纸真的铺好（后台完成回调）再停掉动态壁纸宿主——露出桌面时就已经
+            // 是新壁纸，不会「闪过」上一张固定壁纸。
+            self.pending_live = None; // 取消尚未启动的动态壁纸
+            self.status = format!("正在设置壁纸：{name}"); // 语句
+            self.submit_set_static(path); // 调用 submit_set_static
             if crate::livewall::active_video().is_some() { // 条件分支
-                let _ = crate::livewall::stop(); // 变量 _
+                self.stop_live_after_set = Some(path.to_path_buf()); // 语句
             } // 块结束
         } // 块结束
         self.last_switch = Instant::now(); // 语句
+    } // 块结束
+
+    /// 把静态壁纸设置丢给后台工作线程（结果在 `update` 里消费）。
+    fn submit_set_static(&mut self, path: &Path) { // 函数 submit_set_static
+        let _ = self // 变量 _
+            .wall_tx // 语句
+            .send(WallJob::SetStatic(path.to_path_buf(), self.cfg.fit)); // 语句
+    } // 块结束
+
+    /// 排队后台生成动态壁纸的首帧海报（去重；非支持平台直接跳过）。
+    fn queue_poster(&mut self, video: &Path) { // 函数 queue_poster
+        // 需要 mpv 才能截帧；未就绪时跳过（不为此触发下载），下次有 mpv 时再排队。
+        if !crate::livewall::supported() || !crate::livewall::mpv_available() { // 条件分支
+            return; // 返回
+        } // 块结束
+        let out = self.live_poster_path(video); // 变量 out
+        if out.is_file() || !self.posters_pending.insert(out.clone()) { // 条件分支
+            return; // 返回
+        } // 块结束
+        let _ = self.poster_tx.send((video.to_path_buf(), out)); // 变量 _
+    } // 块结束
+
+    /// 卡片/清单的纹理来源：普通图片用自身；动态壁纸优先用已缓存首帧海报，
+    /// 没有海报时返回 `None`（调用方显示 ▶ 占位符）。
+    fn thumb_source(&self, path: &Path) -> Option<PathBuf> { // 函数 thumb_source
+        if crate::thumbs::is_video_file(path) { // 条件分支
+            self.live_poster(path) // 语句
+        } else { // 语句
+            Some(path.to_path_buf()) // 语句
+        } // 块结束
     } // 块结束
 
     fn advance(&mut self, ctx: &egui::Context) { // 函数 advance
@@ -874,10 +1013,8 @@ impl App { // 实现
                 return; // 返回
             } // 块结束
         }; // 块结束
-        match wallpaper::set_wallpaper(&path, self.cfg.fit) { // 分支匹配
-            Ok(_) => self.status = format!("已设为桌面壁纸：{title}"), // 匹配分支
-            Err(e) => self.status = format!("设置失败：{e}"), // 匹配分支
-        } // 块结束
+        self.submit_set_static(&path); // 后台设置，避免 SPI 广播阻塞 UI
+        self.status = format!("正在设置桌面壁纸：{title}"); // 语句
     } // 块结束
 
     fn set_lock_from_current(&mut self) { // 函数 set_lock_from_current
@@ -913,10 +1050,13 @@ impl App { // 实现
             .map(|s| s.to_string_lossy().to_string()) // 语句
             .unwrap_or_else(|| "poster".to_string()); // 语句
         let out = config_dir().join("lock_posters").join(format!("{stem}.png")); // 变量 out
-        match crate::livewall::poster_frame(video, &out) { // 分支匹配
-            Ok(_) => self.apply_lock_screen(&out), // 匹配分支
-            Err(e) => self.status = format!("动态壁纸锁屏失败：{e}"), // 匹配分支
-        } // 块结束
+        // 截帧要启动 mpv，最坏 20 秒：必须放后台，否则 UI 直接「未响应」。
+        self.status = "正在从视频截取一帧用于锁屏…".to_string(); // 语句
+        let _ = self.wall_tx.send(WallJob::Poster { // 变量 _
+            video: video.to_path_buf(), // 字段 video
+            out, // 字段 out
+            to_lock: true, // 字段 to_lock
+        }); // 语句
     } // 块结束
 
     /// Set the lock-screen image, transparently requesting administrator rights
@@ -1224,6 +1364,7 @@ impl App { // 实现
         self.web_search_id = None;
         self.web_preview_id = None;
         self.web_preview_tex = None;
+        self.web_preview_want = None;
         self.web_load(1);
         self.web_persist();
     }
@@ -1250,10 +1391,10 @@ impl App { // 实现
     /// 原图就绪后执行选定的动作。
     fn apply_web_full(&mut self, kind: WebApply, full: &crate::websrc::Full) {
         match kind {
-            WebApply::Wallpaper => match wallpaper::set_wallpaper(&full.path, self.cfg.fit) {
-                Ok(_) => self.status = format!("已设为桌面壁纸：{}", full.title),
-                Err(e) => self.status = format!("设置失败：{e}"),
-            },
+            WebApply::Wallpaper => {
+                self.submit_set_static(&full.path); // 后台设置，避免 SPI 广播阻塞 UI
+                self.status = format!("正在设置桌面壁纸：{}", full.title);
+            }
             WebApply::Lock => self.apply_lock_screen(&full.path),
             WebApply::Save => self.web_save(full),
         }
@@ -1261,16 +1402,28 @@ impl App { // 实现
 
     /// 把已下载的 mp4 设为动态壁纸（自建桌面宿主 + mpv，Windows/macOS/Linux）。
     fn apply_live_wallpaper(&mut self, path: &Path) {
-        // 进入动态壁纸前，先把视频首帧截出来铺成静态壁纸：mpv 初始化（约几百毫秒）
-        // 期间桌面显示的就是这一帧，不会「闪过」上一张固定壁纸。
+        self.pending_live = None; // 覆盖上一次尚未启动的动态壁纸
+        // 有已缓存的首帧海报：先把海报铺到底层（后台异步设壁纸，不阻塞 UI），铺好
+        // 之后的工作线程回调里再启动宿主——避免「先停旧宿主、后铺海报」的空档闪出
+        // 旧壁纸；mpv 初始化期间桌面显示的就是这一帧。
         if let Some(poster) = self.live_poster(path) {
-            let _ = wallpaper::set_wallpaper(&poster, self.cfg.fit);
-        }
-        match crate::livewall::set_live_wallpaper(path) {
-            Ok(_) => self.status = format!("已设为动态壁纸：{}", path.display()),
-            Err(e) => self.status = format!("动态壁纸设置失败：{e}"),
+            self.pending_live = Some((path.to_path_buf(), poster.clone())); // 语句
+            self.submit_set_static(&poster); // 调用 submit_set_static
+        } else {
+            // 还没有海报：后台生成（供下次/清单用），本次直接启动宿主。
+            self.queue_poster(path); // 语句
+            self.start_live_wallpaper(path); // 调用 start_live_wallpaper
         }
     }
+
+    /// 真正启动动态壁纸宿主（停止旧宿主 + 用 mpv 播放）。UI 线程执行，但只做
+    /// 「杀进程 / 建窗口 / 起进程」这些快速操作。
+    fn start_live_wallpaper(&mut self, path: &Path) { // 函数 start_live_wallpaper
+        match crate::livewall::set_live_wallpaper(path) { // 分支匹配
+            Ok(_) => self.status = format!("已设为动态壁纸：{}", path.display()), // 匹配分支
+            Err(e) => self.status = format!("动态壁纸设置失败：{e}"), // 匹配分支
+        } // 块结束
+    } // 块结束
 
     /// 动态壁纸「首帧海报」缓存路径：`<配置目录>/live_posters/<文件名>-<路径哈希>.png`。
     /// 加入路径哈希，避免不同目录下的同名视频共用缓存。
@@ -1298,27 +1451,17 @@ impl App { // 实现
         out.is_file().then_some(out)
     }
 
-    /// 后台为轮播清单里的视频预截首帧海报（单线程、尽力而为），
-    /// 这样轮播轮到动态壁纸时可以「秒切」而不必临时调用 mpv 截帧。
+    /// 后台为轮播清单里的视频预截首帧海报（单线程队列、尽力而为），
+    /// 这样轮播轮到动态壁纸时可以「秒切」，也能在清单 / 卡片里显示缩略图。
     fn precache_live_posters(&mut self) {
-        let jobs: Vec<(PathBuf, PathBuf)> = self
+        let vids: Vec<PathBuf> = self
             .slide_paths()
             .into_iter()
             .filter(|p| crate::thumbs::is_video_file(p))
-            .map(|p| { // 调用 map
-                let out = self.live_poster_path(&p); // 变量 out
-                (p, out) // 语句
-            })
-            .filter(|(_, out)| !out.is_file())
             .collect();
-        if jobs.is_empty() {
-            return;
+        for v in vids {
+            self.queue_poster(&v);
         }
-        std::thread::spawn(move || {
-            for (v, out) in jobs {
-                let _ = crate::livewall::poster_frame(&v, &out);
-            }
-        });
     }
 
     /// 需要 mpv 的动态壁纸 / 锁屏动作：mpv 已就绪则直接执行；缺失时（Windows）先在
@@ -1383,11 +1526,11 @@ impl App { // 实现
     /// 下载动态壁纸（mp4）到「图片/网上壁纸库/<站点>」目录。
     /// `after` 决定下载完成后执行的动作：保存 / 设为动态壁纸 / 加入轮播。
     fn web_video_download(&mut self, url: String, name: String, after: WebVideoAfter) {
-        if self.web_video_busy {
+        // 允许多个下载并发进行（不同条目 / 保存 + 设为壁纸），各自完成后执行动作。
+        if self.web_video_jobs.len() >= 4 {
+            self.status = "动态壁纸下载队列已满，请稍候…".to_string();
             return;
         }
-        self.web_video_busy = true;
-        self.web_video_after = after;
         let src = self.web_source.min(crate::websrc::SOURCES.len() - 1);
         let referer = crate::websrc::SOURCES[src].referer;
         let dir = self.web_save_dir();
@@ -1395,11 +1538,16 @@ impl App { // 实现
         let dest = dir.join(name);
         self.status = format!("正在下载动态壁纸…（{}）", dest.display());
         let (tx, rx) = std::sync::mpsc::channel();
-        self.web_video_rx = Some(rx);
+        self.web_video_jobs.push((rx, after));
         std::thread::spawn(move || {
             let r = crate::websrc::download_to(&url, &dest, referer).map(|_| dest.clone());
             let _ = tx.send(r);
         });
+    }
+
+    /// 是否有动态壁纸（mp4）正在下载。
+    fn web_video_active(&self) -> bool {
+        !self.web_video_jobs.is_empty()
     }
 
     /// 当前要展示的条目：收藏视图（可按关键词过滤）或当前站点列表。
@@ -1469,18 +1617,14 @@ impl App { // 实现
     }
 
     /// 打开预览：优先用已下载原图的纹理，否则请求原图。
-    fn web_open_preview(&mut self, ctx: &egui::Context, id: u32) {
+    fn web_open_preview(&mut self, _ctx: &egui::Context, id: u32) {
         self.web_preview_id = Some(id);
         self.web_preview_tex = None;
+        self.web_preview_want = None;
         if let Some(Some(f)) = self.web_full.get(&id).cloned() {
-            if let Some(t) = crate::thumbs::load_image(&f.path, 1600) {
-                let ci = ColorImage::from_rgba_unmultiplied([t.w, t.h], &t.rgba);
-                self.web_preview_tex = Some(ctx.load_texture(
-                    format!("webp:{}", f.path.display()),
-                    ci,
-                    egui::TextureOptions::LINEAR,
-                ));
-            }
+            // 大图解码放后台，UI 只负责在结果就绪后上传纹理。
+            self.web_preview_want = Some(f.path.clone());
+            self.previewer.request(&f.path, 1600);
         } else {
             self.web_prepare(id);
         }
@@ -1639,6 +1783,7 @@ impl App { // 实现
                 self.web_only_fav = !self.web_only_fav; // 语句
                 self.web_preview_id = None; // 语句
                 self.web_preview_tex = None; // 语句
+                self.web_preview_want = None; // 语句
                 self.web_error = None; // 语句
                 self.web_load(1); // 语句
                 self.web_persist(); // 语句
@@ -1712,6 +1857,7 @@ impl App { // 实现
                                 self.web_search_id = None; // 语句
                                 self.web_preview_id = None; // 语句
                                 self.web_preview_tex = None; // 语句
+                                self.web_preview_want = None; // 语句
                                 self.web_load(1); // 语句
                             } // 块结束
                         } // 块结束
@@ -1908,11 +2054,11 @@ impl App { // 实现
                     } // 块结束
                     if let Some(f) = &full { // 条件分支
                         if let (Some(url), Some(name)) = (f.video.clone(), f.video_name.clone()) { // 条件分支
-                            if primary_button(ui, "下载动态壁纸 MP4").clicked() && !self.web_video_busy { // 条件分支
+                            if primary_button(ui, "下载动态壁纸 MP4").clicked() { // 条件分支
                                 self.web_video_download(url.clone(), name.clone(), WebVideoAfter::Save); // 语句
                             } // 块结束
                             // 设为动态壁纸：已下载过就直接设置，否则先下载再自动设置。
-                            if ghost_button(ui, "设为动态壁纸").clicked() && !self.web_video_busy { // 条件分支
+                            if ghost_button(ui, "设为动态壁纸").clicked() { // 条件分支
                                 let dest = self.web_save_dir().join(&name); // 变量 dest
                                 if dest.is_file() { // 条件分支
                                     self.with_mpv_or_download(AfterMpv::LiveWallpaper(dest)); // 语句
@@ -1921,7 +2067,7 @@ impl App { // 实现
                                 } // 块结束
                             } // 块结束
                             // 设为锁屏：Windows 锁屏只能设置静态图片，这里从视频截取一帧作为锁屏海报。
-                            if ghost_button(ui, "设为锁屏(动态)").clicked() && !self.web_video_busy { // 条件分支
+                            if ghost_button(ui, "设为锁屏(动态)").clicked() { // 条件分支
                                 let dest = self.web_save_dir().join(&name); // 变量 dest
                                 if dest.is_file() { // 条件分支
                                     self.with_mpv_or_download(AfterMpv::LockVideo(dest)); // 语句
@@ -1933,7 +2079,7 @@ impl App { // 实现
                             let dest = self.web_save_dir().join(&name); // 变量 dest
                             let in_pl = self.in_playlist(&dest); // 变量 in_pl
                             let lbl = if in_pl { "移出轮播(原视频)" } else { "＋ 轮播(原视频)" }; // 变量 lbl
-                            if ghost_button(ui, lbl).clicked() && !self.web_video_busy { // 条件分支
+                            if ghost_button(ui, lbl).clicked() { // 条件分支
                                 if in_pl { // 条件分支
                                     self.remove_from_playlist(&dest); // 语句
                                 } else if dest.is_file() { // 条件分支
@@ -1951,7 +2097,7 @@ impl App { // 实现
                             self.status = "已停止动态壁纸".to_string(); // 语句
                         } // 块结束
                     } // 块结束
-                    if self.web_video_busy { // 条件分支
+                    if self.web_video_active() { // 条件分支
                         chip(ui, "动态壁纸下载中…", theme::accent_soft(), theme::accent()); // 调用 chip
                     } // 块结束
                     if self.mpv_dl_busy { // 条件分支
@@ -2009,6 +2155,7 @@ impl App { // 实现
         if close { // 条件分支
             self.web_preview_id = None; // 语句
             self.web_preview_tex = None; // 语句
+            self.web_preview_want = None; // 语句
         } // 块结束
         if let Some(kind) = pending_apply { // 条件分支
             if let Some(Some(f)) = self.web_full.get(&id).cloned() { // 条件分支
@@ -2816,35 +2963,22 @@ impl App { // 实现
                         ui.allocate_exact_size(Vec2::new(cell_w, img_h), egui::Sense::click()); // 语句
                     // Lazy-load: only decode thumbnails for cards actually on
                     // screen (or about to be), not all 3000 scanned files.
-                    // 视频（动态壁纸）没有图片缩略图，跳过解码请求。
-                    if !is_video // 条件分支
-                        && ui.is_rect_visible(rect) // 语句
-                        && !self.tex_cache.contains_key(path) // 语句
-                        && !self.thumb.is_requested(path) // 语句
-                    { // 语句
-                        self.thumb.request(path); // 语句
+                    // 视频（动态壁纸）没有图片缩略图：若已缓存首帧海报，就用海报当缩略图。
+                    let tex_key = self.thumb_source(path); // 变量 tex_key
+                    if let Some(k) = tex_key.as_deref() { // 条件分支
+                        if ui.is_rect_visible(rect) // 语句
+                            && !self.tex_cache.contains_key(k) // 语句
+                            && !self.thumb.is_requested(k) // 语句
+                        { // 语句
+                            self.thumb.request(k); // 语句
+                        } // 块结束
                     } // 块结束
                     { // 语句
                         let painter = ui.painter(); // 变量 painter
                         painter.rect_filled(rect, Rounding::same(9.0), theme::extreme()); // 语句
-                        if is_video { // 条件分支
-                            // 动态壁纸：占位符 + 播放图标。
-                            painter.text( // 语句
-                                egui::pos2(rect.center().x, rect.center().y - 8.0), // 字段 egui
-                                egui::Align2::CENTER_CENTER, // 字段 egui
-                                "▶", // 语句
-                                egui::FontId::proportional(30.0), // 字段 egui
-                                theme::accent(), // 字段 theme
-                            ); // 块结束
-                            painter.text( // 语句
-                                egui::pos2(rect.center().x, rect.center().y + 18.0), // 字段 egui
-                                egui::Align2::CENTER_CENTER, // 字段 egui
-                                "动态壁纸", // 语句
-                                egui::FontId::proportional(11.0), // 字段 egui
-                                theme::subtext(), // 字段 theme
-                            ); // 块结束
-                        } else { // 语句
-                            match self.tex_cache.get(path) { // 分支匹配
+                        let mut drew = false; // 变量 drew
+                        if let Some(k) = tex_key.as_deref() { // 条件分支
+                            match self.tex_cache.get(k) { // 分支匹配
                                 Some(Some(tex)) => { // 匹配分支
                                     let ts = tex.size(); // 变量 ts
                                     let tw = ts[0] as f32; // 变量 tw
@@ -2860,6 +2994,7 @@ impl App { // 实现
                                             Color32::WHITE, // 字段 Color32
                                         ); // 块结束
                                     } // 块结束
+                                    drew = true; // 语句
                                 } // 块结束
                                 Some(None) => { // 匹配分支
                                     painter.text( // 语句
@@ -2869,6 +3004,7 @@ impl App { // 实现
                                         egui::FontId::proportional(12.0), // 字段 egui
                                         theme::subtext(), // 字段 theme
                                     ); // 块结束
+                                    drew = true; // 语句
                                 } // 块结束
                                 None => { // 匹配分支
                                     painter.text( // 语句
@@ -2878,8 +3014,26 @@ impl App { // 实现
                                         egui::FontId::proportional(12.0), // 字段 egui
                                         theme::subtext(), // 字段 theme
                                     ); // 块结束
+                                    drew = true; // 语句
                                 } // 块结束
                             } // 块结束
+                        } // 块结束
+                        if !drew { // 条件分支
+                            // 动态壁纸且尚无首帧海报：占位符 + 播放图标。
+                            painter.text( // 语句
+                                egui::pos2(rect.center().x, rect.center().y - 8.0), // 字段 egui
+                                egui::Align2::CENTER_CENTER, // 字段 egui
+                                "▶", // 语句
+                                egui::FontId::proportional(30.0), // 字段 egui
+                                theme::accent(), // 字段 theme
+                            ); // 块结束
+                            painter.text( // 语句
+                                egui::pos2(rect.center().x, rect.center().y + 18.0), // 字段 egui
+                                egui::Align2::CENTER_CENTER, // 字段 egui
+                                "动态壁纸", // 语句
+                                egui::FontId::proportional(11.0), // 字段 egui
+                                theme::subtext(), // 字段 theme
+                            ); // 块结束
                         } // 块结束
                         // Hover overlay with a call-to-action pill.
                         if resp.hovered() { // 条件分支
@@ -3363,43 +3517,52 @@ impl App { // 实现
                                 Vec2::new(64.0, 40.0), // 字段 Vec2
                                 egui::Sense::click(), // 字段 egui
                             ); // 块结束
-                            if !crate::thumbs::is_video_file(path) // 条件分支
-                                && ui.is_rect_visible(rect) // 语句
-                                && !self.tex_cache.contains_key(path) // 语句
-                                && !self.thumb.is_requested(path) // 语句
-                            { // 语句
-                                self.thumb.request(path); // 语句
+                            // 视频（动态壁纸）：有首帧海报就用海报当缩略图，没有则显示 ▶。
+                            let tex_key = self.thumb_source(path); // 变量 tex_key
+                            if let Some(k) = tex_key.as_deref() { // 条件分支
+                                if ui.is_rect_visible(rect) // 语句
+                                    && !self.tex_cache.contains_key(k) // 语句
+                                    && !self.thumb.is_requested(k) // 语句
+                                { // 语句
+                                    self.thumb.request(k); // 语句
+                                } // 块结束
                             } // 块结束
                             { // 语句
                                 let painter = ui.painter(); // 变量 painter
                                 painter.rect_filled(rect, Rounding::same(6.0), theme::extreme()); // 语句
-                                if crate::thumbs::is_video_file(path) { // 条件分支
+                                let mut drew = false; // 变量 drew
+                                if let Some(k) = tex_key.as_deref() { // 条件分支
+                                    if let Some(Some(tex)) = self.tex_cache.get(k) { // 条件分支
+                                        let ts = tex.size(); // 变量 ts
+                                        let (tw, th) = (ts[0] as f32, ts[1] as f32); // 调用 let
+                                        if tw > 0.0 && th > 0.0 { // 条件分支
+                                            let s = (rect.width() / tw).min(rect.height() / th); // 变量 s
+                                            let ir = egui::Rect::from_center_size( // 变量 ir
+                                                rect.center(), // 语句
+                                                Vec2::new(tw * s, th * s), // 字段 Vec2
+                                            ); // 块结束
+                                            painter.image( // 语句
+                                                tex.id(), // 语句
+                                                ir, // 语句
+                                                egui::Rect::from_min_max( // 调用 from_min_max
+                                                    egui::pos2(0.0, 0.0), // 字段 egui
+                                                    egui::pos2(1.0, 1.0), // 字段 egui
+                                                ), // 语句
+                                                Color32::WHITE, // 字段 Color32
+                                            ); // 块结束
+                                        } // 块结束
+                                        drew = true; // 语句
+                                    } // 块结束
+                                } // 块结束
+                                if !drew { // 条件分支
+                                    // 无海报的视频 / 载入失败的图片：占位符。
                                     painter.text( // 语句
                                         rect.center(), // 语句
                                         egui::Align2::CENTER_CENTER, // 字段 egui
-                                        "▶", // 语句
+                                        if crate::thumbs::is_video_file(path) { "▶" } else { "🖼" }, // 语句
                                         egui::FontId::proportional(16.0), // 字段 egui
                                         theme::accent(), // 字段 theme
                                     ); // 块结束
-                                } else if let Some(Some(tex)) = self.tex_cache.get(path) { // 条件分支
-                                    let ts = tex.size(); // 变量 ts
-                                    let (tw, th) = (ts[0] as f32, ts[1] as f32); // 调用 let
-                                    if tw > 0.0 && th > 0.0 { // 条件分支
-                                        let s = (rect.width() / tw).min(rect.height() / th); // 变量 s
-                                        let ir = egui::Rect::from_center_size( // 变量 ir
-                                            rect.center(), // 语句
-                                            Vec2::new(tw * s, th * s), // 字段 Vec2
-                                        ); // 块结束
-                                        painter.image( // 语句
-                                            tex.id(), // 语句
-                                            ir, // 语句
-                                            egui::Rect::from_min_max( // 调用 from_min_max
-                                                egui::pos2(0.0, 0.0), // 字段 egui
-                                                egui::pos2(1.0, 1.0), // 字段 egui
-                                            ), // 语句
-                                            Color32::WHITE, // 字段 Color32
-                                        ); // 块结束
-                                    } // 块结束
                                 } // 块结束
                             } // 块结束
                             if resp.clicked() { // 条件分支
@@ -4110,6 +4273,7 @@ impl eframe::App for App { // 实现
                     self.web_thumb_order.clear(); // 语句
                     self.web_preview_id = None; // 语句
                     self.web_preview_tex = None; // 语句
+                    self.web_preview_want = None; // 语句
                     let src = self.web_source.min(crate::websrc::SOURCES.len() - 1); // 变量 src
                     let name = crate::websrc::SOURCES[src].name; // 变量 name
                     self.status = if self.web_total_pages > 0 { // 语句
@@ -4157,15 +4321,9 @@ impl eframe::App for App { // 实现
             match res { // 分支匹配
                 Ok(full) => { // 匹配分支
                     if self.web_preview_id == Some(id) { // 条件分支
-                        if let Some(t) = crate::thumbs::load_image(&full.path, 1600) { // 条件分支
-                            let ci = ColorImage::from_rgba_unmultiplied([t.w, t.h], &t.rgba); // 变量 ci
-                            let tex = ctx.load_texture( // 变量 tex
-                                format!("webp:{}", full.path.display()), // 语句
-                                ci, // 语句
-                                egui::TextureOptions::LINEAR, // 字段 egui
-                            ); // 块结束
-                            self.web_preview_tex = Some(tex); // 语句
-                        } // 块结束
+                        // 大图解码交给后台（见 previewer 轮询），这里只登记目标。
+                        self.web_preview_want = Some(full.path.clone()); // 语句
+                        self.previewer.request(&full.path, 1600); // 调用 request
                     } // 块结束
                     self.status = format!("原图已就绪：{}", full.title); // 语句
                     self.web_full.insert(id, Some(full.clone())); // 语句
@@ -4184,17 +4342,24 @@ impl eframe::App for App { // 实现
             } // 块结束
         } // 块结束
 
-        // 网上壁纸库：动态壁纸（mp4）下载结果。
-        if let Some(res) = self.web_video_rx.as_ref().and_then(|rx| rx.try_recv().ok()) { // 条件分支
-            self.web_video_rx = None; // 语句
-            self.web_video_busy = false; // 语句
-            let after = std::mem::take(&mut self.web_video_after); // 变量 after
+        // 网上壁纸库：动态壁纸（mp4）下载结果（可多个并发，各自执行对应动作）。
+        let mut video_done: Vec<(Result<PathBuf, String>, WebVideoAfter)> = Vec::new(); // 变量 video_done
+        self.web_video_jobs.retain(|(rx, after)| match rx.try_recv() { // 调用 retain
+            Ok(res) => { // 匹配分支
+                video_done.push((res, *after)); // 语句
+                false // 语句
+            } // 块结束
+            Err(std::sync::mpsc::TryRecvError::Empty) => true, // 匹配分支
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => false, // 匹配分支
+        }); // 语句
+        for (res, after) in video_done { // 循环
             match res { // 分支匹配
                 Ok(path) => { // 匹配分支
                     match after { // 分支匹配
                         WebVideoAfter::Live => self.with_mpv_or_download(AfterMpv::LiveWallpaper(path)), // 匹配分支
                         WebVideoAfter::Playlist => { // 匹配分支
                             self.add_to_playlist(&path); // 语句
+                            self.precache_live_posters(); // 让新加入的视频也生成缩略图/首帧海报
                             self.status = format!("原视频已加入轮播：{}", path.display()); // 语句
                         } // 块结束
                         WebVideoAfter::Lock => self.with_mpv_or_download(AfterMpv::LockVideo(path)), // 匹配分支
@@ -4218,6 +4383,8 @@ impl eframe::App for App { // 实现
                     } else { // 语句
                         self.status = format!("mpv 已就绪：{}", path.display()); // 语句
                     } // 块结束
+                    // mpv 就绪后补生成动态壁纸首帧海报（供缩略图 / 秒切）。
+                    self.precache_live_posters(); // 语句
                 } // 块结束
                 Err(e) => { // 匹配分支
                     self.mpv_after = None; // 语句
@@ -4230,6 +4397,78 @@ impl eframe::App for App { // 实现
         if self.tab == Tab::Web4k && !self.web_loaded_once && !self.web_loading { // 条件分支
             self.web_loaded_once = true; // 语句
             self.web_load(1); // 语句
+        } // 块结束
+
+        // 后台大图预览解码结果 → 上传纹理（库/轮播「当前壁纸」大图、网上壁纸库详情大图）。
+        for (src, _max, t) in self.previewer.poll() { // 循环
+            let Some(t) = t else { continue; }; // 变量 Some
+            let img = ColorImage::from_rgba_unmultiplied([t.w, t.h], &t.rgba); // 变量 img
+            let tex = ctx.load_texture( // 变量 tex
+                format!("preview:{}", src.display()), // 语句
+                img, // 语句
+                egui::TextureOptions::LINEAR, // 字段 egui
+            ); // 块结束
+            if let Some((logical, want)) = self.preview_src.clone() { // 条件分支
+                if want == src { // 条件分支
+                    self.preview = Some((logical, tex.clone())); // 语句
+                } // 块结束
+            } // 块结束
+            if self.web_preview_want.as_deref() == Some(src.as_path()) { // 条件分支
+                self.web_preview_tex = Some(tex); // 语句
+            } // 块结束
+        } // 块结束
+
+        // 后台「设置壁纸 / 视频截帧」结果。
+        loop { // 循环
+            let done = match self.wall_rx.try_recv() { // 变量 done
+                Ok(d) => d, // 匹配分支
+                Err(_) => break, // 匹配分支
+            }; // 块结束
+            match done { // 分支匹配
+                WallDone::Static { path, name, result } => { // 匹配分支
+                    match result { // 分支匹配
+                        Ok(_) => self.status = format!("已设置壁纸：{name}"), // 匹配分支
+                        Err(e) => self.status = format!("设置失败：{e}"), // 匹配分支
+                    } // 块结束
+                    // 若这次设置的是「待启动动态壁纸」的首帧海报，且仍是当前目标，
+                    // 就在此刻启动宿主（底层已铺好海报，不会闪旧壁纸）。
+                    if self // 条件分支
+                        .pending_live // 语句
+                        .as_ref() // 语句
+                        .map(|(v, p)| { // 调用 map
+                            p.as_path() == path.as_path() // 语句
+                                && self.cfg.last_path.as_deref() == Some(v.as_path()) // 语句
+                        }) // 语句
+                        .unwrap_or(false) // 语句
+                    { // 语句
+                        if let Some((video, _)) = self.pending_live.take() { // 条件分支
+                            self.start_live_wallpaper(&video); // 语句
+                        } // 块结束
+                    } // 块结束
+                    // 只有在「仍是这张静态图」时才收掉动态壁纸宿主，避免误停新开的动态壁纸。
+                    if self.stop_live_after_set.as_deref() == Some(path.as_path()) // 条件分支
+                        && self.cfg.last_path.as_deref() == Some(path.as_path()) // 语句
+                    { // 语句
+                        self.stop_live_after_set = None; // 语句
+                        if crate::livewall::active_video().is_some() { // 条件分支
+                            let _ = crate::livewall::stop(); // 变量 _
+                        } // 块结束
+                    } // 块结束
+                } // 块结束
+                WallDone::Poster { out, to_lock, result } => { // 匹配分支
+                    if to_lock { // 条件分支
+                        match result { // 分支匹配
+                            Ok(_) => self.apply_lock_screen(&out), // 匹配分支
+                            Err(e) => self.status = format!("动态壁纸锁屏失败：{e}"), // 匹配分支
+                        } // 块结束
+                    } // 块结束
+                } // 块结束
+            } // 块结束
+        } // 块结束
+
+        // 后台动态壁纸首帧海报生成结果（释放去重标记，缩略图下一帧自然拉取）。
+        while let Ok((out, _ok)) = self.poster_rx.try_recv() { // 循环
+            self.posters_pending.remove(&out); // 语句
         } // 块结束
 
         // drain finished thumbnails
@@ -4274,9 +4513,8 @@ impl eframe::App for App { // 实现
 
         // ensure preview for current
         if let Some(p) = self.current_path() { // 条件分支
-            if !crate::thumbs::is_video_file(&p) // 条件分支
-                && self.preview.as_ref().map(|(q, _)| q != &p).unwrap_or(true) // 语句
-            { // 语句
+            // 视频（动态壁纸）也用其首帧海报当预览，所以这里不再排除视频。
+            if self.preview.as_ref().map(|(q, _)| q != &p).unwrap_or(true) { // 条件分支
                 self.load_preview(ctx, &p); // 语句
             } // 块结束
         } // 块结束
