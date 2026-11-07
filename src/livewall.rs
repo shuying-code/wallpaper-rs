@@ -15,7 +15,7 @@
 use std::path::{Path, PathBuf};
 
 #[cfg(windows)]
-pub use imp::{active_video, set_live_wallpaper, stop, supported};
+pub use imp::{active_video, poster_frame, set_live_wallpaper, stop, supported};
 
 #[cfg(not(windows))]
 pub fn supported() -> bool {
@@ -35,6 +35,15 @@ pub fn stop() -> Result<(), String> {
 #[cfg(not(windows))]
 pub fn active_video() -> Option<PathBuf> {
     None
+}
+
+/// 从视频中截取一帧作为静态海报图（PNG），用于「动态壁纸锁屏」。
+///
+/// Windows 锁屏只能设置静态图片、无法直接播放视频，因此这里用 mpv 把视频的
+/// 一帧导出为图片，再交给锁屏设置逻辑。
+#[cfg(not(windows))]
+pub fn poster_frame(_video: &Path, _out: &Path) -> Result<(), String> {
+    Err("动态壁纸锁屏目前仅支持 Windows".to_string())
 }
 
 #[cfg(windows)]
@@ -119,6 +128,44 @@ mod imp {
             video: video.to_path_buf(),
         });
         Ok(())
+    }
+
+    /// 从视频中截取一帧作为静态海报图（PNG），用于「动态壁纸锁屏」。
+    ///
+    /// 用 mpv 抽取：`mpv --no-config --no-audio --o=<out> --frames=1 --start=<secs> <video>`。
+    /// `--start` 跳过开头可能存在的黑帧；输出格式由 `--o` 的扩展名推断（`.png` → PNG）。
+    pub fn poster_frame(video: &Path, out: &Path) -> Result<(), String> {
+        if !video.is_file() {
+            return Err(format!("视频文件不存在：{}", video.display()));
+        }
+        let mpv = find_mpv().ok_or_else(|| {
+            "未找到 mpv 播放器：请安装 mpv，或用环境变量 WALLPAPER_MPV 指定 mpv.exe 路径".to_string()
+        })?;
+        if let Some(dir) = out.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("创建海报目录失败：{e}"))?;
+        }
+        let _ = std::fs::remove_file(out);
+        use std::os::windows::process::CommandExt;
+        let mut cmd = Command::new(mpv);
+        cmd.arg("--no-config")
+            .arg("--no-audio")
+            .arg("--no-osc")
+            .arg("--no-input-default-bindings")
+            .arg(format!("--o={}", out.display()))
+            .arg("--frames=1")
+            .arg("--start=1.0")
+            .arg(video);
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let mut child = cmd.spawn().map_err(|e| format!("启动 mpv 失败：{e}"))?;
+        let status = child.wait().map_err(|e| format!("等待 mpv 失败：{e}"))?;
+        if out.is_file() {
+            Ok(())
+        } else {
+            Err(format!(
+                "截取视频帧失败（mpv 退出码 {:?}）",
+                status.code()
+            ))
+        }
     }
 
     /// 在桌面层创建铺满虚拟桌面的无边框子窗口。

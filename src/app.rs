@@ -58,6 +58,8 @@ enum WebVideoAfter { // 枚举 WebVideoAfter
     Live, // 语句
     /// 下载后「加入轮播清单」：轮播轮到该条目时以原视频播放动态壁纸。
     Playlist, // 语句
+    /// 下载后「设为锁屏」：从视频截取一帧作为锁屏海报图。
+    Lock, // 语句
 } // 块结束
 
 enum Action { // 枚举 Action
@@ -81,6 +83,8 @@ enum Action { // 枚举 Action
     DismissPermissions, // 语句
     Quit, // 语句
     ReapplyCurrent, // 语句
+    /// 把视频设为锁屏：Windows 锁屏只能设置静态图片，先截取一帧再设置。
+    LockVideo(PathBuf), // 语句
 } // 块结束
 
 /// Snapshot of the persisted config, used to detect changes and autosave.
@@ -651,6 +655,7 @@ impl App { // 实现
                         self.set_current(ctx, i); // 语句
                     } // 块结束
                 } // 块结束
+                Action::LockVideo(p) => self.set_lock_from_video(&p), // 匹配分支
             } // 块结束
         } // 块结束
     } // 块结束
@@ -856,7 +861,12 @@ impl App { // 实现
             self.status = "请先选择一张壁纸".to_string(); // 语句
             return; // 返回
         }; // 块结束
-        self.apply_lock_screen(&path); // 语句
+        // 当前是动态壁纸视频时，先截取一帧再设置（锁屏只支持静态图片）。
+        if crate::thumbs::is_video_file(&path) { // 条件分支
+            self.set_lock_from_video(&path); // 语句
+        } else { // 语句
+            self.apply_lock_screen(&path); // 语句
+        } // 块结束
     } // 块结束
 
     fn set_lock_from_online(&mut self) { // 函数 set_lock_from_online
@@ -866,6 +876,23 @@ impl App { // 实现
         }; // 块结束
         let path = img.path.clone(); // 变量 path
         self.apply_lock_screen(&path); // 语句
+    } // 块结束
+
+    /// 把视频设为锁屏壁纸。
+    ///
+    /// Windows 锁屏只接受静态图片、无法直接播放视频，因此先用 mpv 从视频中截取
+    /// 一帧作为海报图（缓存于 `<配置目录>/lock_posters/<文件名>.png`），再按普通
+    /// 静态壁纸设置锁屏（必要时走 UAC 提权）。
+    fn set_lock_from_video(&mut self, video: &Path) { // 函数 set_lock_from_video
+        let stem = video // 变量 stem
+            .file_stem() // 语句
+            .map(|s| s.to_string_lossy().to_string()) // 语句
+            .unwrap_or_else(|| "poster".to_string()); // 语句
+        let out = config_dir().join("lock_posters").join(format!("{stem}.png")); // 变量 out
+        match crate::livewall::poster_frame(video, &out) { // 分支匹配
+            Ok(_) => self.apply_lock_screen(&out), // 匹配分支
+            Err(e) => self.status = format!("动态壁纸锁屏失败：{e}"), // 匹配分支
+        } // 块结束
     } // 块结束
 
     /// Set the lock-screen image, transparently requesting administrator rights
@@ -1779,6 +1806,15 @@ impl App { // 实现
                                     self.apply_live_wallpaper(&dest); // 语句
                                 } else { // 语句
                                     self.web_video_download(url.clone(), name.clone(), WebVideoAfter::Live); // 语句
+                                } // 块结束
+                            } // 块结束
+                            // 设为锁屏：Windows 锁屏只能设置静态图片，这里从视频截取一帧作为锁屏海报。
+                            if ghost_button(ui, "设为锁屏(动态)").clicked() && !self.web_video_busy { // 条件分支
+                                let dest = self.web_save_dir().join(&name); // 变量 dest
+                                if dest.is_file() { // 条件分支
+                                    self.set_lock_from_video(&dest); // 语句
+                                } else { // 语句
+                                    self.web_video_download(url.clone(), name.clone(), WebVideoAfter::Lock); // 语句
                                 } // 块结束
                             } // 块结束
                             // 用「原视频」加入轮播：轮播轮到该条目时以 mpv 播放动态壁纸（Windows）。
@@ -2827,6 +2863,21 @@ impl App { // 实现
                             .clicked() // 语句
                         { // 语句
                             actions.push(Action::SetPath(path.to_path_buf())); // 语句
+                        } // 块结束
+                        // 视频条目：额外提供「设为锁屏」，由视频截取一帧作为锁屏海报。
+                        if is_video // 条件分支
+                            && ui // 语句
+                                .add( // 语句
+                                    egui::Button::new( // 调用 new
+                                        RichText::new("设为锁屏").size(11.0).color(theme::subtext()), // 调用 new
+                                    ) // 块结束
+                                    .fill(theme::extreme()) // 语句
+                                    .rounding(Rounding::same(7.0)), // 语句
+                                ) // 块结束
+                                .on_hover_text("从视频截取一帧作为锁屏壁纸") // 语句
+                                .clicked() // 语句
+                        { // 语句
+                            actions.push(Action::LockVideo(path.to_path_buf())); // 语句
                         } // 块结束
                         // Add / remove this picture from the slideshow playlist.
                         let in_pl = self.in_playlist(path); // 变量 in_pl
@@ -4027,6 +4078,7 @@ impl eframe::App for App { // 实现
                             self.add_to_playlist(&path); // 语句
                             self.status = format!("原视频已加入轮播：{}", path.display()); // 语句
                         } // 块结束
+                        WebVideoAfter::Lock => self.set_lock_from_video(&path), // 匹配分支
                         WebVideoAfter::Save => { // 匹配分支
                             self.status = format!("动态壁纸已下载到 {}", path.display()); // 语句
                         } // 块结束
