@@ -3,9 +3,9 @@
 <p align="center">🌐 <b>Language</b>：<a href="README.md">简体中文</a> · <a href="README.en.md">English</a> · <a href="README.zh-TW.md">繁體中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a> · <a href="README.ru.md">Русский</a> · <a href="README.es.md">Español</a> · <a href="README.fr.md">Français</a> · <a href="README.de.md">Deutsch</a> · <a href="README.pt-BR.md">Português</a></p>
 
 Um **aplicativo de papel de parede multiplataforma** feito com **Rust + egui/eframe**
-(Windows / macOS / Linux). Uma única interface cobre os modos **papel fixo** e
-**apresentação (rotação por tempo)**. **Totalmente local: sem login, sem
-assinatura, sem telemetria.**
+(Windows / macOS / Linux). Uma única interface cobre **papel fixo**, **apresentação
+por tempo** e **papéis animados** (vídeo). Abre por padrão na **Biblioteca online**;
+**sem login, sem assinatura, sem telemetria.**
 
 <p>
   <img alt="build" src="https://github.com/shuying-code/wallpaper-rs/actions/workflows/build.yml/badge.svg">
@@ -21,9 +21,11 @@ assinatura, sem telemetria.**
 
 ## Recursos
 
-- **Biblioteca**: varre uma pasta local (com subpastas), grade de miniaturas e busca por nome.
+- **Biblioteca online (multissite, tela inicial)**: Bing do dia 4K · Netbian · MoeWalls · MotionBGs — quatro sites. Busca / categorias / paginação / favoritos; baixar o original, definir como papel de parede ou tela de bloqueio. Sites com vídeo também permitem baixar o MP4 ou **definir papel animado**.
+- **Papéis animados (Windows / macOS / Linux-X11)**: um host próprio **atrás dos ícones da área de trabalho**, com mpv reproduzindo o MP4 em loop. **Papéis animados também participam da apresentação.** O mpv não é incluído — no Windows, no primeiro uso ele **mede a velocidade de vários espelhos e baixa o mais rápido**; no macOS / Linux é preciso ter o mpv instalado.
+- **Biblioteca**: varre uma pasta local (com subpastas) e mostra **imagens e vídeos** em grade com busca por nome. Vídeos podem ser definidos como papel animado / tela de bloqueio ou adicionados à apresentação.
 - **Papel fixo**: clique na miniatura ou em "Definir como papel de parede" para aplicar na hora.
-- **Apresentação**: troca automática por intervalo, sequencial ou aleatória, com barra de progresso.
+- **Apresentação**: troca automática por intervalo, sequencial ou aleatória, com barra de progresso. **No modo apresentação, ela inicia sozinha ao abrir e troca uma imagem na hora.**
 - **Modo de exibição**: Preencher / Ajustar / Esticar / Centralizar / Mosaico (Windows via registro).
 - **Tema**: claro / escuro com troca imediata.
 - **Configuração persistente**: pasta, modo, intervalo, exibição, tema e último papel.
@@ -41,9 +43,9 @@ assinatura, sem telemetria.**
 
 | Plataforma | Status | Como define o papel |
 |---|---|---|
-| Windows x64 | ✅ Compilado e verificado | `SystemParametersInfoW` + registro |
-| macOS | ✅ Suporte no código | `osascript` (System Events) |
-| Linux | ✅ Suporte no código | GNOME `gsettings` ou `feh` |
+| Windows x64 | ✅ Compilado e verificado | `SystemParametersInfoW` + registro; **papel animado**: host atrás dos ícones + mpv |
+| macOS | ✅ Suporte no código | `osascript` (System Events); **papel animado**: janela no nível da área de trabalho + mpv |
+| Linux | ✅ Suporte no código | GNOME `gsettings` ou `feh`; **papel animado**: X11 `_NET_WM_WINDOW_TYPE_DESKTOP` + mpv (Wayland não suportado) |
 
 ## Arquivo de configuração
 
