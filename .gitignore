@@ -7,7 +7,7 @@
 /work
 /work2
 
-# 打包时下载的第三方便携程序（mpv），见 .github/workflows/build.yml
+# 本地开发用的便携 mpv（动态壁纸测试用，不纳入版本库；发行时运行时按需下载）
 /bundled-mpv
 
 # 日志
