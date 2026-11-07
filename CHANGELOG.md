@@ -2,6 +2,11 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.13.1] - 2026-11-07
+
+### 变更
+- **mpv 按需下载支持多个下载地址（自动切换）**：不再只依赖 GitHub 直连，改为按顺序尝试多个「GitHub 加速镜像」——`ghfast.top` / `gh-proxy.com` / `hk.gh-proxy.com` / `ghproxy.net` / `mirror.ghproxy.com`，任一成功即停止，全部失败再回退官方直连。可用环境变量 `WALLPAPER_MPV_URL` 指定自定义下载地址（优先）。同时校验下载内容确为 7z 压缩包，避免镜像返回的错误页被当作下载成功。
+
 ## [0.13.0] - 2026-11-07
 
 ### 变更

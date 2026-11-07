@@ -388,8 +388,9 @@ mod imp {
         find_mpv().is_some()
     }
 
-    /// 确保有可用的 mpv：本机已安装则直接返回；否则从 GitHub 下载便携版并解压到用户
-    /// 缓存目录（`%LOCALAPPDATA%\wallpaper-rs\mpv-runtime`），不随安装包分发。
+    /// 确保有可用的 mpv：本机已安装则直接返回；否则从多个候选地址（官方直连 + 多个
+    /// GitHub 加速镜像，见 [`mpv_download_urls`]）下载便携版并解压到用户缓存目录
+    /// （`%LOCALAPPDATA%\wallpaper-rs\mpv-runtime`），不随安装包分发。
     ///
     /// **阻塞调用**（含网络下载与解压），应在后台线程中执行。
     pub fn ensure_mpv() -> Result<PathBuf, String> {
@@ -398,9 +399,9 @@ mod imp {
         }
         let dir = mpv_cache_dir().ok_or_else(|| "无法确定 mpv 缓存目录".to_string())?;
         std::fs::create_dir_all(&dir).map_err(|e| format!("创建 mpv 缓存目录失败：{e}"))?;
-        let url = resolve_mpv_url();
         let archive = dir.join("mpv-download.7z");
-        download_file(&url, &archive)?;
+        let urls = mpv_download_urls();
+        download_from_any(&urls, &archive)?;
         extract_7z(&archive, &dir)?;
         let _ = std::fs::remove_file(&archive);
         // 只保留运行所需文件，删掉文档 / 安装脚本 / 更新器，省空间。
@@ -451,6 +452,76 @@ mod imp {
             }
         }
         FALLBACK.to_string()
+    }
+
+    /// 国内常用的 GitHub 加速镜像前缀（均为「前缀 + 原始 GitHub 地址」形式）。
+    /// 直连 GitHub 缓慢 / 被墙时自动改用这些镜像；已按实测可用性与速度排序。
+    const GH_PROXIES: &[&str] = &[
+        "https://ghfast.top/",
+        "https://gh-proxy.com/",
+        "https://hk.gh-proxy.com/",
+        "https://ghproxy.net/",
+        "https://mirror.ghproxy.com/",
+    ];
+
+    /// mpv 的候选下载地址列表（按尝试顺序）：
+    /// 1. 环境变量 `WALLPAPER_MPV_URL` 指定的自定义地址（若设置）；
+    /// 2. 多个 GitHub 加速镜像（同一个文件的代理地址，通常最快）；
+    /// 3. 官方直连地址（作为最后的兜底）。
+    ///
+    /// [`download_from_any`] 会依次尝试，任意一个成功即停止。
+    fn mpv_download_urls() -> Vec<String> {
+        let mut urls: Vec<String> = Vec::new();
+        if let Ok(u) = std::env::var("WALLPAPER_MPV_URL") {
+            let u = u.trim().to_string();
+            if !u.is_empty() {
+                urls.push(u);
+            }
+        }
+        let direct = resolve_mpv_url();
+        // 镜像前缀 + 原始地址（这些代理站点会把请求转发到 GitHub）。
+        for p in GH_PROXIES {
+            urls.push(format!("{p}{direct}"));
+        }
+        // 官方直连兜底。
+        urls.push(direct);
+        urls
+    }
+
+    /// 依次尝试 `urls` 中的地址下载到 `dest`，任意一个成功即返回。
+    fn download_from_any(urls: &[String], dest: &Path) -> Result<(), String> {
+        if urls.is_empty() {
+            return Err("没有可用的 mpv 下载地址".to_string());
+        }
+        let mut last = String::new();
+        for url in urls {
+            match download_file(url, dest) {
+                Ok(()) => {
+                    // 某些镜像在出错时会返回 HTTP 200 的错误页；只认真正是 7z 的内容。
+                    if is_7z(dest) {
+                        return Ok(());
+                    }
+                    last = format!("下载内容不是有效的 7z 压缩包（{url}）");
+                    let _ = std::fs::remove_file(dest);
+                }
+                Err(e) => {
+                    // 清掉半截文件，避免影响下一次尝试。
+                    let _ = std::fs::remove_file(dest.with_extension("part"));
+                    last = e;
+                }
+            }
+        }
+        Err(format!("所有 mpv 下载地址均失败（最后错误：{last}）"))
+    }
+
+    /// 判断文件是否为 7z 压缩包（魔数 `37 7A BC AF 27 1C`）。
+    fn is_7z(path: &Path) -> bool {
+        use std::io::Read;
+        let mut buf = [0u8; 6];
+        match std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut buf)) {
+            Ok(()) => buf == [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C],
+            Err(_) => false,
+        }
     }
 
     /// 下载 `url` 到 `dest`（先写 `.part` 再改名，避免半截文件被误用）。

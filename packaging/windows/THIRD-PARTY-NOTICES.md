@@ -14,6 +14,8 @@
   - 上游 mpv：<https://github.com/mpv-player/mpv>
   - Windows 构建脚本：<https://github.com/shinchiro/mpv-winbuild-cmake>
 - 下载地址：<https://github.com/shinchiro/mpv-winbuild-cmake/releases>
+- 下载时会依次尝试官方直连与多个 GitHub 加速镜像（ghfast.top / gh-proxy.com 等），
+  任一成功即停止；也可用环境变量 `WALLPAPER_MPV_URL` 指定自定义下载地址。
 - 如需 mpv 的对应源代码，可通过上述地址获取。也可用环境变量 `WALLPAPER_MPV`
   指定已有的 mpv.exe 路径，或设置 `WALLPAPER_MPV` 指向本机安装。
 
