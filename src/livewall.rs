@@ -160,9 +160,25 @@ mod imp {
                 std::ptr::null_mut(),
             );
             if hwnd != 0 {
+                // 关键：把宿主窗口插到「桌面图标层」的正下方——位于壁纸之上、图标之下。
+                // 不能直接压到同级最底部（HWND_BOTTOM）：Win11 上桌面壁纸由 Progman
+                // 的同级 WorkerW 绘制，压到底部会被壁纸盖住——mpv 明明在跑、桌面却看不到
+                // 动态壁纸（即「轮播动态壁纸不生效 / 原视频不可用」）。经典方案里父窗口
+                // 本身就是图标后的 WorkerW，找不到 SHELLDLL_DefView，退回底部即可。
+                let icons = FindWindowExW(
+                    parent,
+                    0,
+                    to_wide("SHELLDLL_DefView").as_ptr(),
+                    std::ptr::null(),
+                );
+                let insert_after = if icons != 0 {
+                    icons as *mut c_void
+                } else {
+                    HWND_BOTTOM as *mut c_void
+                };
                 SetWindowPos(
                     hwnd as *mut c_void,
-                    HWND_BOTTOM as *mut c_void,
+                    insert_after,
                     0,
                     0,
                     w,
