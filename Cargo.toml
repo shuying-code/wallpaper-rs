@@ -1,6 +1,6 @@
 [package]
 name = "wallpaper-rs"
-version = "0.14.3"
+version = "0.14.4"
 edition = "2021"
 description = "Cross-platform desktop wallpaper app (Windows/macOS/Linux): fixed wallpaper or slideshow/rotation, built with Rust + egui."
 license = "MIT"
@@ -81,11 +81,33 @@ name = "android.permission.READ_EXTERNAL_STORAGE"
 name = "android.permission.READ_MEDIA_IMAGES"
 
 [profile.release]
-# 尽量减小发行体积（对所有平台生效）。opt-level="z" 面向体积；fat LTO +
-# codegen-units=1 去重并内联；panic=abort 去掉 unwind 表；strip 去掉符号表。
+# 发行体积优先（对所有平台生效）：opt-level="z" 面向体积；fat LTO + codegen-units=1
+# 跨 crate 去重并内联；panic=abort 去掉 unwind 表；strip 去掉符号表。
 opt-level = "z"
 lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = "symbols"
 incremental = false
+
+# 图像解码 + 压缩/色彩转换是纯 CPU 热点（缩略图、预览、gzip 解压、ICC 色彩管理）。
+# 全局 "z" 会关闭向量化，拖慢这些路径；单独给它们 opt-level=3，体积代价仅几十 KB，
+# 却能让热点速度接近全局 opt-level=3。
+[profile.release.package.image]
+opt-level = 3
+[profile.release.package.zune-jpeg]
+opt-level = 3
+[profile.release.package.zune-core]
+opt-level = 3
+[profile.release.package.png]
+opt-level = 3
+[profile.release.package.gif]
+opt-level = 3
+[profile.release.package.tiff]
+opt-level = 3
+[profile.release.package.image-webp]
+opt-level = 3
+[profile.release.package.moxcms]
+opt-level = 3
+[profile.release.package.flate2]
+opt-level = 3

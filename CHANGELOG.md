@@ -2,6 +2,17 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.14.4] - 2026-11-07
+
+### 优化
+- **发行体积 / 性能兼顾**：全局仍用 `opt-level="z"` 把体积压到最小，但把纯 CPU 热点
+  crate（图像解码 `image` / `zune-jpeg` / `zune-core` / `png` / `gif` / `tiff` /
+  `image-webp`，以及解压与色彩管理 `flate2` / `moxcms`）单独提升到 `opt-level=3`。
+  `z` 会关闭循环向量化、明显拖慢缩略图解码与 gzip 解压；单独放开这些 crate 后热点
+  速度接近全局 `opt-level=3`，而体积只增约 0.2 MiB（Windows 单文件 exe 5.09 → 5.29 MiB）。
+- 保留 `lto="fat"` + `codegen-units=1`（跨 crate 去重内联）、`panic="abort"`（去 unwind 表）、
+  `strip="symbols"`（去符号表）不变，继续压低体积。
+
 ## [0.14.3] - 2026-11-07
 
 ### 变更
