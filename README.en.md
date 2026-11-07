@@ -12,9 +12,14 @@ subscription, no telemetry.**
   <img alt="Rust" src="https://img.shields.io/badge/rust-1.75%2B-orange">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-2f6fed">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
+  <img alt="Release" src="https://img.shields.io/github/v/release/shuying-code/wallpaper-rs?color=blue">
+  <img alt="Downloads" src="https://img.shields.io/github/downloads/shuying-code/wallpaper-rs/total?color=green">
 </p>
 
-![Library](assets/screenshot-library.png)
+<p align="center">
+  <img src="assets/screenshot-library.png" width="49%" alt="Library">
+  <img src="assets/screenshot-slideshow.png" width="49%" alt="Slideshow · live wallpaper">
+</p>
 
 ---
 
