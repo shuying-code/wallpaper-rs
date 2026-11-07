@@ -71,9 +71,10 @@ You can also click the download links in the in-app **About** page.
 - **Keyboard shortcuts**: `←` previous, `→` next.
 - **Crash watchdog + auto-report**: a built-in monitor thread watches for hangs / crashes /
   functional errors (**network errors excluded**), writes a local log to
-  `%APPDATA%\wallpaper-rs\logs\report.log`, and auto-reports to GitHub Issues — it opens a
-  pre-filled "new issue" page by default, or creates the issue silently once you add a GitHub
-  token under **Settings → Reporting**. Toggleable, plus a manual "report now" button.
+  `%APPDATA%\wallpaper-rs\logs\report.log`, and auto-reports to GitHub Issues — the reporting
+  **token is built in** (obfuscated, not user-editable), so issues are created silently with zero
+  setup; override with the `WALLPAPER_REPORT_TOKEN` env var if needed. Toggleable, plus a manual
+  "report now" button.
 - **Single binary, pure Rust**: no WebView or runtime; embedded CJK font, no missing-glyph boxes.
 
 ## Screens

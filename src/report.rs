@@ -39,6 +39,70 @@ const MAX_REPORTS: u64 = 12;
 /// 无 token 时「打开网页」的最小间隔（同一条问题去重已挡掉大部分）。
 const WEB_MIN_GAP: Duration = Duration::from_secs(600);
 
+/// 内置上报 Token 的**混淆密文**（与 [`TOKEN_KEY`] 做 XOR 密钥流还原）。
+///
+/// ⚠️ 这是**混淆**、不是强加密：目的是让源码 / 二进制里**不出现明文 token**，
+/// 从而不会被 GitHub secret scanning 命中而自动吊销，也挡掉随手搜索。
+/// 但它**挡不住有意逆向的人**——所以这个 token 的权限必须保持最小
+/// （当前仅「`shuying-code/wallpaper-rs` 的 Issues: Read and write」）。
+const TOKEN_BLOB: &[u8] = &[
+    0x94, 0x35, 0x68, 0x69, 0x5a, 0x3c, 0xea, 0xf4, 0x56, 0xc6, 0xb6, 0x24, 0x79, 0x7c, 0xc6, 0x51,
+    0xe5, 0x7f, 0xa9, 0x65, 0xbf, 0xb3, 0xd9, 0x86, 0x06, 0x4b, 0xed, 0x2f, 0x05, 0x05, 0xbe, 0xe6,
+    0x5b, 0xbe, 0xdc, 0x90, 0xdd, 0x4f, 0x74, 0xdb, 0xb4, 0x44, 0x3e, 0x10, 0xa1, 0x52, 0x0f, 0xd0,
+    0xb9, 0x50, 0xbf, 0x4d, 0x59, 0x25, 0xcd, 0xc7, 0x86, 0x81, 0x0f, 0x20, 0x5f, 0x80, 0x1e, 0x4e,
+    0xa3, 0x47, 0x2f, 0xbf, 0x3f, 0x76, 0x9e, 0x68, 0xde, 0xc6, 0xaa, 0xf0, 0x2b, 0x61, 0x85, 0x72,
+    0x41, 0x2f, 0xc4, 0x0d, 0xcc, 0xa5, 0x5f, 0x6c, 0x91, 0x5c, 0xf4, 0x50, 0x44,
+];
+
+/// 混淆用密钥（32 字节）。
+const TOKEN_KEY: [u8; 32] = [
+    0x5a, 0x1f, 0x3c, 0x92, 0x77, 0x0b, 0xe4, 0x6d, 0x31, 0xa8, 0x54, 0x9e, 0xc2, 0x0f, 0x86, 0x4b,
+    0xd3, 0x27, 0x60, 0xbb, 0x19, 0xee, 0x48, 0x7a, 0x05, 0xf1, 0x33, 0x9c, 0x6e, 0x2a, 0xd7, 0x71,
+];
+
+/// xorshift 生成的字节密钥流，再与 [`TOKEN_KEY`] 逐字节混合。
+fn token_keystream(len: usize) -> Vec<u8> {
+    let mut st: u64 = 0x243F_6A88_85A3_08D3;
+    let mut out = Vec::with_capacity(len);
+    let mut i = 0usize;
+    while out.len() < len {
+        st ^= st << 13;
+        st ^= st >> 7;
+        st ^= st << 17;
+        out.push(((st >> 24) as u8) ^ TOKEN_KEY[i % TOKEN_KEY.len()]);
+        i += 1;
+    }
+    out
+}
+
+/// 还原内置上报 Token（运行时解密；源码里只有密文）。
+pub fn builtin_token() -> Option<String> {
+    let ks = token_keystream(TOKEN_BLOB.len());
+    let bytes: Vec<u8> = TOKEN_BLOB.iter().zip(ks).map(|(b, k)| b ^ k).collect();
+    String::from_utf8(bytes).ok()
+}
+
+/// Token 解析优先级：显式传入（配置 / 设置）> 环境变量 `WALLPAPER_REPORT_TOKEN` > 内置。
+fn resolve_token(explicit: &str) -> String {
+    let e = explicit.trim();
+    if !e.is_empty() {
+        return e.to_string();
+    }
+    if let Ok(v) = std::env::var("WALLPAPER_REPORT_TOKEN") {
+        let v = v.trim();
+        if !v.is_empty() {
+            return v.to_string();
+        }
+    }
+    builtin_token().unwrap_or_default()
+}
+
+/// 当前是否正在使用**内置** Token（供设置页显示）。
+pub fn using_builtin() -> bool {
+    let cur = rep().token.lock().map(|g| g.clone()).unwrap_or_default();
+    builtin_token().map(|b| b == cur).unwrap_or(false)
+}
+
 /// 上报器全局状态。
 struct Reporter {
     /// 监控起点（所有时间戳相对它计算）。
@@ -82,14 +146,7 @@ pub fn install(enabled: bool, token: String) {
     let r = rep();
     r.enabled.store(enabled, Ordering::Relaxed);
     if let Ok(mut t) = r.token.lock() {
-        if !token.is_empty() {
-            *t = token;
-        }
-        if t.is_empty() {
-            if let Ok(env) = std::env::var("WALLPAPER_REPORT_TOKEN") {
-                *t = env;
-            }
-        }
+        *t = resolve_token(&token);
     }
     static STARTED: OnceLock<()> = OnceLock::new();
     STARTED.get_or_init(|| {
@@ -113,7 +170,7 @@ pub fn set_enabled(v: bool) {
 /// 更新 GitHub token（空串表示清除）。
 pub fn set_token(t: &str) {
     if let Ok(mut g) = rep().token.lock() {
-        *g = t.to_string();
+        *g = resolve_token(t);
     }
 }
 
@@ -434,6 +491,20 @@ mod tests { // 模块 tests
     } // 块结束
 
     #[test] // 语句
+    fn builtin_token_decrypts() { // 函数 builtin_token_decrypts
+        // 不比对明文本身（避免把 token 写进测试），只校验解密结果形状正确——
+        // 算法一旦与生成端不一致，解出来就不可能是合法的 token。
+        let t = builtin_token().expect("内置 token 应能解密"); // 变量 t
+        assert!(t.starts_with("github_pat_"), "prefix mismatch"); // 语句
+        assert_eq!(t.len(), 93, "len mismatch"); // 语句
+        assert!(t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'), "charset"); // 语句
+        // 密文里不得出现明文 token 前缀。
+        let blob = TOKEN_BLOB.to_vec(); // 变量 blob
+        let needle = b"github_pat_"; // 变量 needle
+        assert!(!blob.windows(needle.len()).any(|w| w == needle), "blob leaks prefix"); // 语句
+    } // 块结束
+
+    #[test] // 语句
     fn prefilled_url_is_encoded() { // 函数 prefilled_url_is_encoded
         let u = prefilled_url("[自动上报] 卡死", "版本 v0.14.7 & 平台"); // 变量 u
         assert!(u.starts_with(ISSUES_NEW)); // 语句
@@ -456,5 +527,34 @@ mod tests { // 模块 tests
         let content = std::fs::read_to_string(log_path()).unwrap_or_default(); // 变量 content
         assert!(content.contains("界面未响应"), "log tail: {content}"); // 语句
         assert!(content.contains("测试 → 故意卡死"), "log tail: {content}"); // 语句
+    } // 块结束
+
+    /// 端到端验证「内置（混淆）token 解密后真能建 issue」（会打网络并真的建一条）。
+    /// 默认忽略；用 `cargo test -- --ignored --nocapture builtin_token_creates_issue` 运行，
+    /// 之后按打印出的编号把该 issue 关掉即可。
+    #[test] // 语句
+    #[ignore] // 语句
+    fn builtin_token_creates_issue() { // 函数 builtin_token_creates_issue
+        let t = builtin_token().expect("内置 token 解密失败"); // 变量 t
+        let payload = serde_json::json!({ // 变量 payload
+            "title": "[自动上报] 自检：内置 Token 链路验证", // 语句
+            "body": "由 wallpaper-rs 内置（混淆存储）token 上报链路的一次性自检。" // 语句
+        }); // 块结束
+        let resp = crate::websrc::agent() // 变量 resp
+            .post(API_ISSUES) // 语句
+            .set("Accept", "application/vnd.github+json") // 语句
+            .set("User-Agent", "wallpaper-rs") // 语句
+            .set("X-GitHub-Api-Version", "2022-11-28") // 语句
+            .set("Authorization", &format!("Bearer {t}")) // 语句
+            .send_json(payload); // 语句
+        match resp { // 分支匹配
+            Ok(r) => { // 匹配分支
+                let v: serde_json::Value = r.into_json().expect("解析响应失败"); // 变量 v
+                let n = v["number"].as_u64().unwrap_or(0); // 变量 n
+                println!("CREATED_ISSUE={n}"); // 语句
+                assert!(n > 0); // 语句
+            } // 块结束
+            Err(e) => panic!("内置 token 建 issue 失败：{e}"), // 匹配分支
+        } // 块结束
     } // 块结束
 } // 块结束

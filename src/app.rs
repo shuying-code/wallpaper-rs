@@ -3896,20 +3896,12 @@ impl App { // 实现
                 ui.separator(); // 语句
                 ui.add_space(8.0); // 语句
                 ui.horizontal(|ui| { // 语句
-                    setting_label(ui, "GitHub Token", "可选：填了直接静默建 issue；留空则打开预填页面"); // 调用 setting_label
+                    setting_label(ui, "GitHub Token", "内置（混淆存储、界面不可修改）；如需覆盖可设环境变量 WALLPAPER_REPORT_TOKEN"); // 调用 setting_label
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { // 语句
-                        let mut tk = self.cfg.report_token.clone(); // 变量 tk
-                        if ui // 条件分支
-                            .add( // 调用 add
-                                egui::TextEdit::singleline(&mut tk) // 语句
-                                    .password(true) // 语句
-                                    .desired_width(220.0) // 语句
-                                    .hint_text("ghp_… / github_pat_…"), // 语句
-                            ) // 块结束
-                            .changed() // 调用 changed
-                        { // 语句
-                            self.cfg.report_token = tk.clone(); // 语句
-                            crate::report::set_token(&tk); // 调用 set_token
+                        if crate::report::using_builtin() { // 条件分支
+                            chip(ui, "已内置 · 不可修改", theme::accent_soft(), theme::ok()); // 调用 chip
+                        } else { // 语句
+                            chip(ui, "外部覆盖中", theme::accent_soft(), theme::accent()); // 调用 chip
                         } // 块结束
                     }); // 语句
                 }); // 语句
