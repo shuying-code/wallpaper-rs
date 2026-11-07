@@ -71,6 +71,10 @@
 - **锁屏壁纸**：把当前壁纸同步设为系统锁屏（Windows 写 `PersonalizationCSP`，点击时自动弹出 UAC 管理员授权、同意后即完成，无需手动以管理员身份运行；Ubuntu/GNOME `gsettings` 锁屏 `picture-uri`；macOS 锁屏跟随系统壁纸）。**动态壁纸锁屏（Windows）**：Windows 锁屏只接受静态图片，本地视频卡片「**设为锁屏**」/ 网上壁纸库「**设为锁屏(动态)**」会先用 mpv 从视频中截取一帧作为海报图（缓存于 `%APPDATA%\wallpaper-rs\lock_posters\`），再按静态壁纸设置锁屏。
 - **跨平台全局快捷键**：Windows `RegisterHotKey`，macOS / Linux(X11) 使用 `global-hotkey`，一键显示 / 隐藏。
 - **键盘快捷键**：`←` 上一张，`→` 下一张。
+- **问题看门狗 + 自动上报**：内置监控线程在后台盯着「未响应 / 崩溃 / 功能异常」（**不含**网络错误），
+  现场自动写入本地日志 `%APPDATA%\wallpaper-rs\logs\report.log`，并自动上报到 GitHub Issues——未配置
+  Token 时打开「预填好标题与正文的提交页面」，在「设置 → 问题上报」里填入 GitHub Token 则直接静默建
+  issue。可随时开关，也可一键手动上报。
 - **单文件、纯 Rust**：无需 WebView 或运行时，双击即用；内嵌中文字体，无缺字方框。
 
 ## 图形界面（GUI）
@@ -162,6 +166,10 @@ cargo run --release -- --shots ./shots
 
 遇到问题或有建议？欢迎通过 GitHub Issues 反馈：<https://github.com/shuying-code/wallpaper-rs/issues/new/choose>。提交前请先阅读 **[使用反馈指南](docs/FEEDBACK.md)**。
 
+程序也内置了「**问题看门狗**」：卡死 / 崩溃 / 功能异常会自动上报到 Issues（网络类错误会自动过滤），
+并写入本地日志 `%APPDATA%\wallpaper-rs\logs\report.log`。可在「**设置 → 问题上报**」开关或手动反馈，
+填了 GitHub Token 时直接静默建 issue，否则打开预填好的提交页面。
+
 - **🐞 Bug / 问题反馈**：可复现的功能异常、崩溃、报错
 - **💡 功能建议**：新功能或改进
 - **❓ 使用咨询 / 反馈**：用法、配置与一般性反馈
@@ -180,6 +188,7 @@ wallpaper-rs/
 │  ├─ wallpaper.rs   # 各平台设置壁纸实现
 │  ├─ autostart.rs   # 开机自启（Windows 注册表 / LaunchAgent / autostart）
 │  ├─ thumbs.rs      # 缩略图工作线程
+│  ├─ report.rs      # 问题看门狗：卡死 / 崩溃 / 异常自动上报到 GitHub Issues
 │  └─ 其他模块：websrc / bing / netbian / moewalls / motionbgs（网上壁纸库）、livewall（动态壁纸）、albums / diskscan / hotkey / tray / elevate / permissions / platform / shot / online / android / instances / winhide
 ├─ tests/            # 集成测试
 ├─ packaging/        # Windows / macOS / Linux 打包脚本与资源

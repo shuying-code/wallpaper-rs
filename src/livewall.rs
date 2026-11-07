@@ -564,7 +564,8 @@ mod imp {
     const WS_EX_TOOLWINDOW: u32 = 0x0000_0080;
     const SWP_NOACTIVATE: u32 = 0x0010;
     const HWND_BOTTOM: isize = 1;
-    const SMTO_NORMAL: u32 = 0x0000;
+    /// 目标线程若「未响应」立即返回，别把调用线程（动态壁纸宿主线程）拖住。
+    const SMTO_ABORTIFHUNG: u32 = 0x0002;
     const WM_SPAWN_WORKER: u32 = 0x052C;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -594,7 +595,15 @@ mod imp {
         let mut guard = HOST.lock().map_err(|_| "动态壁纸状态锁失效".to_string())?;
         if let Some(mut h) = guard.take() {
             let _ = h.child.kill();
-            let _ = h.child.wait();
+            // 有界等待：kill 已发 TerminateProcess，正常瞬时退出；万一 mpv 挂死，
+            // 也不能无限 `wait()` 把调用线程（可能是 UI 线程）拖住。
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while std::time::Instant::now() < deadline {
+                match h.child.try_wait() {
+                    Ok(Some(_)) | Err(_) => break,
+                    Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+                }
+            }
             unsafe { destroy_window(h.window) };
         }
         Ok(())
@@ -782,7 +791,17 @@ mod imp {
         let progman = progman_window();
         if progman != 0 {
             let mut res: usize = 0;
-            SendMessageTimeoutW(progman, WM_SPAWN_WORKER, 0, 0, SMTO_NORMAL, 1000, &mut res);
+            // 用 SMTO_ABORTIFHUNG + 短超时：Explorer 卡住时立刻返回，不再等满 1 秒
+            // （这是「切到动态壁纸瞬间未响应」的旧来源之一）。
+            SendMessageTimeoutW(
+                progman,
+                WM_SPAWN_WORKER,
+                0,
+                0,
+                SMTO_ABORTIFHUNG,
+                300,
+                &mut res,
+            );
         }
     }
 

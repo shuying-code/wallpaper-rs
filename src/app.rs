@@ -138,6 +138,8 @@ struct Snapshot { // 结构体 Snapshot
     last_online_date: String, // 字段 last_online_date
     wallpaper_only: bool, // 字段 wallpaper_only
     slideshow: Vec<PathBuf>, // 字段 slideshow
+    report_enabled: bool, // 字段 report_enabled
+    report_token: String, // 字段 report_token
 } // 块结束
 
 impl Snapshot { // 实现
@@ -163,6 +165,8 @@ impl Snapshot { // 实现
             last_online_date: c.last_online_date.clone(), // 字段 last_online_date
             wallpaper_only: c.wallpaper_only, // 字段 wallpaper_only
             slideshow: c.slideshow.clone(), // 字段 slideshow
+            report_enabled: c.report_enabled, // 字段 report_enabled
+            report_token: c.report_token.clone(), // 字段 report_token
         } // 块结束
     } // 块结束
 } // 块结束
@@ -222,6 +226,86 @@ fn spawn_poster_worker() -> (
     (tx, drx) // 语句
 } // 块结束
 
+/// 动态壁纸宿主操作的命令。
+#[derive(Clone)]
+enum LiveCmd {
+    /// 设为动态壁纸（内部会先停掉旧宿主）。
+    Set(PathBuf),
+    /// 停止动态壁纸。
+    Stop,
+}
+
+/// 提交给「动态壁纸宿主线程」的**最新一条**命令（只保留最后一次，自动合并）。
+///
+/// 轮播快速切换时可能连发多条命令；宿主操作本身要建窗口 / 起 mpv（数百毫秒），
+/// 若逐条排队会越积越多。这里用「单槽 + 条件变量」只保留最后一条：中间那些
+/// 已被后续命令覆盖，跳过它们是安全的（Set 内部本就会先停旧宿主）。
+#[derive(Clone)]
+struct LiveSlot {
+    inner: std::sync::Arc<(
+        std::sync::Mutex<Option<LiveCmd>>,
+        std::sync::Condvar,
+    )>,
+}
+
+impl LiveSlot {
+    fn submit(&self, cmd: LiveCmd) {
+        let (m, c) = &*self.inner;
+        if let Ok(mut g) = m.lock() {
+            *g = Some(cmd);
+            c.notify_one();
+        }
+    }
+}
+
+/// Windows 上把动态壁纸宿主操作放到后台线程执行：`create_host_window` 会与
+/// Explorer 通信（`SendMessageTimeout`、跨进程 `CreateWindowEx/SetWindowPos`）、
+/// 并 `kill + wait` 旧 mpv，跑在 UI 线程上正是「切到动态壁纸瞬间未响应」的主因。
+/// macOS 的 `NSWindow` 必须在主线程创建，故只在 Windows 启用（见 `LIVE_ASYNC`）。
+fn spawn_live_worker() -> (
+    LiveSlot,
+    Receiver<(Option<PathBuf>, Result<(), String>)>,
+) {
+    let slot = LiveSlot {
+        inner: std::sync::Arc::new((
+            std::sync::Mutex::new(None::<LiveCmd>),
+            std::sync::Condvar::new(),
+        )),
+    };
+    let (dtx, drx) = std::sync::mpsc::channel::<(Option<PathBuf>, Result<(), String>)>();
+    let s = slot.clone();
+    std::thread::spawn(move || loop {
+        let cmd = {
+            let (m, c) = &*s.inner;
+            let mut g = match m.lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            while g.is_none() {
+                g = match c.wait(g) {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+            }
+            g.take().unwrap()
+        };
+        let (what, res) = match cmd {
+            LiveCmd::Set(p) => {
+                let r = crate::livewall::set_live_wallpaper(&p);
+                (Some(p), r)
+            }
+            LiveCmd::Stop => (None, crate::livewall::stop()),
+        };
+        if dtx.send((what, res)).is_err() {
+            return;
+        }
+    });
+    (slot, drx)
+}
+
+/// 是否把动态壁纸宿主操作放到后台线程（仅 Windows）。
+const LIVE_ASYNC: bool = cfg!(windows);
+
 pub struct App { // 结构体 App
     cfg: Config, // 字段 cfg
     images: Vec<PathBuf>, // 字段 images
@@ -251,6 +335,11 @@ pub struct App { // 结构体 App
     poster_rx: Receiver<(PathBuf, bool)>, // 字段 poster_rx
     /// 已排入生成队列、尚未出结果的海报路径（去重，避免重复启动 mpv）。
     posters_pending: std::collections::HashSet<PathBuf>, // 字段 posters_pending
+    /// 动态壁纸宿主操作（建窗口 / 起停 mpv）的提交槽与结果回传（见 [`LiveSlot`]）。
+    live_slot: LiveSlot, // 字段 live_slot
+    live_rx: Receiver<(Option<PathBuf>, Result<(), String>)>, // 字段 live_rx
+    /// 「设置锁屏」需要提权时，后台等待 UAC 子进程的结果（避免 UI 线程等待）。
+    lock_elev_rx: Option<Receiver<crate::elevate::ElevationResult>>, // 字段 lock_elev_rx
     status: String, // 字段 status
     tab: Tab, // 字段 tab
     thumb: Thumbnailer, // 字段 thumb
@@ -339,6 +428,9 @@ impl App { // 实现
         // 后台工作线程：静态壁纸设置 / 视频截帧、动态壁纸首帧海报生成。
         let (wall_tx, wall_rx) = spawn_wall_worker(); // 调用 let
         let (poster_tx, poster_rx) = spawn_poster_worker(); // 调用 let
+        let (live_slot, live_rx) = spawn_live_worker(); // 调用 let
+        // 安装「问题看门狗」：卡死 / 崩溃 / 功能异常自动上报到 GitHub Issues。
+        crate::report::install(cfg.report_enabled, cfg.report_token.clone()); // 调用 install
         #[cfg(windows)] // 语句
         let window_hwnd = { // 变量 window_hwnd
             use raw_window_handle::{HasWindowHandle, RawWindowHandle}; // 引入依赖
@@ -368,6 +460,9 @@ impl App { // 实现
             poster_tx, // 字段 poster_tx
             poster_rx, // 字段 poster_rx
             posters_pending: std::collections::HashSet::new(), // 字段 posters_pending
+            live_slot, // 字段 live_slot
+            live_rx, // 字段 live_rx
+            lock_elev_rx: None, // 字段 lock_elev_rx
             status: String::new(), // 字段 status
             tab: Tab::Web4k, // 字段 tab（默认进入「网上壁纸库」）
             thumb: Thumbnailer::new(), // 字段 thumb
@@ -624,17 +719,20 @@ impl App { // 实现
             .unwrap_or_default(); // 语句
         if crate::thumbs::is_video_file(path) { // 条件分支
             // 视频 -> 动态壁纸宿主（mpv 循环渲染）；mpv 缺失时（Windows）按需下载。
+            crate::report::set_scene("切换 → 动态壁纸（视频）"); // 记录场景，供卡死定位
             self.with_mpv_or_download(AfterMpv::LiveWallpaper(path.to_path_buf())); // 语句
         } else { // 语句
             // 静态壁纸设置放到后台（SPI 广播可能阻塞 UI 数秒）。从视频切回静态图时，
             // 要等新壁纸真的铺好（后台完成回调）再停掉动态壁纸宿主——露出桌面时就已经
             // 是新壁纸，不会「闪过」上一张固定壁纸。
+            crate::report::set_scene("切换 → 静态壁纸"); // 语句
             self.pending_live = None; // 取消尚未启动的动态壁纸
             self.status = format!("正在设置壁纸：{name}"); // 语句
             self.submit_set_static(path); // 调用 submit_set_static
-            if crate::livewall::active_video().is_some() { // 条件分支
-                self.stop_live_after_set = Some(path.to_path_buf()); // 语句
-            } // 块结束
+            // 新静态图铺好后收掉动态壁纸宿主（无宿主时为空操作）。不先判断
+            // `active_video()`：宿主可能是刚刚提交、还没建好的（异步），此时它返回
+            // `None`，但稍后仍会覆盖掉刚设的静态图。
+            self.stop_live_after_set = Some(path.to_path_buf()); // 语句
         } // 块结束
         self.last_switch = Instant::now(); // 语句
     } // 块结束
@@ -1068,21 +1166,22 @@ impl App { // 实现
         match wallpaper::set_lock_screen(path) { // 分支匹配
             Ok(_) => self.status = "已设置锁屏壁纸".to_string(), // 匹配分支
             Err(e) if e.needs_admin && !crate::elevate::is_elevated() => { // 匹配分支
+                // 提权会弹 UAC 并 `WaitForSingleObject(INFINITE)` 等子进程完成，可能阻塞
+                // 很久——绝不能放在 UI 线程（否则就是「未响应」）。丢到后台线程，结果
+                // 在 `update` 里消费。
                 self.status = "正在请求管理员权限以设置锁屏…".to_string(); // 语句
                 let arg = path.to_string_lossy().to_string(); // 变量 arg
-                match crate::elevate::run_elevated(crate::elevate::ACTION_LOCK_SCREEN, &[arg]) { // 分支匹配
-                    crate::elevate::ElevationResult::Ok => { // 匹配分支
-                        self.status = "已设置锁屏壁纸（已通过管理员授权）".to_string() // 语句
-                    } // 块结束
-                    crate::elevate::ElevationResult::Cancelled => { // 匹配分支
-                        self.status = "已取消管理员授权，未设置锁屏壁纸".to_string() // 语句
-                    } // 块结束
-                    crate::elevate::ElevationResult::Failed(msg) => { // 匹配分支
-                        self.status = format!("锁屏设置失败：{msg}") // 语句
-                    } // 块结束
-                } // 块结束
+                let (tx, rx) = std::sync::mpsc::channel(); // 调用 let
+                self.lock_elev_rx = Some(rx); // 语句
+                std::thread::spawn(move || { // 调用 spawn
+                    let r = crate::elevate::run_elevated(crate::elevate::ACTION_LOCK_SCREEN, &[arg]); // 变量 r
+                    let _ = tx.send(r); // 变量 _
+                }); // 语句
             } // 块结束
-            Err(e) => self.status = format!("锁屏设置失败：{e}"), // 匹配分支
+            Err(e) => { // 匹配分支
+                self.status = format!("锁屏设置失败：{e}"); // 语句
+                crate::report::report_error("锁屏", &e.to_string()); // 调用 report_error
+            } // 块结束
         } // 块结束
     } // 块结束
 
@@ -1416,12 +1515,50 @@ impl App { // 实现
         }
     }
 
-    /// 真正启动动态壁纸宿主（停止旧宿主 + 用 mpv 播放）。UI 线程执行，但只做
-    /// 「杀进程 / 建窗口 / 起进程」这些快速操作。
+    /// 启动动态壁纸宿主（停止旧宿主 + 建宿主窗口 + 用 mpv 播放）。
+    ///
+    /// Windows 把整个过程交给后台宿主线程 [`LiveSlot`]：建窗口要与 Explorer 通信、
+    /// 还要 kill/wait 旧 mpv，跑在 UI 线程上就是「切到动态壁纸瞬间未响应」的主因。
+    /// macOS 的 NSWindow 必须在主线程创建，故保持同步。
     fn start_live_wallpaper(&mut self, path: &Path) { // 函数 start_live_wallpaper
-        match crate::livewall::set_live_wallpaper(path) { // 分支匹配
-            Ok(_) => self.status = format!("已设为动态壁纸：{}", path.display()), // 匹配分支
-            Err(e) => self.status = format!("动态壁纸设置失败：{e}"), // 匹配分支
+        let name = path // 变量 name
+            .file_name() // 语句
+            .map(|s| s.to_string_lossy().to_string()) // 语句
+            .unwrap_or_default(); // 语句
+        crate::report::set_scene("轮播/切换 → 动态壁纸"); // 语句
+        self.status = format!("正在切换到动态壁纸：{name}"); // 语句
+        self.dispatch_live(LiveCmd::Set(path.to_path_buf())); // 调用 dispatch_live
+    } // 块结束
+
+    /// 把一条动态壁纸命令交给后台宿主线程（非 Windows 平台同步执行）。
+    fn dispatch_live(&mut self, cmd: LiveCmd) { // 函数 dispatch_live
+        if LIVE_ASYNC { // 条件分支
+            self.live_slot.submit(cmd); // 语句
+        } else { // 语句
+            match cmd { // 分支匹配
+                LiveCmd::Set(p) => { // 匹配分支
+                    let r = crate::livewall::set_live_wallpaper(&p); // 变量 r
+                    self.on_live_done(Some(p), r); // 语句
+                } // 块结束
+                LiveCmd::Stop => { // 匹配分支
+                    let _ = crate::livewall::stop(); // 变量 _
+                } // 块结束
+            } // 块结束
+        } // 块结束
+    } // 块结束
+
+    /// 处理动态壁纸宿主操作的结果（宿主线程回传或同步返回）。
+    fn on_live_done(&mut self, what: Option<PathBuf>, res: Result<(), String>) { // 函数 on_live_done
+        match res { // 分支匹配
+            Ok(_) => { // 匹配分支
+                if let Some(p) = what { // 条件分支
+                    self.status = format!("已设为动态壁纸：{}", p.display()); // 语句
+                } // 块结束
+            } // 块结束
+            Err(e) => { // 匹配分支
+                self.status = format!("动态壁纸设置失败：{e}"); // 语句
+                crate::report::report_error("动态壁纸", &e); // 调用 report_error
+            } // 块结束
         } // 块结束
     } // 块结束
 
@@ -2093,7 +2230,7 @@ impl App { // 实现
                     } // 块结束
                     if crate::livewall::active_video().is_some() { // 条件分支
                         if ghost_button(ui, "停止动态壁纸").clicked() { // 条件分支
-                            let _ = crate::livewall::stop(); // 变量 _
+                            self.dispatch_live(LiveCmd::Stop); // 语句
                             self.status = "已停止动态壁纸".to_string(); // 语句
                         } // 块结束
                     } // 块结束
@@ -3724,6 +3861,76 @@ impl App { // 实现
             }); // 语句
         ui.add_space(12.0); // 语句
 
+        // 问题上报 -----------------------------------------------------------
+        egui::Frame::none() // 调用 none
+            .fill(theme::card()) // 语句
+            .stroke(Stroke::new(1.0_f32, theme::border())) // 语句
+            .rounding(Rounding::same(14.0)) // 语句
+            .shadow(egui::epaint::Shadow { // 语句
+                offset: egui::vec2(0.0, 3.0), // 字段 offset
+                blur: 12.0, // 字段 blur
+                spread: 0.0, // 字段 spread
+                color: theme::shadow(), // 字段 color
+            }) // 语句
+            .inner_margin(egui::Margin::symmetric(18.0, 16.0)) // 语句
+            .show(ui, |ui| { // 语句
+                section_header(ui, "问题上报"); // 调用 section_header
+                ui.add_space(4.0); // 语句
+                ui.label( // 语句
+                    RichText::new("内置监控线程：界面卡死 / 崩溃 / 功能异常会先写入本地日志，并自动上报到 GitHub Issues（不含网络错误）。未填 Token 时改为打开「预填好内容的」提交页面，点一下即可。") // 调用 new
+                        .size(11.5) // 语句
+                        .color(theme::subtext()), // 语句
+                ); // 块结束
+                ui.add_space(10.0); // 语句
+                ui.horizontal(|ui| { // 语句
+                    setting_label(ui, "自动上报", "出错时自动收集现场并上报，帮助快速定位修复"); // 调用 setting_label
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { // 语句
+                        let mut en = self.cfg.report_enabled; // 变量 en
+                        if ui.checkbox(&mut en, "").changed() { // 条件分支
+                            self.cfg.report_enabled = en; // 语句
+                            crate::report::set_enabled(en); // 调用 set_enabled
+                        } // 块结束
+                    }); // 语句
+                }); // 语句
+                ui.add_space(8.0); // 语句
+                ui.separator(); // 语句
+                ui.add_space(8.0); // 语句
+                ui.horizontal(|ui| { // 语句
+                    setting_label(ui, "GitHub Token", "可选：填了直接静默建 issue；留空则打开预填页面"); // 调用 setting_label
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { // 语句
+                        let mut tk = self.cfg.report_token.clone(); // 变量 tk
+                        if ui // 条件分支
+                            .add( // 调用 add
+                                egui::TextEdit::singleline(&mut tk) // 语句
+                                    .password(true) // 语句
+                                    .desired_width(220.0) // 语句
+                                    .hint_text("ghp_… / github_pat_…"), // 语句
+                            ) // 块结束
+                            .changed() // 调用 changed
+                        { // 语句
+                            self.cfg.report_token = tk.clone(); // 语句
+                            crate::report::set_token(&tk); // 调用 set_token
+                        } // 块结束
+                    }); // 语句
+                }); // 语句
+                ui.add_space(10.0); // 语句
+                ui.horizontal(|ui| { // 语句
+                    if ghost_button(ui, "立即上报当前状态").clicked() { // 条件分支
+                        crate::report::report_manual(); // 调用 report_manual
+                        self.status = "已生成问题上报（本地日志 + GitHub）".to_string(); // 语句
+                    } // 块结束
+                    if ghost_button(ui, "打开 Issues 页面").clicked() { // 条件分支
+                        open_url(crate::report::ISSUES_URL); // 调用 open_url
+                    } // 块结束
+                    ui.label( // 语句
+                        RichText::new(format!("本地日志：{}", crate::report::log_path().display())) // 调用 new
+                            .size(10.5) // 语句
+                            .color(theme::subtext()), // 语句
+                    ); // 块结束
+                }); // 语句
+            }); // 语句
+        ui.add_space(12.0); // 语句
+
         // Resident & hotkey -------------------------------------------------
         if !crate::platform::is_mobile() { // 条件分支
         egui::Frame::none() // 调用 none
@@ -4096,11 +4303,43 @@ impl App { // 实现
                     ui.add_space(4.0); // 语句
                 } // 块结束
             }); // 语句
+        ui.add_space(18.0); // 语句
+        egui::Frame::none() // 调用 none
+            .fill(theme::card()) // 语句
+            .stroke(Stroke::new(1.0_f32, theme::border())) // 语句
+            .rounding(Rounding::same(14.0)) // 语句
+            .shadow(egui::epaint::Shadow { // 语句
+                offset: egui::vec2(0.0, 3.0), // 字段 offset
+                blur: 12.0, // 字段 blur
+                spread: 0.0, // 字段 spread
+                color: theme::shadow(), // 字段 color
+            }) // 语句
+            .inner_margin(egui::Margin::symmetric(20.0, 16.0)) // 语句
+            .show(ui, |ui| { // 语句
+                section_header(ui, "遇到问题？"); // 调用 section_header
+                ui.add_space(8.0); // 语句
+                ui.label( // 语句
+                    RichText::new("程序内置监控线程：卡死 / 崩溃 / 功能异常会自动上报到 GitHub Issues（不含网络错误），也可在此手动反馈。") // 调用 new
+                        .size(11.5) // 语句
+                        .color(theme::subtext()), // 语句
+                ); // 块结束
+                ui.add_space(10.0); // 语句
+                ui.horizontal(|ui| { // 语句
+                    if ghost_button(ui, "反馈问题 / 上报日志").clicked() { // 条件分支
+                        crate::report::report_manual(); // 调用 report_manual
+                    } // 块结束
+                    if ghost_button(ui, "查看 Issues").clicked() { // 条件分支
+                        open_url(crate::report::ISSUES_URL); // 调用 open_url
+                    } // 块结束
+                }); // 语句
+            }); // 语句
     } // 块结束
 } // 块结束
 
 impl eframe::App for App { // 实现
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) { // 函数 update
+        // 看门狗心跳：每帧打点，监控线程据此判断 UI 是否卡死。
+        crate::report::heartbeat(); // 调用 heartbeat
         // 本帧开始时的配置基线：必须在处理任何后台任务结果（下载完成 → 加入轮播 /
         // 在线壁纸日期等）之前取，否则这些异步改动会被算进基线，末尾的自动保存
         // 认为「没有变化」而不落盘——表现为「＋ 轮播(原视频)」提示已加入、重启后却丢失。
@@ -4428,7 +4667,10 @@ impl eframe::App for App { // 实现
                 WallDone::Static { path, name, result } => { // 匹配分支
                     match result { // 分支匹配
                         Ok(_) => self.status = format!("已设置壁纸：{name}"), // 匹配分支
-                        Err(e) => self.status = format!("设置失败：{e}"), // 匹配分支
+                        Err(e) => { // 匹配分支
+                            self.status = format!("设置失败：{e}"); // 语句
+                            crate::report::report_error("设置壁纸", &e); // 调用 report_error
+                        } // 块结束
                     } // 块结束
                     // 若这次设置的是「待启动动态壁纸」的首帧海报，且仍是当前目标，
                     // 就在此刻启动宿主（底层已铺好海报，不会闪旧壁纸）。
@@ -4450,18 +4692,41 @@ impl eframe::App for App { // 实现
                         && self.cfg.last_path.as_deref() == Some(path.as_path()) // 语句
                     { // 语句
                         self.stop_live_after_set = None; // 语句
-                        if crate::livewall::active_video().is_some() { // 条件分支
-                            let _ = crate::livewall::stop(); // 变量 _
-                        } // 块结束
+                        self.dispatch_live(LiveCmd::Stop); // 语句
                     } // 块结束
                 } // 块结束
                 WallDone::Poster { out, to_lock, result } => { // 匹配分支
                     if to_lock { // 条件分支
                         match result { // 分支匹配
                             Ok(_) => self.apply_lock_screen(&out), // 匹配分支
-                            Err(e) => self.status = format!("动态壁纸锁屏失败：{e}"), // 匹配分支
+                            Err(e) => { // 匹配分支
+                                self.status = format!("动态壁纸锁屏失败：{e}"); // 语句
+                                crate::report::report_error("动态壁纸锁屏", &e); // 调用 report_error
+                            } // 块结束
                         } // 块结束
                     } // 块结束
+                } // 块结束
+            } // 块结束
+        } // 块结束
+
+        // 动态壁纸宿主线程（Windows）的结果回传。
+        while let Ok((what, res)) = self.live_rx.try_recv() { // 循环
+            self.on_live_done(what, res); // 语句
+        } // 块结束
+
+        // 后台「提权设置锁屏」的结果回传。
+        if let Some(res) = self.lock_elev_rx.as_ref().and_then(|rx| rx.try_recv().ok()) { // 条件分支
+            self.lock_elev_rx = None; // 语句
+            match res { // 分支匹配
+                crate::elevate::ElevationResult::Ok => { // 匹配分支
+                    self.status = "已设置锁屏壁纸（已通过管理员授权）".to_string(); // 语句
+                } // 块结束
+                crate::elevate::ElevationResult::Cancelled => { // 匹配分支
+                    self.status = "已取消管理员授权，未设置锁屏壁纸".to_string(); // 语句
+                } // 块结束
+                crate::elevate::ElevationResult::Failed(msg) => { // 匹配分支
+                    self.status = format!("锁屏设置失败：{msg}"); // 语句
+                    crate::report::report_error("锁屏", &msg); // 调用 report_error
                 } // 块结束
             } // 块结束
         } // 块结束

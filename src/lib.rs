@@ -20,6 +20,7 @@ pub mod netbian; // 模块 netbian
 pub mod online; // 模块 online
 pub mod permissions; // 模块 permissions
 pub mod platform; // 模块 platform
+pub mod report; // 模块 report
 pub mod shot; // 模块 shot
 pub mod theme; // 模块 theme
 pub mod thumbs; // 模块 thumbs

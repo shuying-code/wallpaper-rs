@@ -2,6 +2,27 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.14.7] - 2026-11-08
+
+### 修复
+- **轮播切到动态壁纸（视频）的瞬间「未响应」**：切动态壁纸要建桌面宿主窗口
+  （`SendMessageTimeout` 通知 Explorer、跨进程 `CreateWindowExW` / `SetWindowPos`）、
+  还要 `kill + wait` 上一个 mpv，此前全部跑在 UI 线程上。现在（Windows）整体移到
+  专用**动态壁纸宿主线程**执行，UI 线程只提交命令、不等待——连续切换也顺滑不冻结；
+  多帧连发时同一命令会自动合并，只处理最后一次。`SendMessageTimeout` 也改用
+  `SMTO_ABORTIFHUNG` + 更短超时，Explorer 卡住时立即返回。
+- **设置动态壁纸锁屏时等待提权阻塞 UI**：等待 UAC 子进程（`WaitForSingleObject`）改为
+  后台线程执行，结果回传后再更新状态。
+
+### 新增
+- **内置「问题看门狗」+ 自动上报到 GitHub Issues**：后台监控线程每帧接收 UI 心跳，
+  超过阈值未打点即判定「未响应」；同时用 `panic` 钩子捕获崩溃。**只上报非网络问题**
+  （网络请求 / 下载失败自动过滤），且会先写入本地日志
+  `%APPDATA%/wallpaper-rs/logs/report.log`，再去重 / 限速上报。上报方式二选一：
+  未配置 Token 时打开「预填好标题与正文的 GitHub 新建 issue 页面」（进程内不内置任何
+  密钥），在设置里填了 Token 则直接调用 GitHub API 静默建 issue。「设置 → 问题上报」与
+  「关于 → 遇到问题？」均可开关、手动上报或打开 Issues 页面。
+
 ## [0.14.6] - 2026-11-07
 
 ### 修复

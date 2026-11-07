@@ -101,6 +101,12 @@ pub struct Config { // 结构体 Config
     /// 网上壁纸库：收藏列表。
     #[serde(default)] // 语句
     pub web_favorites: Vec<FavItem>, // 字段 web_favorites
+    /// 自动上报：把「非网络」问题（卡死 / 崩溃 / 功能异常）上报到 GitHub Issues。
+    #[serde(default = "default_true")] // 语句
+    pub report_enabled: bool, // 字段 report_enabled
+    /// 可选的 GitHub token：填了就直接调用 API 静默建 issue；留空则打开预填页面。
+    #[serde(default)] // 语句
+    pub report_token: String, // 字段 report_token
 } // 块结束
 
 fn default_true() -> bool { // 函数 default_true
@@ -137,6 +143,8 @@ impl Default for Config { // 实现
             web_search_active: false, // 字段 web_search_active
             web_only_fav: false, // 字段 web_only_fav
             web_favorites: Vec::new(), // 字段 web_favorites
+            report_enabled: true, // 字段 report_enabled
+            report_token: String::new(), // 字段 report_token
         } // 块结束
     } // 块结束
 } // 块结束
