@@ -95,21 +95,46 @@ fn poster_frame_shared(video: &Path, out: &Path) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("创建海报目录失败：{e}"))?;
     }
     let _ = std::fs::remove_file(out);
-    let status = std::process::Command::new(mpv)
+    let mut child = std::process::Command::new(mpv)
         .arg("--no-config")
         .arg("--no-audio")
         .arg("--no-osc")
         .arg("--no-input-default-bindings")
+        .arg("--keep-open=no")
+        .arg("--idle=no")
         .arg(format!("--o={}", out.display()))
         .arg("--frames=1")
         .arg("--start=1.0")
         .arg(video)
-        .status()
+        .spawn()
         .map_err(|e| format!("启动 mpv 失败：{e}"))?;
+    // mpv 可能写完首帧后不退出：轮询输出文件确认成功，再结束 mpv；带总超时兜底。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut last_len = 0u64;
+    let mut stable = 0u32;
+    loop {
+        if let Ok(meta) = std::fs::metadata(out) {
+            let len = meta.len();
+            stable = if len > 0 && len == last_len { stable + 1 } else { 0 };
+            last_len = len;
+            if stable >= 3 {
+                break;
+            }
+        }
+        if let Ok(Some(_)) = child.try_wait() {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
     if out.is_file() {
         Ok(())
     } else {
-        Err(format!("截取视频帧失败（mpv 退出码 {:?}）", status.code()))
+        Err("截取视频帧失败（mpv 未在限时内输出图片）".to_string())
     }
 }
 
@@ -617,20 +642,43 @@ mod imp {
             .arg("--no-audio")
             .arg("--no-osc")
             .arg("--no-input-default-bindings")
+            .arg("--keep-open=no")
+            .arg("--idle=no")
             .arg(format!("--o={}", out.display()))
             .arg("--frames=1")
             .arg("--start=1.0")
             .arg(video);
         cmd.creation_flags(CREATE_NO_WINDOW);
         let mut child = cmd.spawn().map_err(|e| format!("启动 mpv 失败：{e}"))?;
-        let status = child.wait().map_err(|e| format!("等待 mpv 失败：{e}"))?;
+        // 部分 mpv 版本/文件在写完首帧后不会自行退出（会一直挂着），因此不能无限
+        // `wait()`：改为轮询输出文件，出现且大小稳定即视为成功，随后结束 mpv；另有
+        // 总超时兜底，保证永不卡死。
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let mut last_len = 0u64;
+        let mut stable = 0u32;
+        loop {
+            if let Ok(meta) = std::fs::metadata(out) {
+                let len = meta.len();
+                stable = if len > 0 && len == last_len { stable + 1 } else { 0 };
+                last_len = len;
+                if stable >= 3 {
+                    break;
+                }
+            }
+            if let Ok(Some(_)) = child.try_wait() {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
         if out.is_file() {
             Ok(())
         } else {
-            Err(format!(
-                "截取视频帧失败（mpv 退出码 {:?}）",
-                status.code()
-            ))
+            Err("截取视频帧失败（mpv 未在限时内输出图片）".to_string())
         }
     }
 

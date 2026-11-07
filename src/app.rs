@@ -157,6 +157,7 @@ pub struct App { // 结构体 App
     permission_issues: Vec<PathBuf>, // 字段 permission_issues
     current: Option<usize>, // 字段 current
     last_switch: Instant, // 字段 last_switch
+    posters_warmed: bool, // 动态壁纸首帧海报是否已后台预热
     status: String, // 字段 status
     tab: Tab, // 字段 tab
     thumb: Thumbnailer, // 字段 thumb
@@ -261,6 +262,7 @@ impl App { // 实现
             permission_issues: Vec::new(), // 字段 permission_issues
             current: None, // 字段 current
             last_switch: Instant::now(), // 字段 last_switch
+            posters_warmed: false, // 字段 posters_warmed
             status: String::new(), // 字段 status
             tab: Tab::Library, // 字段 tab
             thumb: Thumbnailer::new(), // 字段 thumb
@@ -508,13 +510,15 @@ impl App { // 实现
             // 视频 -> 动态壁纸宿主（mpv 循环渲染）；mpv 缺失时（Windows）按需下载。
             self.with_mpv_or_download(AfterMpv::LiveWallpaper(path.to_path_buf())); // 语句
         } else { // 语句
-            // 从视频切回静态图：先停掉动态壁纸宿主，否则 mpv 的画面会继续盖住新壁纸。
-            if crate::livewall::active_video().is_some() { // 条件分支
-                let _ = crate::livewall::stop(); // 变量 _
-            } // 块结束
+            // 从视频切回静态图：先把新壁纸铺到底层（此刻动态壁纸仍在播放、盖在上面，
+            // 看不到切换过程），再停掉动态壁纸宿主——露出桌面时就已经是新壁纸，
+            // 不会「闪过」上一张固定壁纸。
             match wallpaper::set_wallpaper(path, self.cfg.fit) { // 分支匹配
                 Ok(_) => self.status = format!("已设置壁纸：{}", name), // 匹配分支
                 Err(e) => self.status = format!("设置失败：{e}"), // 匹配分支
+            } // 块结束
+            if crate::livewall::active_video().is_some() { // 条件分支
+                let _ = crate::livewall::stop(); // 变量 _
             } // 块结束
         } // 块结束
         self.last_switch = Instant::now(); // 语句
@@ -1251,10 +1255,64 @@ impl App { // 实现
 
     /// 把已下载的 mp4 设为动态壁纸（自建桌面宿主 + mpv，Windows/macOS/Linux）。
     fn apply_live_wallpaper(&mut self, path: &Path) {
+        // 进入动态壁纸前，先把视频首帧截出来铺成静态壁纸：mpv 初始化（约几百毫秒）
+        // 期间桌面显示的就是这一帧，不会「闪过」上一张固定壁纸。
+        if let Some(poster) = self.live_poster(path) {
+            let _ = wallpaper::set_wallpaper(&poster, self.cfg.fit);
+        }
         match crate::livewall::set_live_wallpaper(path) {
             Ok(_) => self.status = format!("已设为动态壁纸：{}", path.display()),
             Err(e) => self.status = format!("动态壁纸设置失败：{e}"),
         }
+    }
+
+    /// 动态壁纸「首帧海报」缓存路径：`<配置目录>/live_posters/<文件名>-<路径哈希>.png`。
+    /// 加入路径哈希，避免不同目录下的同名视频共用缓存。
+    fn live_poster_path(&self, video: &Path) -> PathBuf {
+        let stem = video
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "poster".to_string());
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in video.to_string_lossy().as_bytes() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        config_dir()
+            .join("live_posters")
+            .join(format!("{stem}-{:08x}.png", h as u32))
+    }
+
+    /// 已缓存的视频首帧海报路径；未缓存则返回 `None`。
+    ///
+    /// **不在这里截取**（mpv 截帧需几百毫秒到一秒，放 UI 线程会卡住轮播）；
+    /// 截取统一交给后台预热 [`Self::precache_live_posters`]。
+    fn live_poster(&self, video: &Path) -> Option<PathBuf> {
+        let out = self.live_poster_path(video);
+        out.is_file().then_some(out)
+    }
+
+    /// 后台为轮播清单里的视频预截首帧海报（单线程、尽力而为），
+    /// 这样轮播轮到动态壁纸时可以「秒切」而不必临时调用 mpv 截帧。
+    fn precache_live_posters(&mut self) {
+        let jobs: Vec<(PathBuf, PathBuf)> = self
+            .slide_paths()
+            .into_iter()
+            .filter(|p| crate::thumbs::is_video_file(p))
+            .map(|p| { // 调用 map
+                let out = self.live_poster_path(&p); // 变量 out
+                (p, out) // 语句
+            })
+            .filter(|(_, out)| !out.is_file())
+            .collect();
+        if jobs.is_empty() {
+            return;
+        }
+        std::thread::spawn(move || {
+            for (v, out) in jobs {
+                let _ = crate::livewall::poster_frame(&v, &out);
+            }
+        });
     }
 
     /// 需要 mpv 的动态壁纸 / 锁屏动作：mpv 已就绪则直接执行；缺失时（Windows）先在
@@ -3115,6 +3173,10 @@ impl App { // 实现
                     } // 块结束
                     if segment(ui, self.cfg.mode == Mode::Slideshow, "轮播") { // 条件分支
                         self.cfg.mode = Mode::Slideshow; // 语句
+                        // 选择「轮播」即视为要自动轮播：直接开始，避免停在「已暂停」
+                        // 状态、只有点「下一张」才换（用户反馈的「轮播不生效」）。
+                        self.cfg.running = true; // 语句
+                        self.last_switch = Instant::now(); // 语句
                     } // 块结束
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { // 语句
                         if self.cfg.mode == Mode::Slideshow { // 条件分支
@@ -4211,6 +4273,12 @@ impl eframe::App for App { // 实现
             { // 语句
                 self.load_preview(ctx, &p); // 语句
             } // 块结束
+        } // 块结束
+
+        // 轮播首次开始时，后台预热动态壁纸的首帧海报（供进入动态壁纸时秒切）。
+        if self.cfg.mode == Mode::Slideshow && self.cfg.running && !self.posters_warmed { // 条件分支
+            self.posters_warmed = true; // 语句
+            self.precache_live_posters(); // 语句
         } // 块结束
 
         // slideshow ticking
