@@ -1,6 +1,6 @@
 [package]
 name = "wallpaper-rs"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2021"
 description = "Cross-platform desktop wallpaper app (Windows/macOS/Linux): fixed wallpaper or slideshow/rotation, built with Rust + egui."
 license = "MIT"
@@ -23,7 +23,9 @@ default = []
 # 把便携 mpv 内嵌进可执行文件（「单文件自带 mpv」发行版）。
 # 需要构建前把 mpv 放到 `bundled-mpv/`（含 mpv.exe、d3dcompiler_43.dll），
 # 运行时按需释放到用户缓存目录再调用。见 .github/workflows/build.yml。
-bundled-mpv = []
+# 内嵌的是「构建期 gzip 压缩」后的数据（见 build.rs），运行时再解压，
+# 从而让单文件体积大幅减小（mpv 约 116 MB → 约 45 MB）。
+bundled-mpv = ["dep:flate2"]
 
 [dependencies]
 eframe = { version = "0.29", default-features = false, features = ["glow", "default_fonts", "android-native-activity"] }
@@ -37,6 +39,12 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 # 表现为「接口访问不通」。共享带 Cookie 罐的 agent 后可稳定长期浏览。
 ureq = { version = "2", default-features = false, features = ["tls", "json", "cookies"] }
 raw-window-handle = "0.6"
+# 仅用于 `bundled-mpv` feature：运行时解压内嵌的 mpv（构建期由 build.rs 压缩）。
+flate2 = { version = "1", optional = true }
+
+[build-dependencies]
+# build.rs 在 `bundled-mpv` 构建时把 mpv 预压缩后内嵌。
+flate2 = "1"
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 rfd = "0.14"
@@ -78,5 +86,11 @@ name = "android.permission.READ_EXTERNAL_STORAGE"
 name = "android.permission.READ_MEDIA_IMAGES"
 
 [profile.release]
-opt-level = 2
-lto = false
+# 尽量减小发行体积（对所有平台生效）。opt-level="z" 面向体积；fat LTO +
+# codegen-units=1 去重并内联；panic=abort 去掉 unwind 表；strip 去掉符号表。
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+incremental = false

@@ -30,7 +30,7 @@ Get the latest build from the [latest Release](https://github.com/shuying-code/w
 | Android | — | [.apk](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-android-universal.apk) |
 | All versions |  | [Releases page](https://github.com/shuying-code/wallpaper-rs/releases/latest) |
 
-> Windows also ships a **single-file exe with mpv embedded** (`wallpaper-rs-windows-x64.exe`, ~130 MB): live wallpaper works out of the box, and on first use the embedded mpv is extracted to `%LOCALAPPDATA%\wallpaper-rs\mpv-runtime`. mpv is a third-party GPL component — see `THIRD-PARTY-NOTICES.md`.
+> Windows also ships a **single-file exe with mpv embedded** (`wallpaper-rs-windows-x64.exe`, ~55 MB): live wallpaper works out of the box, and on first use the embedded mpv is extracted to `%LOCALAPPDATA%\wallpaper-rs\mpv-runtime`. The embedded mpv is compressed at build time to keep the size down. mpv is a third-party GPL component — see `THIRD-PARTY-NOTICES.md`.
 
 You can also click the download links in the in-app **About** page.
 

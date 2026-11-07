@@ -292,14 +292,17 @@ mod imp {
         None
     }
 
-    /// 内嵌 mpv（`bundled-mpv` feature）：把编进可执行文件的 mpv 释放到用户缓存目录，
-    /// 返回 `mpv.exe` 路径。用于单文件、免安装、自带 mpv 的发行版。
+    /// 内嵌 mpv（`bundled-mpv` feature）：把编进可执行文件、且经过 gzip 压缩的 mpv
+    /// 解压并释放到用户缓存目录，返回 `mpv.exe` 路径。用于单文件、免安装、自带 mpv 的
+    /// 发行版。压缩由 `build.rs` 在构建期完成（mpv ~116 MB → ~45 MB），大幅减小单文件体积。
     #[cfg(feature = "bundled-mpv")]
     fn materialize_bundled_mpv() -> Option<PathBuf> {
-        const MPV_EXE: &[u8] =
-            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/bundled-mpv/mpv.exe"));
-        const D3D_DLL: &[u8] =
-            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/bundled-mpv/d3dcompiler_43.dll"));
+        use std::io::Read;
+        const MPV_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mpv.exe.gz"));
+        const DLL_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/d3dcompiler_43.dll.gz"));
+        // 解压后的原始大小（由 build.rs 通过 rustc-env 注入）。
+        let mpv_len: u64 = env!("WPRS_MPV_LEN").parse().ok()?;
+        let dll_len: u64 = env!("WPRS_DLL_LEN").parse().ok()?;
         let base = std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))?;
@@ -307,12 +310,17 @@ mod imp {
         std::fs::create_dir_all(&dir).ok()?;
         let exe = dir.join("mpv.exe");
         let dll = dir.join("d3dcompiler_43.dll");
-        let has = |p: &Path, n: usize| p.metadata().map(|m| m.len() == n as u64).unwrap_or(false);
-        if !has(&exe, MPV_EXE.len()) {
-            std::fs::write(&exe, MPV_EXE).ok()?;
+        // 目标文件已存在且大小正确则跳过（避免每次启动都解压上百 MB）。
+        let ready = |p: &Path, n: u64| p.metadata().map(|m| m.len() == n).unwrap_or(false);
+        if !ready(&exe, mpv_len) {
+            let mut out = Vec::with_capacity(mpv_len as usize);
+            flate2::read::GzDecoder::new(MPV_GZ).read_to_end(&mut out).ok()?;
+            std::fs::write(&exe, &out).ok()?;
         }
-        if !has(&dll, D3D_DLL.len()) {
-            std::fs::write(&dll, D3D_DLL).ok()?;
+        if !ready(&dll, dll_len) {
+            let mut out = Vec::with_capacity(dll_len as usize);
+            flate2::read::GzDecoder::new(DLL_GZ).read_to_end(&mut out).ok()?;
+            std::fs::write(&dll, &out).ok()?;
         }
         exe.is_file().then_some(exe)
     }

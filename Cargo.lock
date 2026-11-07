@@ -3654,11 +3654,12 @@ dependencies = [
 
 [[package]]
 name = "wallpaper-rs"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "android_logger",
  "eframe",
  "egui",
+ "flate2",
  "global-hotkey",
  "image",
  "log",

@@ -29,7 +29,7 @@
 | Android | — | [.apk](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-android-universal.apk) |
 | 全部版本 |  | [Releases 页面](https://github.com/shuying-code/wallpaper-rs/releases/latest) |
 
-> Windows 还提供**自带 mpv 的单文件 exe**（`wallpaper-rs-windows-x64.exe`，约 130 MB）：动态壁纸开箱即用，首次使用时会把内置的 mpv 释放到用户缓存目录（`%LOCALAPPDATA%\wallpaper-rs\mpv-runtime`）。mpv 为第三方 GPL 组件，见随包 `THIRD-PARTY-NOTICES.md`。
+> Windows 还提供**自带 mpv 的单文件 exe**（`wallpaper-rs-windows-x64.exe`，约 55 MB）：动态壁纸开箱即用，首次使用时会把内置的 mpv 释放到用户缓存目录（`%LOCALAPPDATA%\wallpaper-rs\mpv-runtime`）。内置的 mpv 在打包时经过压缩以缩小体积。mpv 为第三方 GPL 组件，见随包 `THIRD-PARTY-NOTICES.md`。
 
 在应用内「关于」页也可直接点击下载。
 
