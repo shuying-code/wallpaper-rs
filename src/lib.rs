@@ -34,6 +34,9 @@ pub mod winhide; // 模块 winhide
 #[cfg(target_os = "android")] // 语句
 mod android; // 模块 android
 
+#[cfg(target_os = "android")] // 语句
+pub mod android_jni; // Android JNI 桥接：系统栏安全区 + WallpaperManager
+
 pub use eframe::egui; // 语句
 
 /// Platform-aware native window options (desktop window vs. full-screen mobile).

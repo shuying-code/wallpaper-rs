@@ -150,6 +150,14 @@ impl Default for Config { // 实现
 } // 块结束
 
 pub fn home() -> PathBuf { // 函数 home
+    #[cfg(target_os = "android")] // 语句
+    { // 语句
+        // Android 没有 HOME：以应用私有目录作为「主目录」，让「另存图片」等
+        // 依赖 home() 的路径落到可写位置。
+        if let Some(dir) = crate::android_jni::internal_data_dir() { // 条件分支
+            return dir; // 返回
+        } // 块结束
+    } // 块结束
     env::var_os("HOME") // 调用 var_os
         .or_else(|| env::var_os("USERPROFILE")) // 语句
         .map(PathBuf::from) // 语句
@@ -168,7 +176,16 @@ pub fn config_dir() -> PathBuf { // 函数 config_dir
     { // 语句
         home().join("Library").join("Application Support").join("wallpaper-rs") // 调用 home
     } // 块结束
-    #[cfg(all(unix, not(target_os = "macos")))] // 语句
+    #[cfg(target_os = "android")] // 语句
+    { // 语句
+        // Android 无 HOME/XDG 惯例目录：改用应用私有目录
+        // （`/data/user/0/<pkg>/files`），否则配置与缓存不可写。
+        if let Some(dir) = crate::android_jni::internal_data_dir() { // 条件分支
+            return dir.join("wallpaper-rs"); // 返回
+        } // 块结束
+        home().join(".config").join("wallpaper-rs") // 调用 home
+    } // 块结束
+    #[cfg(all(unix, not(target_os = "macos"), not(target_os = "android")))] // 语句
     { // 语句
         env::var_os("XDG_CONFIG_HOME") // 调用 var_os
             .map(PathBuf::from) // 语句

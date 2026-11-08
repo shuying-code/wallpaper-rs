@@ -402,6 +402,13 @@ pub struct App { // 结构体 App
     wallpaper_managers: Vec<String>, // 字段 wallpaper_managers
     /// Compact (phone/tablet or narrow window) layout with a bottom nav bar.
     compact: bool, // 字段 compact
+    /// Android 系统栏安全区（状态栏高度），单位为 egui 点。
+    safe_top: f32, // 字段 safe_top
+    /// Android 系统栏安全区（虚拟导航 / 手势条高度），单位为 egui 点。
+    safe_bottom: f32, // 字段 safe_bottom
+    /// 上次刷新系统栏安全区的时间（限流，避免每帧都做 JNI 调用）。
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))] // 语句
+    safe_poll: Instant, // 字段 safe_poll
     /// Per-album display limit (pages of `PAGE_IMAGES`), grows via "load more".
     album_limits: HashMap<String, usize>, // 字段 album_limits
     /// Active screen-size adaptation screenshot run (from `--shots <dir>`).
@@ -516,6 +523,9 @@ impl App { // 实现
             mpv_dl_rx: None, // 字段 mpv_dl_rx
             wallpaper_managers: wallpaper::conflicting_wallpaper_managers(), // 字段 wallpaper_managers
             compact: false, // 字段 compact
+            safe_top: 0.0, // 字段 safe_top
+            safe_bottom: 0.0, // 字段 safe_bottom
+            safe_poll: Instant::now() - Duration::from_secs(10), // 字段 safe_poll
             album_limits: HashMap::new(), // 字段 album_limits
             shot: crate::shot::Shooter::from_env(), // 字段 shot
             window_fitted: false, // 字段 window_fitted
@@ -1186,7 +1196,7 @@ impl App { // 实现
     } // 块结束
 
     fn ui_online(&mut self, ui: &mut egui::Ui) { // 函数 ui_online
-        ui.horizontal(|ui| { // 语句
+        ui.horizontal_wrapped(|ui| { // 语句
             ui.label( // 语句
                 RichText::new("每日壁纸 · 在线") // 调用 new
                     .size(20.0) // 语句
@@ -1231,6 +1241,42 @@ impl App { // 实现
             .rounding(Rounding::same(14.0)) // 语句
             .inner_margin(egui::Margin::symmetric(16.0, 12.0)) // 语句
             .show(ui, |ui| { // 语句
+                if self.compact { // 条件分支
+                    // 紧凑布局：动作按钮与复选框各占一行并自动换行，避免按钮被挤出屏幕。
+                    ui.horizontal_wrapped(|ui| { // 语句
+                        if primary_button(ui, "获取今日壁纸").clicked() { // 条件分支
+                            self.start_online_fetch(0); // 语句
+                        } // 块结束
+                        if ghost_button(ui, "‹ 上一张").clicked() { // 条件分支
+                            let i = self.online_idx.saturating_sub(1); // 变量 i
+                            self.start_online_fetch(i); // 语句
+                        } // 块结束
+                        if ghost_button(ui, "下一张 ›").clicked() { // 条件分支
+                            let i = (self.online_idx + 1).min(7); // 变量 i
+                            self.start_online_fetch(i); // 语句
+                        } // 块结束
+                        if self.online_loading { // 条件分支
+                            chip(ui, "获取中…", theme::accent_soft(), theme::accent()); // 调用 chip
+                        } // 块结束
+                    }); // 语句
+                    ui.add_space(8.0); // 语句
+                    ui.horizontal_wrapped(|ui| { // 语句
+                        let mut d = self.cfg.daily_online; // 变量 d
+                        if ui.checkbox(&mut d, "自动每日换壁纸").changed() { // 条件分支
+                            self.cfg.daily_online = d; // 语句
+                            if d { // 条件分支
+                                self.online_boot_checked = true; // 语句
+                                if self.online_img.is_none() { // 条件分支
+                                    self.start_online_fetch(0); // 语句
+                                } // 块结束
+                            } // 块结束
+                        } // 块结束
+                        let mut a = self.cfg.online_auto_set; // 变量 a
+                        if ui.checkbox(&mut a, "获取后自动设为桌面").changed() { // 条件分支
+                            self.cfg.online_auto_set = a; // 语句
+                        } // 块结束
+                    }); // 语句
+                } else { // 语句
                 ui.horizontal(|ui| { // 语句
                     if primary_button(ui, "获取今日壁纸").clicked() { // 条件分支
                         self.start_online_fetch(0); // 语句
@@ -1263,6 +1309,7 @@ impl App { // 实现
                         } // 块结束
                     }); // 语句
                 }); // 语句
+                } // 块结束
             }); // 语句
         ui.add_space(12.0); // 语句
 
@@ -1340,7 +1387,7 @@ impl App { // 实现
                     .rounding(Rounding::same(10.0)) // 语句
                     .inner_margin(egui::Margin::symmetric(12.0, 10.0)) // 语句
                     .show(ui, |ui| { // 语句
-                        ui.horizontal(|ui| { // 语句
+                        ui.horizontal_wrapped(|ui| { // 语句
                             chip( // 调用 chip
                                 ui, // 语句
                                 "🔎 了解有关此图片信息", // 语句
@@ -1376,7 +1423,7 @@ impl App { // 实现
                         } // 块结束
                     }); // 语句
                 ui.add_space(10.0); // 语句
-                ui.horizontal(|ui| { // 语句
+                ui.horizontal_wrapped(|ui| { // 语句
                     if primary_button(ui, "设为桌面壁纸").clicked() { // 条件分支
                         self.apply_online_wallpaper(); // 语句
                     } // 块结束
@@ -1407,7 +1454,8 @@ impl App { // 实现
                             open_url(url); // 调用 open_url
                         } // 块结束
                     } // 块结束
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { // 语句
+                    // 点赞 / 踩：紧凑布局随按钮自动换行；桌面布局贴右显示。
+                    if self.compact { // 条件分支
                         if ghost_button(ui, &format!("👎 {}", self.cfg.online_dislikes)).clicked() { // 条件分支
                             self.cfg.online_dislikes += 1; // 语句
                             self.status = "已记录：不喜欢这张".to_string(); // 语句
@@ -1416,7 +1464,18 @@ impl App { // 实现
                             self.cfg.online_likes += 1; // 语句
                             self.status = "已记录：喜欢这张".to_string(); // 语句
                         } // 块结束
-                    }); // 语句
+                    } else { // 语句
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { // 语句
+                            if ghost_button(ui, &format!("👎 {}", self.cfg.online_dislikes)).clicked() { // 条件分支
+                                self.cfg.online_dislikes += 1; // 语句
+                                self.status = "已记录：不喜欢这张".to_string(); // 语句
+                            } // 块结束
+                            if ghost_button(ui, &format!("👍 {}", self.cfg.online_likes)).clicked() { // 条件分支
+                                self.cfg.online_likes += 1; // 语句
+                                self.status = "已记录：喜欢这张".to_string(); // 语句
+                            } // 块结束
+                        }); // 语句
+                    } // 块结束
                 }); // 语句
             }); // 语句
     } // 块结束
@@ -1832,13 +1891,18 @@ impl App { // 实现
         // 不会像以前那样随整页滚出屏幕、变成「一滑动就没了」。
         if let Some(id) = self.web_preview_id { // 条件分支
             if self.compact { // 条件分支
+                // 手机 / 窄屏：预览固定在底部。这里必须给面板一个明确高度——没有尺寸
+                // 提示的底部面板会塌缩到默认行高（约 30pt），预览被裁成一条细缝，
+                // 看起来就像「预览被壁纸遮挡」。按可用高度的 55% 取高，内部各自滚动。
+                let sheet_h = (ui.available_height() * 0.55).clamp(200.0, 560.0); // 变量 sheet_h
                 egui::TopBottomPanel::bottom("web_preview") // 调用 bottom
                     .resizable(false) // 语句
+                    .exact_height(sheet_h) // 语句
                     .frame(egui::Frame::none().inner_margin(egui::Margin::symmetric(0.0, 6.0))) // 语句
                     .show_inside(ui, |ui| { // 语句
                         egui::ScrollArea::vertical() // 调用 vertical
+                            .auto_shrink([false, false]) // 语句
                             .scroll_bar_visibility(egui::containers::scroll_area::ScrollBarVisibility::AlwaysVisible) // 语句
-                            .max_height((ui.available_height() * 0.55).max(200.0)) // 语句
                             .show(ui, |ui| self.ui_web_preview(ui, id)); // 语句
                     }); // 语句
             } else { // 语句
@@ -1870,7 +1934,7 @@ impl App { // 实现
     fn ui_web4k_body(&mut self, ui: &mut egui::Ui) { // 函数 ui_web4k_body
         let src = self.web_source.min(crate::websrc::SOURCES.len() - 1);
         let s = &crate::websrc::SOURCES[src];
-        ui.horizontal(|ui| { // 语句
+        ui.horizontal_wrapped(|ui| { // 语句
             ui.label(RichText::new("网上壁纸库").size(20.0).strong().color(theme::text())); // 语句
             ui.add_space(8.0); // 语句
             chip(ui, &format!("{} · {}", s.name, s.host), theme::accent_soft(), theme::accent()); // 调用 chip
@@ -2438,7 +2502,8 @@ impl App { // 实现
             .frame( // 语句
                 egui::Frame::none() // 调用 none
                     .fill(theme::surface()) // 语句
-                    .inner_margin(egui::Margin::symmetric(mx, my)), // 语句
+                    // 顶部再叠加 Android 状态栏安全区，标题不再被状态栏遮挡。
+                    .inner_margin(egui::Margin::symmetric(mx, my + self.safe_top)), // 语句
             ) // 块结束
             .show(ctx, |ui| { // 语句
                 let full = ui.max_rect(); // 变量 full
@@ -2593,11 +2658,17 @@ impl App { // 实现
     /// Compact bottom navigation bar (phones/tablets, narrow windows).
     fn draw_bottom_nav(&mut self, ctx: &egui::Context) { // 函数 draw_bottom_nav
         egui::TopBottomPanel::bottom("mobilenav") // 调用 bottom
-            .exact_height(66.0) // 语句
+            // 底部叠加 Android 虚拟导航 / 手势条安全区，避免被系统栏遮挡。
+            .exact_height(66.0 + self.safe_bottom) // 语句
             .frame( // 语句
                 egui::Frame::none() // 调用 none
                     .fill(theme::surface()) // 语句
-                    .inner_margin(egui::Margin::symmetric(6.0, 6.0)), // 语句
+                    .inner_margin(egui::Margin { // 语句
+                        left: 6.0, // 字段 left
+                        right: 6.0, // 字段 right
+                        top: 6.0, // 字段 top
+                        bottom: 6.0 + self.safe_bottom, // 字段 bottom
+                    }), // 语句
             ) // 块结束
             .show(ctx, |ui| { // 语句
                 // hairline on top edge
@@ -2909,7 +2980,7 @@ impl App { // 实现
                 } // 块结束
                 for (key, name, imgs, collapsed, limit) in &sections { // 循环
                     let arrow = if *collapsed { "▶" } else { "▼" }; // 变量 arrow
-                    ui.horizontal(|ui| { // 语句
+                    ui.horizontal_wrapped(|ui| { // 语句
                         let label = RichText::new(format!("{arrow}  📁  {name}")) // 变量 label
                             .size(13.5) // 语句
                             .color(theme::text()); // 语句
@@ -2985,7 +3056,7 @@ impl App { // 实现
             .rounding(Rounding::same(12.0)) // 语句
             .inner_margin(egui::Margin::symmetric(16.0, 12.0)) // 语句
             .show(ui, |ui| { // 语句
-                ui.horizontal(|ui| { // 语句
+                ui.horizontal_wrapped(|ui| { // 语句
                     ui.label(RichText::new("🔒").size(16.0)); // 语句
                     ui.label( // 语句
                         RichText::new(format!("{count} 个目录无访问权限 · {}", g.title)) // 调用 new
@@ -3016,7 +3087,7 @@ impl App { // 实现
                         .color(theme::subtext()), // 语句
                 ); // 块结束
                 ui.add_space(8.0); // 语句
-                ui.horizontal(|ui| { // 语句
+                ui.horizontal_wrapped(|ui| { // 语句
                     if primary_button(ui, "请求权限 / 重试").clicked() { // 条件分支
                         actions.push(Action::RetryPermissions); // 语句
                     } // 块结束
@@ -3462,7 +3533,7 @@ impl App { // 实现
             }) // 语句
             .inner_margin(egui::Margin::symmetric(16.0, 14.0)) // 语句
             .show(ui, |ui| { // 语句
-                ui.horizontal(|ui| { // 语句
+                ui.horizontal_wrapped(|ui| { // 语句
                     ui.label(RichText::new("播放模式").size(12.0).color(theme::subtext())); // 语句
                     ui.add_space(4.0); // 语句
                     if segment(ui, self.cfg.mode == Mode::Fixed, "固定壁纸") { // 条件分支
@@ -3475,18 +3546,26 @@ impl App { // 实现
                         self.cfg.running = true; // 语句
                         self.last_switch = Instant::now(); // 语句
                     } // 块结束
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { // 语句
-                        if self.cfg.mode == Mode::Slideshow { // 条件分支
-                            let mut sh = self.cfg.shuffle; // 变量 sh
-                            if ui.checkbox(&mut sh, "随机顺序").changed() { // 条件分支
-                                self.cfg.shuffle = sh; // 语句
-                            } // 块结束
+                    if self.cfg.mode == Mode::Slideshow { // 条件分支
+                        // 随机顺序：紧凑布局跟随模式选择自动换行，桌面布局贴右显示。
+                        let mut sh = self.cfg.shuffle; // 变量 sh
+                        let changed = if self.compact { // 变量 changed
+                            ui.checkbox(&mut sh, "随机顺序").changed() // 语句
+                        } else { // 语句
+                            let mut c = false; // 变量 c
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { // 语句
+                                c = ui.checkbox(&mut sh, "随机顺序").changed(); // 语句
+                            }); // 语句
+                            c // 语句
+                        }; // 块结束
+                        if changed { // 条件分支
+                            self.cfg.shuffle = sh; // 语句
                         } // 块结束
-                    }); // 语句
+                    } // 块结束
                 }); // 语句
                 ui.add_space(10.0); // 语句
                 if self.cfg.mode == Mode::Slideshow { // 条件分支
-                    ui.horizontal(|ui| { // 语句
+                    ui.horizontal_wrapped(|ui| { // 语句
                         let start = if self.cfg.running { "暂停轮播" } else { "▶  开始轮播" }; // 变量 start
                         if ui // 条件分支
                             .add( // 语句
@@ -3516,21 +3595,42 @@ impl App { // 实现
                         } // 块结束
                     }); // 语句
                     ui.add_space(12.0); // 语句
-                    ui.horizontal(|ui| { // 语句
-                        ui.label(RichText::new("间隔").size(12.5).color(theme::subtext())); // 语句
+                    if self.compact { // 条件分支
+                        // 紧凑布局：时长标签与数值同行，滑杆占满下一行，便于手指拖动。
+                        ui.horizontal(|ui| { // 语句
+                            ui.label(RichText::new("间隔").size(12.5).color(theme::subtext())); // 语句
+                            chip( // 调用 chip
+                                ui, // 语句
+                                &fmt_duration(self.cfg.interval_secs), // 语句
+                                theme::accent_soft(), // 字段 theme
+                                theme::accent(), // 字段 theme
+                            ); // 块结束
+                        }); // 语句
+                        ui.add_space(2.0); // 语句
+                        ui.spacing_mut().slider_width = (ui.available_width() - 8.0).max(160.0); // 语句
                         ui.add( // 语句
                             egui::Slider::new(&mut self.cfg.interval_secs, 5..=86400) // 调用 new
                                 .logarithmic(true) // 语句
                                 .show_value(false) // 语句
                                 .text(""), // 语句
                         ); // 块结束
-                        chip( // 调用 chip
-                            ui, // 语句
-                            &fmt_duration(self.cfg.interval_secs), // 语句
-                            theme::accent_soft(), // 字段 theme
-                            theme::accent(), // 字段 theme
-                        ); // 块结束
-                    }); // 语句
+                    } else { // 语句
+                        ui.horizontal(|ui| { // 语句
+                            ui.label(RichText::new("间隔").size(12.5).color(theme::subtext())); // 语句
+                            ui.add( // 语句
+                                egui::Slider::new(&mut self.cfg.interval_secs, 5..=86400) // 调用 new
+                                    .logarithmic(true) // 语句
+                                    .show_value(false) // 语句
+                                    .text(""), // 语句
+                            ); // 块结束
+                            chip( // 调用 chip
+                                ui, // 语句
+                                &fmt_duration(self.cfg.interval_secs), // 语句
+                                theme::accent_soft(), // 字段 theme
+                                theme::accent(), // 字段 theme
+                            ); // 块结束
+                        }); // 语句
+                    } // 块结束
                     ui.add_space(8.0); // 语句
                     ui.horizontal_wrapped(|ui| { // 语句
                         for (label, secs) in PRESETS { // 循环
@@ -3607,7 +3707,7 @@ impl App { // 实现
             }) // 语句
             .inner_margin(egui::Margin::symmetric(16.0, 14.0)) // 语句
             .show(ui, |ui| { // 语句
-                ui.horizontal(|ui| { // 语句
+                ui.horizontal_wrapped(|ui| { // 语句
                     ui.label( // 语句
                         RichText::new("轮播清单") // 调用 new
                             .size(14.0) // 语句
@@ -3618,12 +3718,17 @@ impl App { // 实现
                     if using_all { // 条件分支
                         chip(ui, "默认 · 全部本地壁纸库", theme::extreme(), theme::subtext()); // 调用 chip
                     } // 块结束
+                    if !self.compact { // 条件分支
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { // 语句
                         if !using_all && ghost_button(ui, "恢复为全部本地壁纸库").clicked() { // 条件分支
                             self.cfg.slideshow.clear(); // 语句
                             self.status = "轮播已恢复为全部本地壁纸库".to_string(); // 语句
                         } // 块结束
                     }); // 语句
+                    } else if !using_all && ghost_button(ui, "恢复为全部本地壁纸库").clicked() { // 条件分支
+                        self.cfg.slideshow.clear(); // 语句
+                        self.status = "轮播已恢复为全部本地壁纸库".to_string(); // 语句
+                    } // 块结束
                 }); // 语句
                 ui.add_space(4.0); // 语句
                 ui.label( // 语句
@@ -3715,18 +3820,31 @@ impl App { // 实现
                                     .size(12.0) // 语句
                                     .color(theme::text()), // 语句
                             )); // 语句
-                            ui.with_layout( // 语句
-                                egui::Layout::right_to_left(egui::Align::Center), // 字段 egui
-                                |ui| { // 语句
-                                    if ghost_button(ui, "移除").clicked() { // 条件分支
-                                        to_remove = Some(path.clone()); // 语句
-                                    } // 块结束
-                                    if ghost_button(ui, "设为当前").clicked() { // 条件分支
-                                        actions.push(Action::SetPath(path.clone())); // 语句
-                                    } // 块结束
-                                }, // 块结束
-                            ); // 块结束
+                            if !self.compact { // 条件分支
+                                ui.with_layout( // 语句
+                                    egui::Layout::right_to_left(egui::Align::Center), // 字段 egui
+                                    |ui| { // 语句
+                                        if ghost_button(ui, "移除").clicked() { // 条件分支
+                                            to_remove = Some(path.clone()); // 语句
+                                        } // 块结束
+                                        if ghost_button(ui, "设为当前").clicked() { // 条件分支
+                                            actions.push(Action::SetPath(path.clone())); // 语句
+                                        } // 块结束
+                                    }, // 块结束
+                                ); // 块结束
+                            } // 块结束
                         }); // 语句
+                        if self.compact { // 条件分支
+                            // 紧凑布局：操作按钮换到文件名下方一行，避免横向溢出。
+                            ui.horizontal_wrapped(|ui| { // 语句
+                                if ghost_button(ui, "设为当前").clicked() { // 条件分支
+                                    actions.push(Action::SetPath(path.clone())); // 语句
+                                } // 块结束
+                                if ghost_button(ui, "移除").clicked() { // 条件分支
+                                    to_remove = Some(path.clone()); // 语句
+                                } // 块结束
+                            }); // 语句
+                        } // 块结束
                         ui.add_space(4.0); // 语句
                     } // 块结束
                     if stored.len() > cap { // 条件分支
@@ -3765,43 +3883,38 @@ impl App { // 实现
             .show(ui, |ui| { // 语句
                 section_header(ui, "外观与显示"); // 调用 section_header
                 ui.add_space(12.0); // 语句
-                ui.horizontal(|ui| { // 语句
-                    setting_label(ui, "显示方式", "填充 / 适应 / 拉伸 / 居中 / 平铺"); // 调用 setting_label
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { // 语句
-                        let before_fit = self.cfg.fit; // 变量 before_fit
-                        let fit_text = if self.compact { // 变量 fit_text
-                            self.cfg.fit.short() // 语句
-                        } else { // 语句
-                            self.cfg.fit.label() // 语句
-                        }; // 块结束
-                        egui::ComboBox::from_id_salt("fit_combo") // 调用 from_id_salt
-                            .selected_text(fit_text) // 语句
-                            .width(if self.compact { 116.0 } else { 200.0 }) // 语句
-                            .show_ui(ui, |ui| { // 语句
-                                for f in Fit::all() { // 循环
-                                    let t = if self.compact { f.short() } else { f.label() }; // 变量 t
-                                    ui.selectable_value(&mut self.cfg.fit, f, t); // 语句
-                                } // 块结束
-                            }); // 语句
-                        if self.cfg.fit != before_fit { // 条件分支
-                            // Apply immediately to the current wallpaper.
-                            actions.push(Action::ReapplyCurrent); // 语句
-                        } // 块结束
-                    }); // 语句
+                let compact = self.compact; // 变量 compact
+                let _ = setting_row(ui, compact, "显示方式", "填充 / 适应 / 拉伸 / 居中 / 平铺", |ui| { // 调用 setting_row
+                    let before_fit = self.cfg.fit; // 变量 before_fit
+                    let fit_text = if compact { // 变量 fit_text
+                        self.cfg.fit.short() // 语句
+                    } else { // 语句
+                        self.cfg.fit.label() // 语句
+                    }; // 块结束
+                    egui::ComboBox::from_id_salt("fit_combo") // 调用 from_id_salt
+                        .selected_text(fit_text) // 语句
+                        .width(if compact { 116.0 } else { 200.0 }) // 语句
+                        .show_ui(ui, |ui| { // 语句
+                            for f in Fit::all() { // 循环
+                                let t = if compact { f.short() } else { f.label() }; // 变量 t
+                                ui.selectable_value(&mut self.cfg.fit, f, t); // 语句
+                            } // 块结束
+                        }); // 语句
+                    if self.cfg.fit != before_fit { // 条件分支
+                        // Apply immediately to the current wallpaper.
+                        actions.push(Action::ReapplyCurrent); // 语句
+                    } // 块结束
                 }); // 语句
                 ui.add_space(8.0); // 语句
                 ui.separator(); // 语句
                 ui.add_space(8.0); // 语句
-                ui.horizontal(|ui| { // 语句
-                    setting_label(ui, "主题", "浅色 / 深色，即时生效"); // 调用 setting_label
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { // 语句
-                        if segment(ui, self.cfg.theme == 1, "深色") { // 条件分支
-                            self.cfg.theme = 1; // 语句
-                        } // 块结束
-                        if segment(ui, self.cfg.theme == 0, "浅色") { // 条件分支
-                            self.cfg.theme = 0; // 语句
-                        } // 块结束
-                    }); // 语句
+                let _ = setting_row(ui, compact, "主题", "浅色 / 深色，即时生效", |ui| { // 调用 setting_row
+                    if segment(ui, self.cfg.theme == 1, "深色") { // 条件分支
+                        self.cfg.theme = 1; // 语句
+                    } // 块结束
+                    if segment(ui, self.cfg.theme == 0, "浅色") { // 条件分支
+                        self.cfg.theme = 0; // 语句
+                    } // 块结束
                 }); // 语句
             }); // 语句
         ui.add_space(12.0); // 语句
@@ -3821,41 +3934,36 @@ impl App { // 实现
             .show(ui, |ui| { // 语句
                 section_header(ui, "行为"); // 调用 section_header
                 ui.add_space(12.0); // 语句
-                ui.horizontal(|ui| { // 语句
-                    setting_label(ui, "扫描包含子文件夹", "载入本地壁纸库时递归子目录"); // 调用 setting_label
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { // 语句
-                        let mut rc = self.cfg.recursive; // 变量 rc
-                        if ui.checkbox(&mut rc, "").changed() { // 条件分支
-                            self.cfg.recursive = rc; // 语句
-                        } // 块结束
-                    }); // 语句
+                let compact = self.compact; // 变量 compact
+                let _ = setting_row(ui, compact, "扫描包含子文件夹", "载入本地壁纸库时递归子目录", |ui| { // 调用 setting_row
+                    let mut rc = self.cfg.recursive; // 变量 rc
+                    if ui.checkbox(&mut rc, "").changed() { // 条件分支
+                        self.cfg.recursive = rc; // 语句
+                    } // 块结束
                 }); // 语句
                 // Autostart is desktop-only (login items / Run key / .desktop).
                 if !crate::platform::is_mobile() { // 条件分支
                     ui.add_space(8.0); // 语句
                     ui.separator(); // 语句
                     ui.add_space(8.0); // 语句
-                    ui.horizontal(|ui| { // 语句
-                        setting_label(ui, "开机自动启动", "登录系统后自动运行本程序"); // 调用 setting_label
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { // 语句
-                            let mut auto = self.cfg.autostart; // 变量 auto
-                            if ui.checkbox(&mut auto, "").changed() { // 条件分支
-                                match crate::autostart::set_enabled(auto) { // 分支匹配
-                                    Ok(_) => { // 匹配分支
-                                        self.cfg.autostart = auto; // 语句
-                                        self.status = if auto { // 语句
-                                            "已开启开机自启".to_string() // 语句
-                                        } else { // 语句
-                                            "已关闭开机自启".to_string() // 语句
-                                        }; // 块结束
-                                    } // 块结束
-                                    Err(e) => { // 匹配分支
-                                        self.cfg.autostart = !auto; // 语句
-                                        self.status = format!("开机自启设置失败：{e}"); // 语句
-                                    } // 块结束
+                    let _ = setting_row(ui, compact, "开机自动启动", "登录系统后自动运行本程序", |ui| { // 调用 setting_row
+                        let mut auto = self.cfg.autostart; // 变量 auto
+                        if ui.checkbox(&mut auto, "").changed() { // 条件分支
+                            match crate::autostart::set_enabled(auto) { // 分支匹配
+                                Ok(_) => { // 匹配分支
+                                    self.cfg.autostart = auto; // 语句
+                                    self.status = if auto { // 语句
+                                        "已开启开机自启".to_string() // 语句
+                                    } else { // 语句
+                                        "已关闭开机自启".to_string() // 语句
+                                    }; // 块结束
+                                } // 块结束
+                                Err(e) => { // 匹配分支
+                                    self.cfg.autostart = !auto; // 语句
+                                    self.status = format!("开机自启设置失败：{e}"); // 语句
                                 } // 块结束
                             } // 块结束
-                        }); // 语句
+                        } // 块结束
                     }); // 语句
                 } // 块结束
             }); // 语句
@@ -3875,6 +3983,7 @@ impl App { // 实现
             .inner_margin(egui::Margin::symmetric(18.0, 16.0)) // 语句
             .show(ui, |ui| { // 语句
                 section_header(ui, "问题上报"); // 调用 section_header
+                let compact = self.compact; // 变量 compact
                 ui.add_space(4.0); // 语句
                 ui.label( // 语句
                     RichText::new("内置监控线程：界面卡死 / 崩溃 / 功能异常会先写入本地日志，并自动上报到 GitHub Issues（不含网络错误）。未填 Token 时改为打开「预填好内容的」提交页面，点一下即可。") // 调用 new
@@ -3882,31 +3991,25 @@ impl App { // 实现
                         .color(theme::subtext()), // 语句
                 ); // 块结束
                 ui.add_space(10.0); // 语句
-                ui.horizontal(|ui| { // 语句
-                    setting_label(ui, "自动上报", "出错时自动收集现场并上报，帮助快速定位修复"); // 调用 setting_label
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { // 语句
-                        let mut en = self.cfg.report_enabled; // 变量 en
-                        if ui.checkbox(&mut en, "").changed() { // 条件分支
-                            self.cfg.report_enabled = en; // 语句
-                            crate::report::set_enabled(en); // 调用 set_enabled
-                        } // 块结束
-                    }); // 语句
+                let _ = setting_row(ui, compact, "自动上报", "出错时自动收集现场并上报，帮助快速定位修复", |ui| { // 调用 setting_row
+                    let mut en = self.cfg.report_enabled; // 变量 en
+                    if ui.checkbox(&mut en, "").changed() { // 条件分支
+                        self.cfg.report_enabled = en; // 语句
+                        crate::report::set_enabled(en); // 调用 set_enabled
+                    } // 块结束
                 }); // 语句
                 ui.add_space(8.0); // 语句
                 ui.separator(); // 语句
                 ui.add_space(8.0); // 语句
-                ui.horizontal(|ui| { // 语句
-                    setting_label(ui, "GitHub Token", "内置（混淆存储、界面不可修改）；如需覆盖可设环境变量 WALLPAPER_REPORT_TOKEN"); // 调用 setting_label
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { // 语句
-                        if crate::report::using_builtin() { // 条件分支
-                            chip(ui, "已内置 · 不可修改", theme::accent_soft(), theme::ok()); // 调用 chip
-                        } else { // 语句
-                            chip(ui, "外部覆盖中", theme::accent_soft(), theme::accent()); // 调用 chip
-                        } // 块结束
-                    }); // 语句
+                let _ = setting_row(ui, compact, "GitHub Token", "内置（混淆存储、界面不可修改）；如需覆盖可设环境变量 WALLPAPER_REPORT_TOKEN", |ui| { // 调用 setting_row
+                    if crate::report::using_builtin() { // 条件分支
+                        chip(ui, "已内置 · 不可修改", theme::accent_soft(), theme::ok()); // 调用 chip
+                    } else { // 语句
+                        chip(ui, "外部覆盖中", theme::accent_soft(), theme::accent()); // 调用 chip
+                    } // 块结束
                 }); // 语句
                 ui.add_space(10.0); // 语句
-                ui.horizontal(|ui| { // 语句
+                ui.horizontal_wrapped(|ui| { // 语句
                     if ghost_button(ui, "立即上报当前状态").clicked() { // 条件分支
                         crate::report::report_manual(); // 调用 report_manual
                         self.status = "已生成问题上报（本地日志 + GitHub）".to_string(); // 语句
@@ -3938,6 +4041,7 @@ impl App { // 实现
             .inner_margin(egui::Margin::symmetric(18.0, 16.0)) // 语句
             .show(ui, |ui| { // 语句
                 section_header(ui, "托盘与快捷键"); // 调用 section_header
+                let compact = self.compact; // 变量 compact
                 ui.add_space(4.0); // 语句
                 ui.label( // 语句
                     RichText::new("关闭窗口（右上角 ×）后会隐藏到系统托盘：Windows 右下角通知区域 / macOS 菜单栏 / Linux 状态区，程序继续在后台运行。托盘图标会尽量保持常驻显示；单击托盘图标可重新打开窗口，右键菜单可退出。") // 调用 new
@@ -3954,67 +4058,55 @@ impl App { // 实现
                     } // 块结束
                 } // 块结束
                 ui.add_space(12.0); // 语句
-                ui.horizontal(|ui| { // 语句
-                    let desc = if self.tray.is_some() { // 变量 desc
-                        "托盘图标已就绪" // 语句
+                let tray_desc = if self.tray.is_some() { // 变量 tray_desc
+                    "托盘图标已就绪" // 语句
+                } else { // 语句
+                    "当前环境无系统托盘，将改用全局快捷键隐藏 / 唤回" // 语句
+                }; // 块结束
+                let _ = setting_row(ui, compact, "系统托盘", tray_desc, |ui| { // 调用 setting_row
+                    if self.tray.is_some() { // 条件分支
+                        chip(ui, "可用", theme::accent_soft(), theme::ok()); // 调用 chip
                     } else { // 语句
-                        "当前环境无系统托盘，将改用全局快捷键隐藏 / 唤回" // 语句
-                    }; // 块结束
-                    setting_label(ui, "系统托盘", desc); // 调用 setting_label
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { // 语句
-                        if self.tray.is_some() { // 条件分支
-                            chip(ui, "可用", theme::accent_soft(), theme::ok()); // 调用 chip
-                        } else { // 语句
-                            chip(ui, "不可用", theme::extreme(), theme::subtext()); // 调用 chip
-                        } // 块结束
-                    }); // 语句
+                        chip(ui, "不可用", theme::extreme(), theme::subtext()); // 调用 chip
+                    } // 块结束
                 }); // 语句
                 ui.add_space(8.0); // 语句
                 ui.separator(); // 语句
                 ui.add_space(8.0); // 语句
-                ui.horizontal(|ui| { // 语句
-                    setting_label(ui, "关闭时隐藏到托盘", "关闭窗口后隐藏到通知区域，轮播 / 每日壁纸继续运行"); // 调用 setting_label
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { // 语句
-                        let mut cb = self.cfg.close_to_background; // 变量 cb
-                        if ui.checkbox(&mut cb, "").changed() { // 条件分支
-                            self.cfg.close_to_background = cb; // 语句
-                        } // 块结束
-                    }); // 语句
+                let _ = setting_row(ui, compact, "关闭时隐藏到托盘", "关闭窗口后隐藏到通知区域，轮播 / 每日壁纸继续运行", |ui| { // 调用 setting_row
+                    let mut cb = self.cfg.close_to_background; // 变量 cb
+                    if ui.checkbox(&mut cb, "").changed() { // 条件分支
+                        self.cfg.close_to_background = cb; // 语句
+                    } // 块结束
                 }); // 语句
                 ui.add_space(8.0); // 语句
                 ui.separator(); // 语句
                 ui.add_space(8.0); // 语句
                 let reg = self.hotkey.is_registered(); // 变量 reg
-                ui.horizontal(|ui| { // 语句
-                    let desc = if reg { // 变量 desc
-                        format!("{}：显示 / 隐藏窗口", self.hotkey.label()) // 语句
+                let hotkey_desc = if reg { // 变量 hotkey_desc
+                    format!("{}：显示 / 隐藏窗口", self.hotkey.label()) // 语句
+                } else { // 语句
+                    "注册失败：快捷键可能被其它软件占用".to_string() // 语句
+                }; // 块结束
+                let _ = setting_row(ui, compact, "全局快捷键", &hotkey_desc, |ui| { // 调用 setting_row
+                    if reg { // 条件分支
+                        let txt = format!("已注册 · {}", self.hotkey.label()); // 变量 txt
+                        chip(ui, &txt, theme::accent_soft(), theme::ok()); // 调用 chip
                     } else { // 语句
-                        "注册失败：快捷键可能被其它软件占用".to_string() // 语句
-                    }; // 块结束
-                    setting_label(ui, "全局快捷键", &desc); // 调用 setting_label
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { // 语句
-                        if reg { // 条件分支
-                            let txt = format!("已注册 · {}", self.hotkey.label()); // 变量 txt
-                            chip(ui, &txt, theme::accent_soft(), theme::ok()); // 调用 chip
-                        } else { // 语句
-                            let txt = format!("注册失败 (code {})", self.hotkey.error_code()); // 变量 txt
-                            chip(ui, &txt, theme::extreme(), theme::subtext()); // 调用 chip
-                        } // 块结束
-                    }); // 语句
+                        let txt = format!("注册失败 (code {})", self.hotkey.error_code()); // 变量 txt
+                        chip(ui, &txt, theme::extreme(), theme::subtext()); // 调用 chip
+                    } // 块结束
                 }); // 语句
                 ui.add_space(8.0); // 语句
                 ui.separator(); // 语句
                 ui.add_space(8.0); // 语句
-                ui.horizontal(|ui| { // 语句
-                    setting_label(ui, "隐藏 / 退出", "隐藏到托盘继续运行，或彻底退出应用"); // 调用 setting_label
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { // 语句
-                        if ghost_button(ui, "退出应用").clicked() { // 条件分支
-                            actions.push(Action::Quit); // 语句
-                        } // 块结束
-                        if ghost_button(ui, "隐藏到托盘").clicked() { // 条件分支
-                            actions.push(Action::HideToTray); // 语句
-                        } // 块结束
-                    }); // 语句
+                let _ = setting_row(ui, compact, "隐藏 / 退出", "隐藏到托盘继续运行，或彻底退出应用", |ui| { // 调用 setting_row
+                    if ghost_button(ui, "退出应用").clicked() { // 条件分支
+                        actions.push(Action::Quit); // 语句
+                    } // 块结束
+                    if ghost_button(ui, "隐藏到托盘").clicked() { // 条件分支
+                        actions.push(Action::HideToTray); // 语句
+                    } // 块结束
                 }); // 语句
             }); // 语句
         ui.add_space(12.0); // 语句
@@ -4081,7 +4173,7 @@ impl App { // 实现
                         .color(theme::subtext()), // 语句
                 ); // 块结束
                 ui.add_space(12.0); // 语句
-                ui.horizontal(|ui| { // 语句
+                ui.horizontal_wrapped(|ui| { // 语句
                     if primary_button(ui, "将当前壁纸设为锁屏").clicked() { // 条件分支
                         self.set_lock_from_current(); // 语句
                     } // 块结束
@@ -4121,7 +4213,7 @@ impl App { // 实现
                         ); // 块结束
                     }); // 语句
                 ui.add_space(10.0); // 语句
-                ui.horizontal(|ui| { // 语句
+                ui.horizontal_wrapped(|ui| { // 语句
                     if ghost_button(ui, "打开配置目录").clicked() { // 条件分支
                         actions.push(Action::OpenConfig); // 语句
                     } // 块结束
@@ -4178,7 +4270,7 @@ impl App { // 实现
             ); // 块结束
             ui.add_space(6.0); // 语句
             let cap = crate::platform::wallpaper_support(); // 变量 cap
-            ui.horizontal(|ui| { // 语句
+            ui.horizontal_wrapped(|ui| { // 语句
                 ui.label( // 语句
                     RichText::new(format!("当前平台：{}", crate::platform::name())) // 调用 new
                         .size(11.5) // 语句
@@ -4216,9 +4308,11 @@ impl App { // 实现
                     ("🎨", "主题切换", "浅色 / 深色主题，即时生效"), // 语句
                     ("💾", "配置保存", "设置自动持久化，开机自启可选"), // 语句
                 ]; // 语句
-                ui.columns(2, |cols| { // 语句
+                // 紧凑布局下功能卡片改为单列，避免双列在窄屏里被压得过窄。
+                let ncols = if self.compact { 1 } else { 2 }; // 变量 ncols
+                ui.columns(ncols, |cols| { // 语句
                     for (i, (icon, title, desc)) in features.iter().enumerate() { // 循环
-                        let col = &mut cols[i % 2]; // 变量 col
+                        let col = &mut cols[i % ncols]; // 变量 col
                         col.horizontal(|ui| { // 语句
                             let (ir, _) = ui // 调用 let
                                 .allocate_exact_size(Vec2::new(30.0, 30.0), egui::Sense::hover()); // 语句
@@ -4285,13 +4379,24 @@ impl App { // 实现
                     ), // 语句
                 ]; // 语句
                 for (label, url) in links { // 循环
-                    ui.horizontal(|ui| { // 语句
-                        if ghost_button(ui, "⬇ 下载").clicked() { // 条件分支
-                            open_url(url); // 调用 open_url
-                        } // 块结束
-                        ui.label(RichText::new(label).size(12.0).color(theme::accent())); // 语句
+                    if self.compact { // 条件分支
+                        // 紧凑布局：下载按钮与名称一行，URL 另起一行完整显示，避免横向溢出。
+                        ui.horizontal(|ui| { // 语句
+                            if ghost_button(ui, "⬇ 下载").clicked() { // 条件分支
+                                open_url(url); // 调用 open_url
+                            } // 块结束
+                            ui.label(RichText::new(label).size(12.0).color(theme::accent())); // 语句
+                        }); // 语句
                         ui.label(RichText::new(url).size(10.0).color(theme::subtext())); // 语句
-                    }); // 语句
+                    } else { // 语句
+                        ui.horizontal(|ui| { // 语句
+                            if ghost_button(ui, "⬇ 下载").clicked() { // 条件分支
+                                open_url(url); // 调用 open_url
+                            } // 块结束
+                            ui.label(RichText::new(label).size(12.0).color(theme::accent())); // 语句
+                            ui.label(RichText::new(url).size(10.0).color(theme::subtext())); // 语句
+                        }); // 语句
+                    } // 块结束
                     ui.add_space(4.0); // 语句
                 } // 块结束
             }); // 语句
@@ -4316,7 +4421,7 @@ impl App { // 实现
                         .color(theme::subtext()), // 语句
                 ); // 块结束
                 ui.add_space(10.0); // 语句
-                ui.horizontal(|ui| { // 语句
+                ui.horizontal_wrapped(|ui| { // 语句
                     if ghost_button(ui, "反馈问题 / 上报日志").clicked() { // 条件分支
                         crate::report::report_manual(); // 调用 report_manual
                     } // 块结束
@@ -4798,6 +4903,19 @@ impl eframe::App for App { // 实现
         // (or a narrow desktop window), and the sidebar layout otherwise.
         self.compact = // 语句
             crate::platform::is_mobile() || ctx.screen_rect().width() < COMPACT_BREAK; // 调用 is_mobile
+        // Android：读取系统栏安全区，避免标题被状态栏遮挡、底部导航被虚拟
+        // 导航栏 / 手势条遮挡。限流到每 300ms 一次，兼顾旋转 / 键盘变化的实时性。
+        #[cfg(target_os = "android")] // 语句
+        { // 语句
+            if self.safe_poll.elapsed() >= Duration::from_millis(300) { // 条件分支
+                self.safe_poll = Instant::now(); // 语句
+                if let Some((top, bottom)) = crate::android_jni::system_insets() { // 条件分支
+                    let ppp = ctx.pixels_per_point().max(0.5); // 变量 ppp
+                    self.safe_top = (top / ppp).clamp(0.0, 96.0); // 语句
+                    self.safe_bottom = (bottom / ppp).clamp(0.0, 120.0); // 语句
+                } // 块结束
+            } // 块结束
+        } // 块结束
         let (touch_h, pad) = if self.compact { // 调用 let
             (46.0, egui::vec2(16.0, 10.0)) // 语句
         } else { // 语句
@@ -4920,6 +5038,33 @@ fn setting_label(ui: &mut egui::Ui, title: &str, desc: &str) { // 函数 setting
         ui.label(RichText::new(desc).size(11.0).color(theme::subtext())); // 语句
     }); // 语句
 } // 块结束
+
+/// 单个设置项的一行：桌面端为「左侧标题 + 说明、右侧控件」同一行；紧凑端（手机 /
+/// 窄屏）改为纵向堆叠（标题在上、控件在下），避免较长的说明文字把右侧控件挤出屏幕。
+fn setting_row<R>(
+    ui: &mut egui::Ui,
+    compact: bool,
+    title: &str,
+    desc: &str,
+    control: impl FnOnce(&mut egui::Ui) -> R,
+) -> Option<R> {
+    let mut out = None;
+    if compact {
+        ui.vertical(|ui| {
+            setting_label(ui, title, desc);
+            ui.add_space(8.0);
+            out = Some(ui.horizontal(control).inner);
+        });
+    } else {
+        ui.horizontal(|ui| {
+            setting_label(ui, title, desc);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                out = Some(control(ui));
+            });
+        });
+    }
+    out
+}
 
 fn nav_button(ui: &mut egui::Ui, icon: &str, label: &str, selected: bool) -> bool { // 函数 nav_button
     let height = 42.0; // 变量 height

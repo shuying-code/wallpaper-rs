@@ -168,8 +168,13 @@ fn load_system_cjk() -> Option<(String, Vec<u8>)> { // 函数 load_system_cjk
     #[cfg(target_os = "android")] // 语句
     let candidates = [ // 变量 candidates
         "/system/fonts/NotoSansCJK-Regular.ttc", // 语句
+        "/system/fonts/NotoSansCJKsc-Regular.otf", // 语句
         "/system/fonts/NotoSansSC-Regular.otf", // 语句
+        "/system/fonts/NotoSansSC-VF.ttf", // 语句
+        "/system/fonts/NotoSansHans-Regular.otf", // 语句
+        "/system/fonts/DroidSansFallback.ttf", // 语句
         "/system/fonts/DroidSansChinese.ttf", // 语句
+        "/system/fonts/DroidSansFallbackFull.ttf", // 语句
     ]; // 语句
     #[cfg(target_os = "ios")] // 语句
     let candidates = [ // 变量 candidates

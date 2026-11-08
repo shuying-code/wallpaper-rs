@@ -55,10 +55,10 @@ pub fn set_wallpaper(path: &Path, fit: Fit) -> Result<(), String> { // 函数 se
     } // 块结束
     #[cfg(target_os = "android")] // 语句
     { // 语句
-        // On Android the wallpaper is applied from the mobile host via
-        // WallpaperManager (JNI); a plain desktop binary cannot do it here.
+        // On Android the wallpaper is applied through WallpaperManager over JNI
+        // (`SET_WALLPAPER` permission); `fit` is handled by the system crop.
         let _ = fit; // 变量 _
-        return Err("Android 需在移动端宿主中通过 WallpaperManager 设置壁纸（需 SET_WALLPAPER 权限）".to_string()); // 返回
+        return crate::android_jni::set_wallpaper(path, false); // 返回
     } // 块结束
     #[cfg(target_os = "ios")] // 语句
     { // 语句
@@ -91,8 +91,9 @@ pub fn set_lock_screen(path: &Path) -> Result<(), LockError> { // 函数 set_loc
     } // 块结束
     #[cfg(target_os = "android")] // 语句
     { // 语句
-        let _ = path; // 变量 _
-        return Err(LockError::plain("Android 暂不支持单独设置锁屏壁纸")); // 返回
+        // `WallpaperManager.FLAG_LOCK`. Some OEM ROMs restrict this; failures
+        // are surfaced to the user instead of silently ignored.
+        return crate::android_jni::set_wallpaper(path, true).map_err(LockError::plain); // 返回
     } // 块结束
     #[cfg(target_os = "ios")] // 语句
     { // 语句

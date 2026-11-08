@@ -31,13 +31,13 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 # `cookies`：在同一个 agent 内持久化站点下发的 Cookie。彼岸图网（pic.netbian.com）
 # 位于百度 WAF 之后，会下发 abymg_id 等令牌；缺少 Cookie 时后续请求会被拦截，
 # 表现为「接口访问不通」。共享带 Cookie 罐的 agent 后可稳定长期浏览。
-# `native-certs`：rustls 改用「系统证书存储」而非仅内置根证书。部分环境（如经过
-# 企业/运营商 TLS 中间代理时）GitHub 等站点的证书链不在内置根列表里，用系统存储
-# 才能正常校验（否则 mpv 按需下载会报 UnknownIssuer）。
-ureq = { version = "2", default-features = false, features = ["tls", "native-certs", "json", "cookies"] }
 raw-window-handle = "0.6"
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
+# 桌面端 ureq 使用「系统证书存储」（native-certs）：部分环境（企业 / 运营商 TLS
+# 中间代理）下 GitHub 等站点的证书链不在内置根列表里，用系统存储才能正常校验
+# （否则 mpv 按需下载会报 UnknownIssuer）。
+ureq = { version = "2", default-features = false, features = ["tls", "native-certs", "json", "cookies"] }
 rfd = "0.14"
 tray-icon = "0.26"
 
@@ -52,9 +52,16 @@ objc = "0.2"
 global-hotkey = "0.6"
 
 [target.'cfg(target_os = "android")'.dependencies]
+# Android 系统根证书不是 PEM 文件，`native-certs` 会加载到空的根证书库，导致所有
+# HTTPS 请求以 UnknownIssuer 失败（网上壁纸库「请求失败 / 挑战请求失败」即由此而来）。
+# 因此 Android 只用内置的 webpki-roots：仅启用 `tls`（默认即携带内置根证书），
+# 不使用 `native-certs`。
+ureq = { version = "2", default-features = false, features = ["tls", "json", "cookies"] }
 winit = { version = "0.30", features = ["android-native-activity"] }
 android_logger = "0.13"
 log = "0.4"
+# JNI 桥接：读取系统栏安全区（Insets）并经 WallpaperManager 设置壁纸。
+jni = "0.22"
 
 [package.metadata.android]
 package = "com.shuying.wallpaperrs"
@@ -67,6 +74,12 @@ target_sdk_version = 34
 
 [package.metadata.android.application]
 label = "Wallpaper Studio"
+
+# 关键：接管所有常见配置变化，避免系统在配置变化时销毁并重建 Activity。
+# NativeActivity 重建时会在 `unloadNativeCode` 里 `dlclose` 本库，而原生事件循环
+# 线程仍在运行 → dlclose 阻塞 → 主线程卡死 → 输入超时 ANR（界面「无响应」）。
+[package.metadata.android.application.activity]
+config_changes = "orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|navigation|uiMode|density|fontScale|layoutDirection|locale|touchscreen|colorMode"
 
 [[package.metadata.android.uses_permission]]
 name = "android.permission.SET_WALLPAPER"

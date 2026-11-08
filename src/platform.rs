@@ -103,12 +103,12 @@ pub fn wallpaper_support() -> WallpaperSupport { // 函数 wallpaper_support
             label: "桌面壁纸", // 字段 label
             note: "可直接把所选图片设置为系统桌面壁纸。", // 字段 note
         }, // 块结束
-        // Android: needs the SET_WALLPAPER permission + JNI bridge in the mobile
-        // build; the UI still lets users browse and pick images.
+        // Android：已声明 SET_WALLPAPER 权限，并通过 JNI 调用 WallpaperManager
+        // 设置主屏 / 锁屏壁纸（见 `android_jni`）。
         Os::Android => WallpaperSupport { // 匹配分支
-            can_set: false, // 字段 can_set
+            can_set: true, // 字段 can_set
             label: "Android 壁纸", // 字段 label
-            note: "Android 需在移动端构建中申请 SET_WALLPAPER 权限并通过 WallpaperManager 设置；当前构建可浏览与缩放预览，设置动作在移动宿主中完成。", // 字段 note
+            note: "可直接把所选图片设为系统主屏，或设为锁屏壁纸（通过 WallpaperManager）。", // 字段 note
         }, // 块结束
         // iOS forbids programmatic wallpaper changes.
         Os::Ios => WallpaperSupport { // 匹配分支

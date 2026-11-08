@@ -3722,6 +3722,7 @@ dependencies = [
  "egui",
  "global-hotkey",
  "image",
+ "jni",
  "log",
  "objc",
  "rand",
