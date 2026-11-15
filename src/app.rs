@@ -41,6 +41,20 @@ enum Tab {
     About,     // 语句
 } // 块结束
 
+impl Tab {
+    /// 手机端全屏页标题栏文案。
+    fn mobile_title(self) -> &'static str {
+        match self {
+            Tab::Web4k => "网上壁纸库",
+            Tab::Library => "本地壁纸库",
+            Tab::Slideshow => "轮播",
+            Tab::Online => "每日壁纸",
+            Tab::Settings => "设置",
+            Tab::About => "关于",
+        }
+    }
+}
+
 /// 网上壁纸库中，原图下载完成后要执行的动作。
 #[derive(Clone, Copy, PartialEq, Eq)] // 语句
 enum WebApply {
@@ -132,6 +146,9 @@ enum Action {
     ReapplyCurrent,     // 语句
     /// 把视频设为锁屏：Windows 锁屏只能设置静态图片，先截取一帧再设置。
     LockVideo(PathBuf), // 语句
+    /// 移动端打开本地壁纸详情页。
+    OpenDetail(PathBuf),
+    ToggleMode,
 } // 块结束
 
 /// Snapshot of the persisted config, used to detect changes and autosave.
@@ -452,6 +469,10 @@ pub struct App {
     shot: Option<crate::shot::Shooter>, // 字段 shot
     /// 是否已按显示器可用范围校正过初始窗口尺寸（只做一次）。
     window_fitted: bool, // 字段 window_fitted
+    /// 移动端「壁纸详情」页：点开卡片后用整页展示预览和操作。
+    detail_path: Option<PathBuf>,
+    /// 手机端当前页是否由底部导航打开；用于切换到全屏页面并显示返回按钮。
+    nav_from_mobile: bool,
 } // 块结束
 
 impl App {
@@ -577,6 +598,8 @@ impl App {
             album_limits: HashMap::new(), // 字段 album_limits
             shot: crate::shot::Shooter::from_env(), // 字段 shot
             window_fitted: false, // 字段 window_fitted
+            detail_path: None,
+            nav_from_mobile: false,
         }; // 块结束
            // Optional deep-link to a tab, e.g. `wallpaper-rs --tab settings`.
         if let Some(pos) = std::env::args().position(|a| a == "--tab") {
@@ -1024,6 +1047,12 @@ impl App {
                         self.set_current(ctx, i); // 语句
                     } // 块结束
                 } // 块结束
+                Action::OpenDetail(p) => {
+                    self.detail_path = Some(p);
+                    if let Some(path) = self.detail_path.clone() {
+                        self.load_preview(ctx, &path);
+                    }
+                }
                 Action::Next => self.advance(ctx),   // 匹配分支
                 Action::Prev => self.step_back(ctx), // 匹配分支
                 Action::Random => self.random_pick(ctx), // 匹配分支
@@ -1073,6 +1102,16 @@ impl App {
                     // 匹配分支
                     self.cfg.theme = if self.cfg.theme == 1 { 0 } else { 1 }; // 语句
                 } // 块结束
+                Action::ToggleMode => {
+                    if self.cfg.mode == Mode::Slideshow {
+                        self.cfg.mode = Mode::Fixed;
+                        self.cfg.running = false;
+                    } else {
+                        self.cfg.mode = Mode::Slideshow;
+                        self.cfg.running = true;
+                        self.last_switch = Instant::now();
+                    }
+                }
                 Action::ExpandAllAlbums => self.cfg.collapsed_folders.clear(), // 匹配分支
                 Action::CollapseAllAlbums => {
                     // 匹配分支
@@ -3114,6 +3153,9 @@ impl App {
 
     fn draw_header(&self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         // 函数 draw_header
+        if self.compact && self.nav_from_mobile {
+            return;
+        }
         let (mx, my) = if self.compact {
             // 调用 let
             (12.0, 9.0) // 语句
@@ -3188,7 +3230,20 @@ impl App {
                     } else {
                         "固定"
                     }; // 变量 mode
-                    chip(ui, mode, theme::accent_soft(), theme::accent()); // 调用 chip
+                    let mode_chip = ui.add(
+                        egui::Button::new(RichText::new(mode).size(11.5).strong().color(theme::accent()))
+                            .fill(theme::accent_soft())
+                            .rounding(Rounding::same(20.0))
+                            .min_size(egui::vec2(0.0, 22.0)),
+                    ); // 调用 add
+                    if mode_chip.clicked() {
+                        actions.push(Action::ToggleMode);
+                    }
+                    mode_chip.on_hover_text(if self.cfg.mode == Mode::Slideshow {
+                        "点击切换为固定壁纸"
+                    } else {
+                        "点击切换为轮播"
+                    });
                     if !self.compact && self.cfg.mode == Mode::Slideshow {
                         // 条件分支
                         if self.cfg.running {
@@ -3252,6 +3307,177 @@ impl App {
                 ); // 块结束
             }); // 语句
     } // 块结束
+
+    /// 移动端详情页标题栏：返回按钮 + 页面标题，保持独立页面的方向感。
+    fn draw_detail_header(&self, ui: &mut egui::Ui, title: &str) -> bool {
+        let mut close = false;
+        egui::Frame::none()
+            .fill(theme::card())
+            .stroke(Stroke::new(1.0_f32, theme::border()))
+            .rounding(Rounding::same(14.0))
+            .inner_margin(egui::Margin::symmetric(10.0, 8.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if ghost_button(ui, "‹ 返回").clicked() {
+                        close = true;
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            RichText::new(title)
+                                .size(16.0)
+                                .strong()
+                                .color(theme::text()),
+                        );
+                    });
+                });
+            });
+        ui.add_space(10.0);
+        close
+    }
+
+    /// 本地壁纸详情页：大图、文件信息、壁纸 / 锁屏 / 轮播操作集中在一页。
+    fn ui_local_detail(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) -> bool {
+        let Some(path) = self.detail_path.clone() else {
+            return true;
+        };
+        if self.draw_detail_header(ui, "壁纸详情") {
+            return true;
+        }
+
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let is_video = crate::thumbs::is_video_file(&path);
+        let is_current = self.current_path().as_deref() == Some(path.as_path());
+        let tex = self
+            .preview
+            .as_ref()
+            .filter(|(p, _)| *p == path)
+            .map(|(_, t)| t.clone());
+        let meta = std::fs::metadata(&path).ok();
+
+        egui::Frame::none()
+            .fill(theme::card())
+            .stroke(Stroke::new(1.0_f32, theme::border()))
+            .rounding(Rounding::same(16.0))
+            .shadow(egui::epaint::Shadow {
+                offset: egui::vec2(0.0, 3.0),
+                blur: 14.0,
+                spread: 0.0,
+                color: theme::shadow(),
+            })
+            .inner_margin(egui::Margin::same(14.0))
+            .show(ui, |ui| {
+                let width = ui.available_width();
+                let height = preview_img_height(ui.ctx(), 0.46);
+                let (rect, _) =
+                    ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::hover());
+                let painter = ui.painter();
+                painter.rect_filled(rect, Rounding::same(12.0), theme::extreme());
+                match &tex {
+                    Some(tex) => {
+                        let ts = tex.size();
+                        let tw = ts[0] as f32;
+                        let th = ts[1] as f32;
+                        if tw > 0.0 && th > 0.0 {
+                            let scale = (rect.width() / tw).min(rect.height() / th);
+                            let ir = egui::Rect::from_center_size(
+                                rect.center(),
+                                Vec2::new(tw * scale, th * scale),
+                            );
+                            painter.image(
+                                tex.id(),
+                                ir,
+                                egui::Rect::from_min_max(
+                                    egui::pos2(0.0, 0.0),
+                                    egui::pos2(1.0, 1.0),
+                                ),
+                                Color32::WHITE,
+                            );
+                        }
+                    }
+                    None => {
+                        painter.text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            if is_video {
+                                "▶ 正在准备预览…"
+                            } else {
+                                "正在加载预览…"
+                            },
+                            egui::FontId::proportional(14.0),
+                            theme::subtext(),
+                        );
+                    }
+                }
+                ui.add_space(12.0);
+                ui.label(
+                    RichText::new(ellipsis(&name, 44))
+                        .size(16.0)
+                        .strong()
+                        .color(theme::text()),
+                );
+                ui.add_space(5.0);
+                ui.horizontal_wrapped(|ui| {
+                    if is_video {
+                        chip(ui, "🎬 动态壁纸", theme::accent(), Color32::WHITE);
+                    } else {
+                        chip(ui, "🖼 静态壁纸", theme::extreme(), theme::text());
+                    }
+                    if is_current {
+                        chip(ui, "当前壁纸", theme::ok(), Color32::WHITE);
+                    }
+                    if let Some(m) = &meta {
+                        chip(
+                            ui,
+                            &format!("{:.1} MB", m.len() as f32 / 1024.0 / 1024.0),
+                            theme::extreme(),
+                            theme::subtext(),
+                        );
+                    }
+                });
+                if let Some(folder) = path.parent() {
+                    ui.add_space(7.0);
+                    ui.label(
+                        RichText::new(ellipsis(&folder.display().to_string(), 58))
+                            .size(11.5)
+                            .color(theme::subtext()),
+                    );
+                }
+                ui.add_space(14.0);
+                ui.horizontal_wrapped(|ui| {
+                    if primary_button(ui, "设为壁纸").clicked() {
+                        actions.push(Action::SetPath(path.clone()));
+                    }
+                    if is_video && ghost_button(ui, "设为静态锁屏帧").clicked() {
+                        actions.push(Action::LockVideo(path.clone()));
+                    }
+                });
+                ui.add_space(8.0);
+                ui.horizontal_wrapped(|ui| {
+                    let in_pl = self.in_playlist(&path);
+                    let label = if in_pl {
+                        "移出轮播"
+                    } else {
+                        "+ 加入轮播"
+                    };
+                    if ghost_button(ui, label).clicked() {
+                        if in_pl {
+                            self.remove_from_playlist(&path);
+                        } else {
+                            self.add_to_playlist(&path);
+                            self.precache_live_posters();
+                        }
+                    }
+                    if ghost_button(ui, "打开目录").clicked() {
+                        actions.push(Action::OpenFolder);
+                    }
+                });
+            });
+        ui.add_space(14.0);
+        false
+    }
 
     fn draw_sidebar(&mut self, ctx: &egui::Context) {
         // 函数 draw_sidebar
@@ -3335,6 +3561,9 @@ impl App {
     /// Compact bottom navigation bar (phones/tablets, narrow windows).
     fn draw_bottom_nav(&mut self, ctx: &egui::Context) {
         // 函数 draw_bottom_nav
+        if self.nav_from_mobile {
+            return;
+        }
         egui::TopBottomPanel::bottom("mobilenav") // 调用 bottom
             // 底部叠加 Android 虚拟导航 / 手势条安全区，避免被系统栏遮挡。
             .exact_height(66.0 + self.safe_bottom) // 语句
@@ -3377,6 +3606,11 @@ impl App {
                         if bottom_nav_button(ui, icon, label, self.tab == tab, w) {
                             // 条件分支
                             self.tab = tab; // 语句
+                            self.nav_from_mobile = true;
+                            self.detail_path = None;
+                            self.web_preview_id = None;
+                            self.web_preview_tex = None;
+                            self.web_preview_want = None;
                         } // 块结束
                     } // 块结束
                 }); // 语句
@@ -3420,6 +3654,46 @@ impl App {
             }); // 语句
     } // 块结束
 
+    /// 手机端功能页顶部：返回上一级 + 页面标题 + 主题切换，固定在屏幕顶部。
+    fn draw_mobile_page_header(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) -> bool {
+        let mut back = false;
+        egui::TopBottomPanel::top("mobile_page_header")
+            .frame(
+                egui::Frame::none()
+                    .fill(theme::surface())
+                    .inner_margin(egui::Margin {
+                        left: 12.0,
+                        right: 12.0,
+                        top: 9.0 + self.safe_top,
+                        bottom: 9.0,
+                    }),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if ghost_button(ui, "‹ 返回").clicked() {
+                        back = true;
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let dark = self.cfg.theme == 1;
+                        let theme_icon = if dark { "☀" } else { "🌙" };
+                        if ghost_button(ui, theme_icon)
+                            .on_hover_text("切换浅色 / 深色主题")
+                            .clicked()
+                        {
+                            actions.push(Action::ToggleTheme);
+                        }
+                        ui.label(
+                            RichText::new(self.tab.mobile_title())
+                                .size(17.0)
+                                .strong()
+                                .color(theme::text()),
+                        );
+                    });
+                });
+            });
+        back
+    }
+
     fn draw_center(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         // 函数 draw_center
         let cx = if is_narrow(ctx) { 12.0 } else { 18.0 }; // 变量 cx
@@ -3433,26 +3707,56 @@ impl App {
             .show(ctx, |ui| {
                 // 语句
                 theme::paint_bg_gradient(ui, ui.max_rect()); // 调用 paint_bg_gradient
-                                                             // 左侧菜单选中的任意页面，右侧内容都可在垂直方向滑动浏览。
+                if self.compact && self.nav_from_mobile {
+                    // 手机端功能页：底部已有留白，让最后一项不被贴边。
+                    ui.add_space(4.0);
+                }
                 match self.tab {
                     // 分支匹配
                     // 「网上壁纸库」页面自带滚动区域，单独渲染，避免嵌套滚动。
-                    Tab::Web4k => self.ui_web4k(ui), // 匹配分支
+                    Tab::Web4k => {
+                        if self.compact && self.web_preview_id.is_some() {
+                            let Some(id) = self.web_preview_id else {
+                                return;
+                            };
+                            if self.draw_detail_header(ui, "壁纸详情") {
+                                self.web_preview_id = None;
+                                self.web_preview_tex = None;
+                                self.web_preview_want = None;
+                            } else {
+                                vscroll().show(ui, |ui| {
+                                    self.ui_web_preview(ui, id);
+                                    ui.add_space(24.0);
+                                });
+                            }
+                        } else {
+                            self.ui_web4k(ui);
+                        }
+                    }
                     // 其余页面统一包一层可垂直滚动区域，并在底部补留白。
                     _ => {
                         // 语句
                         vscroll() // 调用 vscroll
                             .show(ui, |ui| {
                                 // 语句
-                                match self.tab {
-                                    // 分支匹配
-                                    Tab::Library => self.ui_library(ui, actions), // 匹配分支
-                                    Tab::Slideshow => self.ui_slideshow(ui, actions), // 匹配分支
-                                    Tab::Online => self.ui_online(ui),            // 匹配分支
-                                    Tab::Settings => self.ui_settings(ui, actions), // 匹配分支
-                                    Tab::About => self.ui_about(ui),              // 匹配分支
-                                    Tab::Web4k => {} // 已在上面单独渲染
-                                } // 块结束
+                                if self.compact
+                                    && self.tab == Tab::Library
+                                    && self.detail_path.is_some()
+                                {
+                                    if self.ui_local_detail(ui, actions) {
+                                        self.detail_path = None;
+                                    }
+                                } else {
+                                    match self.tab {
+                                        // 分支匹配
+                                        Tab::Library => self.ui_library(ui, actions), // 匹配分支
+                                        Tab::Slideshow => self.ui_slideshow(ui, actions), // 匹配分支
+                                        Tab::Online => self.ui_online(ui), // 匹配分支
+                                        Tab::Settings => self.ui_settings(ui, actions), // 匹配分支
+                                        Tab::About => self.ui_about(ui),   // 匹配分支
+                                        Tab::Web4k => {}                   // 已在上面单独渲染
+                                    } // 块结束
+                                }
                                 ui.add_space(24.0); // 底部留白，最后一项不被状态栏贴边
                             }); // 语句
                     } // 块结束
@@ -4161,7 +4465,12 @@ impl App {
                         } // 块结束
                         if resp.clicked() {
                             // 条件分支
-                            actions.push(Action::SetPath(path.to_path_buf())); // 语句
+                            if self.compact {
+                                actions.push(Action::OpenDetail(path.to_path_buf()));
+                            } else {
+                                actions.push(Action::SetPath(path.to_path_buf()));
+                                // 语句
+                            }
                         } // 块结束
                         ui.add_space(9.0); // 语句
                         let name = path // 变量 name
@@ -6428,7 +6737,13 @@ impl eframe::App for App {
         self.draw_header(ctx, &mut actions); // 语句
         if self.compact {
             // 条件分支
-            self.draw_bottom_nav(ctx); // 语句
+            if self.nav_from_mobile {
+                if self.draw_mobile_page_header(ctx, &mut actions) {
+                    self.nav_from_mobile = false;
+                }
+            } else {
+                self.draw_bottom_nav(ctx); // 语句
+            }
         } else {
             // 语句
             self.draw_sidebar(ctx); // 语句

@@ -73,6 +73,7 @@ jni = "0.22"
 package = "com.shuying.wallpaperrs"
 apk_name = "wallpaper-rs"
 build_targets = ["aarch64-linux-android", "armv7-linux-androideabi", "x86_64-linux-android"]
+resources = "assets/res"
 
 [package.metadata.android.sdk]
 min_sdk_version = 24
@@ -80,6 +81,7 @@ target_sdk_version = 34
 
 [package.metadata.android.application]
 label = "Wallpaper Studio"
+icon = "@mipmap/ic_launcher"
 
 # 关键：接管所有常见配置变化，避免系统在配置变化时销毁并重建 Activity。
 # NativeActivity 重建时会在 `unloadNativeCode` 里 `dlclose` 本库，而原生事件循环
