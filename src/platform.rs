@@ -15,30 +15,36 @@
 
 #[allow(dead_code)] // 语句
 #[derive(Debug, Clone, Copy, PartialEq, Eq)] // 语句
-pub enum Os { // 枚举 Os
+pub enum Os {
+    // 枚举 Os
     Windows, // 语句
-    MacOs, // 语句
-    Linux, // 语句
+    MacOs,   // 语句
+    Linux,   // 语句
     Android, // 语句
-    Ios, // 语句
-    Other, // 语句
+    Ios,     // 语句
+    Other,   // 语句
 } // 块结束
 
-pub fn os() -> Os { // 函数 os
+pub fn os() -> Os {
+    // 函数 os
     #[cfg(windows)] // 语句
-    { // 语句
+    {
+        // 语句
         Os::Windows // 语句
     } // 块结束
     #[cfg(target_os = "macos")] // 语句
-    { // 语句
+    {
+        // 语句
         Os::MacOs // 语句
     } // 块结束
     #[cfg(target_os = "android")] // 语句
-    { // 语句
+    {
+        // 语句
         Os::Android // 语句
     } // 块结束
     #[cfg(target_os = "ios")] // 语句
-    { // 语句
+    {
+        // 语句
         Os::Ios // 语句
     } // 块结束
     #[cfg(all( // 语句
@@ -47,7 +53,8 @@ pub fn os() -> Os { // 函数 os
         not(target_os = "android"), // 调用 not
         not(target_os = "ios") // 调用 not
     ))] // 语句
-    { // 语句
+    {
+        // 语句
         Os::Linux // 语句
     } // 块结束
     #[cfg(not(any( // 语句
@@ -62,32 +69,37 @@ pub fn os() -> Os { // 函数 os
             not(target_os = "ios") // 调用 not
         ) // 块结束
     )))] // 语句
-    { // 语句
+    {
+        // 语句
         Os::Other // 语句
     } // 块结束
 } // 块结束
 
-pub fn name() -> &'static str { // 函数 name
-    match os() { // 分支匹配
+pub fn name() -> &'static str {
+    // 函数 name
+    match os() {
+        // 分支匹配
         Os::Windows => "Windows", // 匹配分支
-        Os::MacOs => "macOS", // 匹配分支
-        Os::Linux => "Linux", // 匹配分支
+        Os::MacOs => "macOS",     // 匹配分支
+        Os::Linux => "Linux",     // 匹配分支
         Os::Android => "Android", // 匹配分支
-        Os::Ios => "iOS", // 匹配分支
-        Os::Other => "Unknown", // 匹配分支
+        Os::Ios => "iOS",         // 匹配分支
+        Os::Other => "Unknown",   // 匹配分支
     } // 块结束
 } // 块结束
 
 /// True on phone/tablet targets (Android / iOS). Used to force the compact,
 /// touch-friendly layout regardless of window width.
-pub fn is_mobile() -> bool { // 函数 is_mobile
+pub fn is_mobile() -> bool {
+    // 函数 is_mobile
     matches!(os(), Os::Android | Os::Ios) // 语句
 } // 块结束
 
 /// What "set wallpaper" can do on this platform, and how to explain it to users.
 #[allow(dead_code)] // 语句
 #[derive(Debug, Clone, Copy)] // 语句
-pub struct WallpaperSupport { // 结构体 WallpaperSupport
+pub struct WallpaperSupport {
+    // 结构体 WallpaperSupport
     /// Whether the app can apply the system wallpaper itself.
     pub can_set: bool, // 字段 can_set
     /// Short label for the settings/about UI.
@@ -96,7 +108,8 @@ pub struct WallpaperSupport { // 结构体 WallpaperSupport
     pub note: &'static str, // 字段 note
 } // 块结束
 
-pub fn wallpaper_support() -> WallpaperSupport { // 函数 wallpaper_support
+pub fn wallpaper_support() -> WallpaperSupport {
+    // 函数 wallpaper_support
     match os() { // 分支匹配
         Os::Windows | Os::MacOs | Os::Linux => WallpaperSupport { // 匹配分支
             can_set: true, // 字段 can_set
@@ -125,11 +138,13 @@ pub fn wallpaper_support() -> WallpaperSupport { // 函数 wallpaper_support
 } // 块结束
 
 #[cfg(test)] // 语句
-mod tests { // 模块 tests
+mod tests {
+    // 模块 tests
     use super::*; // 引入依赖
 
     #[test] // 语句
-    fn desktop_os_is_not_mobile() { // 函数 desktop_os_is_not_mobile
+    fn desktop_os_is_not_mobile() {
+        // 函数 desktop_os_is_not_mobile
         // This test only ever runs on a desktop CI target.
         assert!(!is_mobile()); // 语句
         let s = wallpaper_support(); // 变量 s
@@ -137,7 +152,8 @@ mod tests { // 模块 tests
     } // 块结束
 
     #[test] // 语句
-    fn name_is_non_empty() { // 函数 name_is_non_empty
+    fn name_is_non_empty() {
+        // 函数 name_is_non_empty
         assert!(!name().is_empty()); // 语句
     } // 块结束
 } // 块结束

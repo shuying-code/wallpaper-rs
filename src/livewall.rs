@@ -38,49 +38,100 @@ pub use unsupported::{
     active_video, ensure_mpv, mpv_available, poster_frame, set_live_wallpaper, stop, supported,
 };
 
-/// 非 Windows 平台共用的 mpv 查找：`WALLPAPER_MPV` → exe 同目录 `mpv` → PATH →
-/// 常见安装目录。
+/// 非 Windows 平台共用的 mpv 候选路径（按优先级）。
+///
+/// 顺序：`WALLPAPER_MPV` → exe 同目录 `mpv` → `PATH` 各目录 → 常见安装目录
+/// （含 Linux 各发行版、Snap / Flatpak(用户级)、`~/.local/bin`、macOS Homebrew/MacPorts）。
 #[cfg(not(windows))]
-fn find_mpv_local() -> Option<std::path::PathBuf> {
-    use std::path::PathBuf;
+fn mpv_candidates() -> Vec<std::path::PathBuf> {
+    use std::path::{Path, PathBuf};
+    let mut c: Vec<PathBuf> = Vec::new();
     if let Ok(p) = std::env::var("WALLPAPER_MPV") {
-        let pb = PathBuf::from(p);
-        if pb.is_file() {
-            return Some(pb);
-        }
+        c.push(PathBuf::from(p));
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let sib = dir.join("mpv");
-            if sib.is_file() {
-                return Some(sib);
-            }
+            c.push(dir.join("mpv"));
+            c.push(dir.join("mpv").join("mpv"));
         }
     }
-    if let Some(p) = std::env::var_os("PATH").and_then(|path| {
-        std::env::split_paths(&path)
-            .map(|d| d.join("mpv"))
-            .find(|p| p.is_file())
-    }) {
-        return Some(p);
+    if let Some(path) = std::env::var_os("PATH") {
+        for d in std::env::split_paths(&path) {
+            c.push(d.join("mpv"));
+        }
     }
-    [
+    for p in [
         "/usr/bin/mpv",
         "/usr/local/bin/mpv",
         "/snap/bin/mpv",
         "/opt/homebrew/bin/mpv",
-    ]
-    .iter()
-    .map(PathBuf::from)
-    .find(|p| p.is_file())
+        "/opt/local/bin/mpv",
+        "/var/lib/flatpak/exports/bin/mpv",
+    ] {
+        c.push(PathBuf::from(p));
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let h = Path::new(&home);
+        c.push(h.join(".local/bin/mpv"));
+        c.push(h.join(".local/share/flatpak/exports/bin/mpv"));
+    }
+    c
+}
+
+/// 非 Windows 平台共用的 mpv 查找：返回第一个真实存在的候选。
+#[cfg(not(windows))]
+fn find_mpv_local() -> Option<std::path::PathBuf> {
+    mpv_candidates().into_iter().find(|p| p.is_file())
+}
+
+/// 跨平台的「找不到 mpv」安装提示（供各平台复用，覆盖常见发行版）。
+pub fn mpv_install_hint() -> &'static str {
+    "未找到 mpv 播放器。请先安装：Ubuntu/Debian `sudo apt install mpv`；Fedora `sudo dnf install mpv`；\
+     Arch `sudo pacman -S mpv`；openSUSE `sudo zypper install mpv`；Flatpak `flatpak install flathub io.mpv.Mpv`；\
+     Snap `sudo snap install mpv`；macOS `brew install mpv`；Windows 可在设置里让其按需下载。\
+     也可用环境变量 WALLPAPER_MPV 指定 mpv 可执行文件的完整路径。"
+}
+
+/// 供「问题上报」使用：列出 mpv 探测详情（已解析路径 + 各候选是否存在）。
+pub fn mpv_probe_report() -> String {
+    let mut s = String::new();
+    #[cfg(not(windows))]
+    {
+        match find_mpv_local() {
+            Some(p) => s.push_str(&format!("mpv 路径  : {}\n", p.display())),
+            None => s.push_str("mpv 路径  : 未找到\n"),
+        }
+        let shown = mpv_candidates();
+        let total = shown.len();
+        for c in shown.into_iter().take(24) {
+            s.push_str(&format!(
+                "mpv 候选  : [{}] {}\n",
+                if c.is_file() { "有" } else { "无" },
+                c.display()
+            ));
+        }
+        if total > 24 {
+            s.push_str(&format!("mpv 候选  : …（共 {total} 条，仅列前 24）\n"));
+        }
+    }
+    #[cfg(windows)]
+    {
+        s.push_str(&format!(
+            "mpv 路径  : {}\n",
+            if imp::mpv_available() {
+                "已就绪"
+            } else {
+                "未找到（Windows 会在用到时按需下载）"
+            }
+        ));
+    }
+    s
 }
 
 /// 非 Windows：有 mpv 即可用；缺失时提示安装（不自动下载）。
 #[cfg(not(windows))]
 fn ensure_mpv_shared() -> Result<std::path::PathBuf, String> {
-    find_mpv_local().ok_or_else(|| {
-        "未找到 mpv 播放器：请先安装（Debian/Ubuntu: sudo apt install mpv；macOS: brew install mpv），或用环境变量 WALLPAPER_MPV 指定路径".to_string()
-    })
+    find_mpv_local().ok_or_else(|| mpv_install_hint().to_string())
 }
 
 /// 非 Windows 共用的「从视频截取一帧作为海报图」（锁屏用）。
@@ -89,8 +140,7 @@ fn poster_frame_shared(video: &Path, out: &Path) -> Result<(), String> {
     if !video.is_file() {
         return Err(format!("视频文件不存在：{}", video.display()));
     }
-    let mpv = find_mpv_local()
-        .ok_or_else(|| "未找到 mpv：请先安装 mpv，或用 WALLPAPER_MPV 指定路径".to_string())?;
+    let mpv = find_mpv_local().ok_or_else(|| mpv_install_hint().to_string())?;
     if let Some(dir) = out.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("创建海报目录失败：{e}"))?;
     }
@@ -115,7 +165,11 @@ fn poster_frame_shared(video: &Path, out: &Path) -> Result<(), String> {
     loop {
         if let Ok(meta) = std::fs::metadata(out) {
             let len = meta.len();
-            stable = if len > 0 && len == last_len { stable + 1 } else { 0 };
+            stable = if len > 0 && len == last_len {
+                stable + 1
+            } else {
+                0
+            };
             last_len = len;
             if stable >= 3 {
                 break;
@@ -254,7 +308,11 @@ mod linux {
             return Err("创建 X11 窗口失败".to_string());
         }
         // 标记为「桌面」类型窗口：位于壁纸层、桌面图标之下。
-        let prop = XInternAtom(display, b"_NET_WM_WINDOW_TYPE\0".as_ptr() as *const c_void, 0);
+        let prop = XInternAtom(
+            display,
+            b"_NET_WM_WINDOW_TYPE\0".as_ptr() as *const c_void,
+            0,
+        );
         let desktop = XInternAtom(
             display,
             b"_NET_WM_WINDOW_TYPE_DESKTOP\0".as_ptr() as *const c_void,
@@ -296,9 +354,7 @@ mod linux {
         if !video.is_file() {
             return Err(format!("视频文件不存在：{}", video.display()));
         }
-        let mpv = super::find_mpv_local().ok_or_else(|| {
-            "未找到 mpv 播放器：请先安装（Debian/Ubuntu: sudo apt install mpv），或用 WALLPAPER_MPV 指定路径".to_string()
-        })?;
+        let mpv = super::find_mpv_local().ok_or_else(|| super::mpv_install_hint().to_string())?;
         stop()?;
         let (display, window) = unsafe { create_host_window() }?;
         let child = match spawn_mpv(&mpv, window, video) {
@@ -469,10 +525,7 @@ mod macos {
         if !video.is_file() {
             return Err(format!("视频文件不存在：{}", video.display()));
         }
-        let mpv = super::find_mpv_local().ok_or_else(|| {
-            "未找到 mpv 播放器：请先安装（brew install mpv），或用 WALLPAPER_MPV 指定路径"
-                .to_string()
-        })?;
+        let mpv = super::find_mpv_local().ok_or_else(|| super::mpv_install_hint().to_string())?;
         stop()?;
         let (window, view) = unsafe { create_host_window() }?;
         let child = match spawn_mpv(&mpv, view, video) {
@@ -615,7 +668,8 @@ mod imp {
             return Err(format!("视频文件不存在：{}", video.display()));
         }
         let mpv = find_mpv().ok_or_else(|| {
-            "未找到 mpv 播放器：请安装 mpv，或用环境变量 WALLPAPER_MPV 指定 mpv.exe 路径".to_string()
+            "未找到 mpv 播放器：请安装 mpv，或用环境变量 WALLPAPER_MPV 指定 mpv.exe 路径"
+                .to_string()
         })?;
         // 先清理上一个宿主（含旧窗口与旧 mpv）。
         stop()?;
@@ -639,7 +693,8 @@ mod imp {
             return Err(format!("视频文件不存在：{}", video.display()));
         }
         let mpv = find_mpv().ok_or_else(|| {
-            "未找到 mpv 播放器：请安装 mpv，或用环境变量 WALLPAPER_MPV 指定 mpv.exe 路径".to_string()
+            "未找到 mpv 播放器：请安装 mpv，或用环境变量 WALLPAPER_MPV 指定 mpv.exe 路径"
+                .to_string()
         })?;
         if let Some(dir) = out.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("创建海报目录失败：{e}"))?;
@@ -668,7 +723,11 @@ mod imp {
         loop {
             if let Ok(meta) = std::fs::metadata(out) {
                 let len = meta.len();
-                stable = if len > 0 && len == last_len { stable + 1 } else { 0 };
+                stable = if len > 0 && len == last_len {
+                    stable + 1
+                } else {
+                    0
+                };
                 last_len = len;
                 if stable >= 3 {
                     break;
@@ -782,7 +841,12 @@ mod imp {
         });
     }
 
-    unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, wparam: usize, lparam: isize) -> isize {
+    unsafe extern "system" fn wnd_proc(
+        hwnd: Hwnd,
+        msg: u32,
+        wparam: usize,
+        lparam: isize,
+    ) -> isize {
         DefWindowProcW(hwnd, msg, wparam, lparam)
     }
 
@@ -864,7 +928,13 @@ mod imp {
         if let Ok(local) = std::env::var("LOCALAPPDATA") {
             let local = PathBuf::from(local);
             cands.push(local.join("Programs").join("mpv").join("mpv.exe"));
-            cands.push(local.join("Microsoft").join("WinGet").join("Links").join("mpv.exe"));
+            cands.push(
+                local
+                    .join("Microsoft")
+                    .join("WinGet")
+                    .join("Links")
+                    .join("mpv.exe"),
+            );
         }
         if let Ok(profile) = std::env::var("USERPROFILE") {
             cands.push(
@@ -948,12 +1018,11 @@ mod imp {
     fn resolve_mpv_url() -> String {
         const FALLBACK: &str =
             "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261107/mpv-x86_64-20261107-git-9028187538.7z";
-        let call = ureq::get(
-            "https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest",
-        )
-        .set("User-Agent", "wallpaper-rs")
-        .timeout(std::time::Duration::from_secs(30))
-        .call();
+        let call =
+            ureq::get("https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest")
+                .set("User-Agent", "wallpaper-rs")
+                .timeout(std::time::Duration::from_secs(30))
+                .call();
         if let Ok(resp) = call {
             if let Ok(v) = resp.into_json::<serde_json::Value>() {
                 if let Some(assets) = v.get("assets").and_then(|a| a.as_array()) {
@@ -1023,12 +1092,8 @@ mod imp {
         let t0 = std::time::Instant::now();
         let resp = agent.get(url).set("Range", "bytes=0-4095").call().ok()?;
         let mut buf = Vec::new();
-        resp.into_reader()
-            .take(4096)
-            .read_to_end(&mut buf)
-            .ok()?;
-        (buf.len() >= 6 && buf[..6] == [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C])
-            .then(|| t0.elapsed())
+        resp.into_reader().take(4096).read_to_end(&mut buf).ok()?;
+        (buf.len() >= 6 && buf[..6] == [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C]).then(|| t0.elapsed())
     }
 
     /// 并发探测所有候选地址，按速度从快到慢排序返回。探测失败的地址（可能只是
@@ -1114,8 +1179,7 @@ mod imp {
             .map_err(|e| format!("下载 mpv 失败：{e}"))?;
         let mut reader = resp.into_reader();
         let tmp = dest.with_extension("part");
-        let mut file =
-            std::fs::File::create(&tmp).map_err(|e| format!("创建下载文件失败：{e}"))?;
+        let mut file = std::fs::File::create(&tmp).map_err(|e| format!("创建下载文件失败：{e}"))?;
         std::io::copy(&mut reader, &mut file).map_err(|e| format!("写入下载文件失败：{e}"))?;
         drop(file);
         std::fs::rename(&tmp, dest).map_err(|e| format!("保存下载文件失败：{e}"))?;

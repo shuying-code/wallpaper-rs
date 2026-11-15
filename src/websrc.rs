@@ -174,9 +174,7 @@ pub fn get_text(url: &str, referer: &str) -> Result<String, String> {
             .call()
         {
             Ok(resp) => {
-                return resp
-                    .into_string()
-                    .map_err(|e| format!("读取响应失败：{e}"));
+                return resp.into_string().map_err(|e| format!("读取响应失败：{e}"));
             }
             Err(e) => last = format!("请求失败：{e}"),
         }
@@ -471,7 +469,8 @@ mod tests {
 
     #[test]
     fn max_number_after_picks_largest() {
-        let html = r#"<a href="/page/2/">2</a><a href="/page/313/">313</a><a href="/page/4/">4</a>"#;
+        let html =
+            r#"<a href="/page/2/">2</a><a href="/page/313/">313</a><a href="/page/4/">4</a>"#;
         assert_eq!(max_number_after(html, "/page/"), 313);
     }
 }

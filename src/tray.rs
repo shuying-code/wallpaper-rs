@@ -16,7 +16,8 @@ use tray_icon::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}; 
 
 /// An action requested from the tray icon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)] // 语句
-pub enum TrayAction { // 枚举 TrayAction
+pub enum TrayAction {
+    // 枚举 TrayAction
     /// Show and focus the main window.
     Show, // 语句
     /// Hide the main window to the tray.
@@ -26,161 +27,230 @@ pub enum TrayAction { // 枚举 TrayAction
 } // 块结束
 
 /// Owns the live tray icon and drains the actions produced by its handlers.
-pub struct Tray { // 结构体 Tray
+pub struct Tray {
+    // 结构体 Tray
     /// Kept alive for the lifetime of the app; dropping it removes the icon.
     #[cfg(not(target_os = "android"))] // 语句
     _icon: tray_icon::TrayIcon, // 字段 _icon
     queue: Arc<Mutex<VecDeque<TrayAction>>>, // 字段 queue
 } // 块结束
 
-impl Tray { // 实现
+impl Tray {
+    // 实现
     /// Build the tray icon + context menu. Returns `None` if the platform has no
     /// usable tray backend (the caller then falls back to the old behaviour).
-    pub fn install(ctx: egui::Context, window: isize) -> Option<Tray> { // 函数 install
+    pub fn install(ctx: egui::Context, window: isize) -> Option<Tray> {
+        // 函数 install
         // Android has no system tray: report "no tray" so the app falls back to
         // normal window behaviour (hide-to-tray buttons are hidden on mobile).
         #[cfg(target_os = "android")] // 语句
-        { // 语句
+        {
+            // 语句
             let _ = ctx; // 变量 _
             let _ = window; // 变量 _
             return None; // 返回
         } // 块结束
         #[cfg(not(target_os = "android"))] // 语句
-        { // 语句
-        // The main window HWND (Windows) so tray actions can be applied directly,
-        // without waiting for the egui frame loop.
-        let win_hwnd = window; // 变量 win_hwnd
-        #[cfg(not(windows))] // 语句
-        let _ = win_hwnd; // 变量 _
-        let menu = Menu::new(); // 变量 menu
-        let show = MenuItem::new("显示主界面", true, None); // 变量 show
-        let hide = MenuItem::new("隐藏到托盘", true, None); // 变量 hide
-        let quit = MenuItem::new("退出 wallpaper-rs", true, None); // 变量 quit
-        menu.append(&show).ok()?; // 语句
-        menu.append(&hide).ok()?; // 语句
-        menu.append(&PredefinedMenuItem::separator()).ok()?; // 语句
-        menu.append(&quit).ok()?; // 语句
-
-        let show_id = show.id().clone(); // 变量 show_id
-        let hide_id = hide.id().clone(); // 变量 hide_id
-        let quit_id = quit.id().clone(); // 变量 quit_id
-
-        // Ask Windows to keep our tray icon in the always-visible part of the
-        // notification area (instead of the Win11 overflow "hidden icons" menu).
-        // Best-effort: the system may only apply it after Explorer restarts or the
-        // user signs in again, so we also retry shortly after the icon is added.
-        promote_tray_icon(); // 调用 promote_tray_icon
-        let icon = TrayIconBuilder::new() // 变量 icon
-            .with_menu(Box::new(menu)) // 语句
-            .with_tooltip("wallpaper-rs · 桌面壁纸") // 语句
-            .with_icon(make_icon()) // 语句
-            // Left click restores the window; the menu is on right click only.
-            .with_menu_on_left_click(false) // 语句
-            .build() // 语句
-            .ok()?; // 语句
-        // The shell may create the NotifyIconSettings registry entry only after the
-        // icon is registered; retry a few times in the background to pin it.
-        promote_tray_icon_later(); // 调用 promote_tray_icon_later
-
-        let queue: Arc<Mutex<VecDeque<TrayAction>>> = Arc::new(Mutex::new(VecDeque::new())); // 变量 queue
-
-        // Menu clicks -> actions.
-        { // 语句
-            let queue = queue.clone(); // 变量 queue
-            let ctx = ctx.clone(); // 变量 ctx
-            MenuEvent::set_event_handler(Some(move |ev: MenuEvent| { // 调用 set_event_handler
-                let action = if ev.id == show_id { // 变量 action
-                    Some(TrayAction::Show) // 调用 Some
-                } else if ev.id == hide_id { // 条件分支
-                    Some(TrayAction::Hide) // 调用 Some
-                } else if ev.id == quit_id { // 条件分支
-                    Some(TrayAction::Quit) // 调用 Some
-                } else { // 语句
-                    None // 语句
-                }; // 块结束
-                if let Some(a) = action { // 条件分支
-                    // Apply immediately on the native thread so the action works
-                    // even if the egui frame loop is idle (e.g. hidden to tray).
-                    #[cfg(windows)] // 语句
-                    match a { // 分支匹配
-                        TrayAction::Show => unsafe { crate::winhide::show_from_tray(win_hwnd) }, // 匹配分支
-                        TrayAction::Hide => unsafe { crate::winhide::hide_to_tray(win_hwnd) }, // 匹配分支
-                        TrayAction::Quit => { // 匹配分支
-                            // Safety net: exit even if the UI loop never wakes.
-                            std::thread::spawn(|| { // 调用 spawn
-                                // Kill sibling instances first, then ourselves.
-                                crate::instances::terminate_other_instances(); // 调用 terminate_other_instances
-                                std::thread::sleep(std::time::Duration::from_millis(2500)); // 调用 sleep
-                                std::process::exit(0); // 调用 exit
-                            }); // 语句
-                        } // 块结束
-                    } // 块结束
-                    // Also enqueue so the UI can sync state / status text.
-                    queue.lock().unwrap().push_back(a); // 语句
-                    ctx.request_repaint(); // 语句
+        {
+            // 语句
+            // Linux：托盘菜单走 GTK3（muda 后端），必须先初始化 GTK——否则创建菜单时
+            // 会在 gtk 内部 panic（“GTK has not been initialized”）。若初始化失败
+            // （无显示 / 精简环境），则直接放弃托盘而不是让进程崩溃。
+            #[cfg(all(unix, not(target_os = "macos"), not(target_os = "android")))] // 语句
+            {
+                // 语句
+                if !ensure_gtk() {
+                    // 条件分支
+                    crate::report::note("托盘不可用：GTK 初始化失败，已跳过托盘"); // 语句
+                    return None; // 返回
                 } // 块结束
-            })); // 语句
-        } // 块结束
+            } // 块结束
+              // The main window HWND (Windows) so tray actions can be applied directly,
+              // without waiting for the egui frame loop.
+            let win_hwnd = window; // 变量 win_hwnd
+            #[cfg(not(windows))] // 语句
+            let _ = win_hwnd; // 变量 _
+            let menu = Menu::new(); // 变量 menu
+            let show = MenuItem::new("显示主界面", true, None); // 变量 show
+            let hide = MenuItem::new("隐藏到托盘", true, None); // 变量 hide
+            let quit = MenuItem::new("退出 wallpaper-rs", true, None); // 变量 quit
+            menu.append(&show).ok()?; // 语句
+            menu.append(&hide).ok()?; // 语句
+            menu.append(&PredefinedMenuItem::separator()).ok()?; // 语句
+            menu.append(&quit).ok()?; // 语句
 
-        // Left click / double click on the icon -> show the window.
-        { // 语句
-            let queue = queue.clone(); // 变量 queue
-            let ctx = ctx.clone(); // 变量 ctx
-            let win_hwnd_lc = win_hwnd; // 变量 win_hwnd_lc
-            TrayIconEvent::set_event_handler(Some(move |ev: TrayIconEvent| { // 调用 set_event_handler
-                let show = matches!( // 变量 show
-                    ev, // 语句
-                    TrayIconEvent::Click { // 语句
-                        button: MouseButton::Left, // 字段 button
-                        button_state: MouseButtonState::Up, // 字段 button_state
-                        .. // 语句
-                    } | TrayIconEvent::DoubleClick { // 语句
-                        button: MouseButton::Left, // 字段 button
-                        .. // 语句
-                    } // 块结束
-                ); // 块结束
-                if show { // 条件分支
-                    #[cfg(windows)] // 语句
-                    unsafe { // 语句
-                        crate::winhide::show_from_tray(win_hwnd_lc) // 调用 show_from_tray
+            let show_id = show.id().clone(); // 变量 show_id
+            let hide_id = hide.id().clone(); // 变量 hide_id
+            let quit_id = quit.id().clone(); // 变量 quit_id
+
+            // Ask Windows to keep our tray icon in the always-visible part of the
+            // notification area (instead of the Win11 overflow "hidden icons" menu).
+            // Best-effort: the system may only apply it after Explorer restarts or the
+            // user signs in again, so we also retry shortly after the icon is added.
+            promote_tray_icon(); // 调用 promote_tray_icon
+            let icon = TrayIconBuilder::new() // 变量 icon
+                .with_menu(Box::new(menu)) // 语句
+                .with_tooltip("wallpaper-rs · 桌面壁纸") // 语句
+                .with_icon(make_icon()) // 语句
+                // Left click restores the window; the menu is on right click only.
+                .with_menu_on_left_click(false) // 语句
+                .build() // 语句
+                .ok()?; // 语句
+                        // The shell may create the NotifyIconSettings registry entry only after the
+                        // icon is registered; retry a few times in the background to pin it.
+            promote_tray_icon_later(); // 调用 promote_tray_icon_later
+
+            let queue: Arc<Mutex<VecDeque<TrayAction>>> = Arc::new(Mutex::new(VecDeque::new())); // 变量 queue
+
+            // Menu clicks -> actions.
+            {
+                // 语句
+                let queue = queue.clone(); // 变量 queue
+                let ctx = ctx.clone(); // 变量 ctx
+                MenuEvent::set_event_handler(Some(move |ev: MenuEvent| {
+                    // 调用 set_event_handler
+                    let action = if ev.id == show_id {
+                        // 变量 action
+                        Some(TrayAction::Show) // 调用 Some
+                    } else if ev.id == hide_id {
+                        // 条件分支
+                        Some(TrayAction::Hide) // 调用 Some
+                    } else if ev.id == quit_id {
+                        // 条件分支
+                        Some(TrayAction::Quit) // 调用 Some
+                    } else {
+                        // 语句
+                        None // 语句
                     }; // 块结束
-                    queue.lock().unwrap().push_back(TrayAction::Show); // 语句
-                    ctx.request_repaint(); // 语句
-                } // 块结束
-            })); // 语句
-        } // 块结束
+                    if let Some(a) = action {
+                        // 条件分支
+                        // Apply immediately on the native thread so the action works
+                        // even if the egui frame loop is idle (e.g. hidden to tray).
+                        #[cfg(windows)] // 语句
+                        match a {
+                            // 分支匹配
+                            TrayAction::Show => unsafe { crate::winhide::show_from_tray(win_hwnd) }, // 匹配分支
+                            TrayAction::Hide => unsafe { crate::winhide::hide_to_tray(win_hwnd) }, // 匹配分支
+                            TrayAction::Quit => {
+                                // 匹配分支
+                                // Safety net: exit even if the UI loop never wakes.
+                                std::thread::spawn(|| {
+                                    // 调用 spawn
+                                    // Kill sibling instances first, then ourselves.
+                                    crate::instances::terminate_other_instances(); // 调用 terminate_other_instances
+                                    std::thread::sleep(std::time::Duration::from_millis(2500)); // 调用 sleep
+                                    std::process::exit(0); // 调用 exit
+                                }); // 语句
+                            } // 块结束
+                        } // 块结束
+                          // Also enqueue so the UI can sync state / status text.
+                        queue.lock().unwrap().push_back(a); // 语句
+                        ctx.request_repaint(); // 语句
+                    } // 块结束
+                })); // 语句
+            } // 块结束
 
-        Some(Tray { _icon: icon, queue }) // 调用 Some
+            // Left click / double click on the icon -> show the window.
+            {
+                // 语句
+                let queue = queue.clone(); // 变量 queue
+                let ctx = ctx.clone(); // 变量 ctx
+                let win_hwnd_lc = win_hwnd; // 变量 win_hwnd_lc
+                TrayIconEvent::set_event_handler(Some(move |ev: TrayIconEvent| {
+                    // 调用 set_event_handler
+                    let show = matches!(
+                        // 变量 show
+                        ev, // 语句
+                        TrayIconEvent::Click {
+                            // 语句
+                            button: MouseButton::Left, // 字段 button
+                            button_state: MouseButtonState::Up, // 字段 button_state
+                            ..                         // 语句
+                        } | TrayIconEvent::DoubleClick {
+                            // 语句
+                            button: MouseButton::Left, // 字段 button
+                            ..                         // 语句
+                        }  // 块结束
+                    ); // 块结束
+                    if show {
+                        // 条件分支
+                        #[cfg(windows)] // 语句
+                        unsafe {
+                            // 语句
+                            crate::winhide::show_from_tray(win_hwnd_lc) // 调用 show_from_tray
+                        }; // 块结束
+                        queue.lock().unwrap().push_back(TrayAction::Show); // 语句
+                        ctx.request_repaint(); // 语句
+                    } // 块结束
+                })); // 语句
+            } // 块结束
+
+            Some(Tray { _icon: icon, queue }) // 调用 Some
         } // 块结束
     } // 块结束
 
     /// Take every action queued since the last call (non-blocking).
-    pub fn drain(&self) -> Vec<TrayAction> { // 函数 drain
+    pub fn drain(&self) -> Vec<TrayAction> {
+        // 函数 drain
         let mut q = self.queue.lock().unwrap(); // 变量 q
         q.drain(..).collect() // 语句
     } // 块结束
 } // 块结束
 
+/// 确保 GTK 已初始化（Linux 托盘菜单依赖它）。可安全地重复调用，只在首次真正初始化。
+///
+/// 返回 `false` 表示当前环境无法使用托盘（例如无图形显示、缺少 GTK 运行库），
+/// 调用方应据此优雅降级（不再创建托盘，也就不会触发 gtk 内部 panic）。
+#[cfg(all(unix, not(target_os = "macos"), not(target_os = "android")))] // 语句
+fn ensure_gtk() -> bool {
+    // 函数 ensure_gtk
+    use std::sync::OnceLock; // 引入依赖
+    static OK: OnceLock<bool> = OnceLock::new(); // 语句
+    *OK.get_or_init(|| {
+        // 语句
+        // 已在别处初始化过则直接复用。
+        if gtk::is_initialized_main_thread() {
+            // 条件分支
+            return true; // 返回
+        } // 块结束
+        match gtk::init() {
+            // 分支匹配
+            Ok(()) => true, // 匹配分支
+            Err(e) => {
+                // 匹配分支
+                // 记录到本地日志 / 上报环境，便于定位（但不算「功能错误」，不打扰用户）。
+                crate::report::note(&format!("GTK 初始化失败：{e}")); // 语句
+                false // 语句
+            } // 块结束
+        } // 块结束
+    }) // 语句
+} // 块结束
+
 /// A small procedurally-drawn 32×32 icon (amber→teal disc with a dark mountain
 /// silhouette) so no external image asset is required at build time.
 #[cfg(not(target_os = "android"))] // 语句
-fn make_icon() -> tray_icon::Icon { // 函数 make_icon
+fn make_icon() -> tray_icon::Icon {
+    // 函数 make_icon
     const N: u32 = 32; // 常量 N
     let mut rgba = vec![0u8; (N * N * 4) as usize]; // 变量 rgba
     let c = (N as f32 - 1.0) / 2.0; // 变量 c
     let radius = 15.0_f32; // 变量 radius
-    for y in 0..N { // 循环
-        for x in 0..N { // 循环
+    for y in 0..N {
+        // 循环
+        for x in 0..N {
+            // 循环
             let i = ((y * N + x) * 4) as usize; // 变量 i
             let dx = x as f32 - c; // 变量 dx
             let dy = y as f32 - c; // 变量 dy
-            if dx * dx + dy * dy > radius * radius { // 条件分支
+            if dx * dx + dy * dy > radius * radius {
+                // 条件分支
                 continue; // transparent outside the disc
             } // 块结束
             let t = y as f32 / (N as f32 - 1.0); // 变量 t
             let top = (232.0, 176.0, 75.0); // 变量 top
             let bot = (79.0, 209.0, 197.0); // 变量 bot
-            let col = ( // 变量 col
+            let col = (
+                // 变量 col
                 (top.0 + (bot.0 - top.0) * t) as u8, // 语句
                 (top.1 + (bot.1 - top.1) * t) as u8, // 语句
                 (top.2 + (bot.2 - top.2) * t) as u8, // 语句
@@ -188,9 +258,11 @@ fn make_icon() -> tray_icon::Icon { // 函数 make_icon
             let (fx, fy) = (x as f32, y as f32); // 调用 let
             let main_peak = fy > 9.0 && fy < 25.0 && (fx - 15.0).abs() < (fy - 9.0) * 0.85; // 变量 main_peak
             let side_peak = fy > 15.0 && fy < 25.0 && (fx - 22.0).abs() < (fy - 15.0) * 0.7; // 变量 side_peak
-            if main_peak || side_peak { // 条件分支
+            if main_peak || side_peak {
+                // 条件分支
                 rgba[i..i + 4].copy_from_slice(&[18, 20, 24, 255]); // 语句
-            } else { // 语句
+            } else {
+                // 语句
                 rgba[i..i + 4].copy_from_slice(&[col.0, col.1, col.2, 255]); // 语句
             } // 块结束
         } // 块结束
@@ -206,33 +278,41 @@ fn make_icon() -> tray_icon::Icon { // 函数 make_icon
 /// effect after Explorer restarts or the user signs in again. Any failure is
 /// silently ignored so it can never break startup.
 #[cfg(windows)] // 语句
-fn promote_tray_icon() { // 函数 promote_tray_icon
+fn promote_tray_icon() {
+    // 函数 promote_tray_icon
     use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE}; // 引入依赖
     use winreg::RegKey; // 引入依赖
 
-    let Ok(exe) = std::env::current_exe() else { // 变量 Ok
+    let Ok(exe) = std::env::current_exe() else {
+        // 变量 Ok
         return; // 返回
     }; // 块结束
-    // NOTE: don't `canonicalize` here — on Windows it returns a verbatim path with
-    // a `\\?\` prefix, which would never match the plain `ExecutablePath` value
-    // the shell stores in the registry.
+       // NOTE: don't `canonicalize` here — on Windows it returns a verbatim path with
+       // a `\\?\` prefix, which would never match the plain `ExecutablePath` value
+       // the shell stores in the registry.
     let exe_l = exe.to_string_lossy().to_lowercase(); // 变量 exe_l
 
     let hkcu = RegKey::predef(HKEY_CURRENT_USER); // 变量 hkcu
-    let Ok(root) = hkcu.open_subkey_with_flags( // 变量 Ok
+    let Ok(root) = hkcu.open_subkey_with_flags(
+        // 变量 Ok
         r"Control Panel\NotifyIconSettings", // 语句
-        KEY_READ | KEY_WRITE, // 语句
-    ) else { // 语句
+        KEY_READ | KEY_WRITE,                // 语句
+    ) else {
+        // 语句
         return; // 返回
     }; // 块结束
-    for name in root.enum_keys().flatten() { // 循环
-        let Ok(key) = root.open_subkey_with_flags(&name, KEY_READ | KEY_WRITE) else { // 变量 Ok
+    for name in root.enum_keys().flatten() {
+        // 循环
+        let Ok(key) = root.open_subkey_with_flags(&name, KEY_READ | KEY_WRITE) else {
+            // 变量 Ok
             continue; // 语句
         }; // 块结束
-        let Ok(path) = key.get_value::<String, _>("ExecutablePath") else { // 变量 Ok
+        let Ok(path) = key.get_value::<String, _>("ExecutablePath") else {
+            // 变量 Ok
             continue; // 语句
         }; // 块结束
-        if path.to_lowercase() == exe_l { // 条件分支
+        if path.to_lowercase() == exe_l {
+            // 条件分支
             let _ = key.set_value("IsPromoted", &1u32); // 变量 _
         } // 块结束
     } // 块结束
@@ -245,9 +325,12 @@ fn promote_tray_icon() {} // 函数 promote_tray_icon
 /// Retry `promote_tray_icon` for a little while after start-up: the shell may
 /// create the per-icon registry entry only once the icon has been added.
 #[allow(dead_code)] // 语句
-fn promote_tray_icon_later() { // 函数 promote_tray_icon_later
-    std::thread::spawn(|| { // 调用 spawn
-        for delay_ms in [500u64, 1500, 3000, 6000, 12000] { // 循环
+fn promote_tray_icon_later() {
+    // 函数 promote_tray_icon_later
+    std::thread::spawn(|| {
+        // 调用 spawn
+        for delay_ms in [500u64, 1500, 3000, 6000, 12000] {
+            // 循环
             std::thread::sleep(std::time::Duration::from_millis(delay_ms)); // 调用 sleep
             promote_tray_icon(); // 调用 promote_tray_icon
         } // 块结束

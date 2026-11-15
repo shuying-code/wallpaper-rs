@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf}; // 引入依赖
 use std::time::SystemTime; // 引入依赖（读取文件夹修改时间）
 
 #[derive(Debug, Clone, PartialEq, Eq)] // 语句
-pub struct Album { // 结构体 Album
+pub struct Album {
+    // 结构体 Album
     /// Stable identifier (relative folder path, or the absolute path when there
     /// is no workspace root, e.g. after a full-disk scan).
     pub key: String, // 字段 key
@@ -23,55 +24,66 @@ pub struct Album { // 结构体 Album
 
 /// Group `images` by their parent folder. `root` is the workspace folder used to
 /// compute relative album keys; pass `None` to key albums by absolute path.
-pub fn build_albums(images: &[PathBuf], root: Option<&Path>) -> Vec<Album> { // 函数 build_albums
+pub fn build_albums(images: &[PathBuf], root: Option<&Path>) -> Vec<Album> {
+    // 函数 build_albums
     let mut map: BTreeMap<String, Album> = BTreeMap::new(); // 变量 map
-    for p in images { // 循环
+    for p in images {
+        // 循环
         let parent = p.parent().unwrap_or_else(|| Path::new("")); // 变量 parent
         let key = album_key(parent, root); // 变量 key
         let name = album_name(parent, root); // 变量 name
-        let entry = map.entry(key.clone()).or_insert_with(|| Album { // 变量 entry
-            key, // 语句
-            name, // 语句
+        let entry = map.entry(key.clone()).or_insert_with(|| Album {
+            // 变量 entry
+            key,                       // 语句
+            name,                      // 语句
             dir: parent.to_path_buf(), // 字段 dir
-            images: Vec::new(), // 字段 images
+            images: Vec::new(),        // 字段 images
         }); // 语句
         entry.images.push(p.clone()); // 语句
     } // 块结束
     let mut albums: Vec<Album> = map.into_values().collect(); // 变量 albums
-    for a in &mut albums { // 循环
+    for a in &mut albums {
+        // 循环
         a.images.sort(); // 语句
     } // 块结束
-    // 按文件夹的修改时间「倒序」排列：离现在越近（时间越新）的文件夹排越上面。
-    // 读取不到时间（例如测试里的虚拟路径）时回退为按名称升序，保证稳定顺序。
-    albums.sort_by(|a, b| { // 语句
-        match (folder_mtime(&a.dir), folder_mtime(&b.dir)) { // 分支匹配
+      // 按文件夹的修改时间「倒序」排列：离现在越近（时间越新）的文件夹排越上面。
+      // 读取不到时间（例如测试里的虚拟路径）时回退为按名称升序，保证稳定顺序。
+    albums.sort_by(|a, b| {
+        // 语句
+        match (folder_mtime(&a.dir), folder_mtime(&b.dir)) {
+            // 分支匹配
             (Some(ta), Some(tb)) => tb // 语句
                 .cmp(&ta) // 新 → 旧（时间近的在前）
                 .then_with(|| by_name(a, b)), // 语句
             (Some(_), None) => std::cmp::Ordering::Less, // 有新时间的排前面
             (None, Some(_)) => std::cmp::Ordering::Greater, // 语句
-            (None, None) => by_name(a, b), // 语句
+            (None, None) => by_name(a, b),               // 语句
         } // 块结束
     }); // 语句
     albums // 语句
 } // 块结束
 
 /// 目录（文件夹）的最后修改时间；读取失败返回 `None`。
-fn folder_mtime(dir: &Path) -> Option<SystemTime> { // 函数 folder_mtime
+fn folder_mtime(dir: &Path) -> Option<SystemTime> {
+    // 函数 folder_mtime
     std::fs::metadata(dir).and_then(|m| m.modified()).ok() // 语句
 } // 块结束
 
 /// 名称（不区分大小写）+ key 的稳定次序，作为时间相同时的兜底排序。
-fn by_name(a: &Album, b: &Album) -> std::cmp::Ordering { // 函数 by_name
+fn by_name(a: &Album, b: &Album) -> std::cmp::Ordering {
+    // 函数 by_name
     a.name // 语句
         .to_lowercase() // 语句
         .cmp(&b.name.to_lowercase()) // 语句
         .then_with(|| a.key.cmp(&b.key)) // 语句
 } // 块结束
 
-fn album_key(dir: &Path, root: Option<&Path>) -> String { // 函数 album_key
-    if let Some(r) = root { // 条件分支
-        if let Ok(rel) = dir.strip_prefix(r) { // 条件分支
+fn album_key(dir: &Path, root: Option<&Path>) -> String {
+    // 函数 album_key
+    if let Some(r) = root {
+        // 条件分支
+        if let Ok(rel) = dir.strip_prefix(r) {
+            // 条件分支
             let s = rel.to_string_lossy().replace('\\', "/"); // 变量 s
             return if s.is_empty() { ".".to_string() } else { s }; // 返回
         } // 块结束
@@ -79,10 +91,14 @@ fn album_key(dir: &Path, root: Option<&Path>) -> String { // 函数 album_key
     dir.to_string_lossy().replace('\\', "/") // 语句
 } // 块结束
 
-fn album_name(dir: &Path, root: Option<&Path>) -> String { // 函数 album_name
-    if let Some(r) = root { // 条件分支
-        if dir == r { // 条件分支
-            if let Some(n) = r.file_name() { // 条件分支
+fn album_name(dir: &Path, root: Option<&Path>) -> String {
+    // 函数 album_name
+    if let Some(r) = root {
+        // 条件分支
+        if dir == r {
+            // 条件分支
+            if let Some(n) = r.file_name() {
+                // 条件分支
                 return n.to_string_lossy().to_string(); // 返回
             } // 块结束
         } // 块结束
@@ -93,15 +109,18 @@ fn album_name(dir: &Path, root: Option<&Path>) -> String { // 函数 album_name
 } // 块结束
 
 #[cfg(test)] // 语句
-mod tests { // 模块 tests
+mod tests {
+    // 模块 tests
     use super::*; // 引入依赖
 
     #[test] // 语句
-    fn groups_by_folder_and_uses_relative_keys() { // 函数 groups_by_folder_and_uses_relative_keys
+    fn groups_by_folder_and_uses_relative_keys() {
+        // 函数 groups_by_folder_and_uses_relative_keys
         let root = Path::new("C:/pics"); // 变量 root
-        let imgs = vec![ // 变量 imgs
-            PathBuf::from("C:/pics/b.jpg"), // 字段 PathBuf
-            PathBuf::from("C:/pics/a.jpg"), // 字段 PathBuf
+        let imgs = vec![
+            // 变量 imgs
+            PathBuf::from("C:/pics/b.jpg"),      // 字段 PathBuf
+            PathBuf::from("C:/pics/a.jpg"),      // 字段 PathBuf
             PathBuf::from("C:/pics/山峦/x.jpg"), // 字段 PathBuf
             PathBuf::from("C:/pics/山峦/y.jpg"), // 字段 PathBuf
             PathBuf::from("C:/pics/海洋/z.jpg"), // 字段 PathBuf
@@ -113,7 +132,7 @@ mod tests { // 模块 tests
         assert_eq!(albums[0].key, "."); // 语句
         assert_eq!(albums[0].name, "pics"); // 语句
         assert_eq!(albums[0].images.len(), 2); // 语句
-        // Images are sorted within an album.
+                                               // Images are sorted within an album.
         assert_eq!(albums[0].images[0], PathBuf::from("C:/pics/a.jpg")); // 语句
 
         // Nested folders get relative keys and their own names.
@@ -126,7 +145,8 @@ mod tests { // 模块 tests
     } // 块结束
 
     #[test] // 语句
-    fn without_root_keys_by_absolute_parent() { // 函数 without_root_keys_by_absolute_parent
+    fn without_root_keys_by_absolute_parent() {
+        // 函数 without_root_keys_by_absolute_parent
         let imgs = vec![PathBuf::from("C:/a/p.jpg"), PathBuf::from("C:/b/q.jpg")]; // 变量 imgs
         let albums = build_albums(&imgs, None); // 变量 albums
         assert_eq!(albums.len(), 2); // 语句

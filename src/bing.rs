@@ -76,6 +76,29 @@ fn challenge(agent: &ureq::Agent) -> Result<Challenge, String> {
     })
 }
 
+/// 从列表项推断可用的图片地址。
+///
+/// 站点第 10 页后可能返回新版 Bing Spotlight 条目：其 `urlbase` 是
+/// `OBTQ...`，但微软 CDN 不再支持 `_1920x1080.jpg` / `_UHD.jpg` 形式；
+/// 这些条目改用 `rs=2&c=1` 加 `w`/`h` 参数请求。旧版 OHR 条目仍走原地址。
+fn image_url(urlbase: &str, full: bool) -> Option<String> {
+    if urlbase.is_empty() {
+        return None;
+    }
+    if urlbase.starts_with("OHR.") {
+        return Some(if full {
+            format!("{CDN}/th?id={urlbase}_UHD.jpg")
+        } else {
+            format!("{CDN}/th?id={urlbase}_1920x1080.jpg&w=800&h=450")
+        });
+    }
+    Some(if full {
+        format!("{CDN}/th?id={urlbase}&rs=2&c=1&w=3840&h=2160")
+    } else {
+        format!("{CDN}/th?id={urlbase}&rs=2&c=1&w=800&h=450")
+    })
+}
+
 /// 带挑战重试的 API GET。
 fn api_get(url: &str) -> Result<String, String> {
     let agent = crate::websrc::agent();
@@ -93,9 +116,7 @@ fn api_get(url: &str) -> Result<String, String> {
             .call()
         {
             Ok(resp) => {
-                return resp
-                    .into_string()
-                    .map_err(|e| format!("读取响应失败：{e}"));
+                return resp.into_string().map_err(|e| format!("读取响应失败：{e}"));
             }
             Err(ureq::Error::Status(code, resp)) => {
                 last = format!("HTTP {code}");
@@ -115,24 +136,23 @@ fn api_get(url: &str) -> Result<String, String> {
 
 /// 解析 `/api/wallpapers` 的 JSON。
 fn parse_page(body: &str, page: u32) -> Result<Page, String> {
-    let v: serde_json::Value =
-        serde_json::from_str(body).map_err(|e| format!("解析失败：{e}"))?;
+    let v: serde_json::Value = serde_json::from_str(body).map_err(|e| format!("解析失败：{e}"))?;
     let arr = v
         .get("items")
         .and_then(|x| x.as_array())
         .cloned()
         .unwrap_or_default();
-    let cur = v.get("page").and_then(|x| x.as_u64()).unwrap_or(page as u64) as u32;
+    let cur = v
+        .get("page")
+        .and_then(|x| x.as_u64())
+        .unwrap_or(page as u64) as u32;
     let size = v
         .get("pageSize")
         .and_then(|x| x.as_u64())
         .unwrap_or(PAGESIZE as u64)
         .max(1) as u32;
     let total = v.get("total").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
-    let has_more = v
-        .get("hasMore")
-        .and_then(|x| x.as_bool())
-        .unwrap_or(false);
+    let has_more = v.get("hasMore").and_then(|x| x.as_bool()).unwrap_or(false);
     let total_pages = ((total + size - 1) / size).max(1);
     let items = arr
         .iter()
@@ -150,10 +170,10 @@ fn parse_page(body: &str, page: u32) -> Result<Page, String> {
             Item {
                 id: fnv(slug),
                 title,
-                thumb: format!("{CDN}/th?id={urlbase}_1920x1080.jpg&w=800&h=450"),
+                thumb: image_url(urlbase, false).unwrap_or_default(),
                 page: format!("{BASE}/wallpapers/{slug}"),
                 src: SRC_BING,
-                full_url: Some(format!("{CDN}/th?id={urlbase}_UHD.jpg")),
+                full_url: image_url(urlbase, true),
                 video_url: None,
             }
         })
@@ -209,6 +229,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn builds_spotlight_image_urls() {
+        assert_eq!(
+            image_url("OBTQ.BT1234", false),
+            Some("https://cn.bing.com/th?id=OBTQ.BT1234&rs=2&c=1&w=800&h=450".to_string())
+        );
+        assert_eq!(
+            image_url("OBTQ.BT1234", true),
+            Some("https://cn.bing.com/th?id=OBTQ.BT1234&rs=2&c=1&w=3840&h=2160".to_string())
+        );
+    }
+
+    #[test]
+    fn builds_ohr_image_urls() {
+        assert_eq!(
+            image_url("OHR.Example_ZH-CN1234", false),
+            Some(
+                "https://cn.bing.com/th?id=OHR.Example_ZH-CN1234_1920x1080.jpg&w=800&h=450"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            image_url("OHR.Example_ZH-CN1234", true),
+            Some("https://cn.bing.com/th?id=OHR.Example_ZH-CN1234_UHD.jpg".to_string())
+        );
+    }
+
+    #[test]
     fn parses_list_json() {
         let body = r#"{"items":[
             {"slug":"abc123","title":"大西洋森林，巴西","urlbase":"OHR.Atlantica_ZH-CN6593995386"},
@@ -258,6 +305,22 @@ mod tests {
         let bytes = std::fs::metadata(&full.path).map(|m| m.len()).unwrap_or(0);
         println!("bing uhd {:?} bytes={}", dim, bytes);
         assert_eq!(dim, Some((3840, 2160)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `cargo test bing_live -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bing_live_thumbs() {
+        let dir = std::env::temp_dir().join("wp_bing_thumbs_p10");
+        let _ = std::fs::remove_dir_all(&dir);
+        let p = list(10, "").expect("page 10");
+        for (idx, item) in p.items.iter().enumerate() {
+            let dest = dir.join(format!("{idx}.jpg"));
+            crate::websrc::download_to(&item.thumb, &dest, REFERER)
+                .expect("page 10 thumbnail should download");
+            let _ = std::fs::remove_file(dest);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -17,7 +17,7 @@
 use std::sync::Mutex;
 
 use jni::objects::JObject;
-use jni::{jni_sig, jni_str, sys, Env, JavaVM, JValue};
+use jni::{jni_sig, jni_str, sys, Env, JValue, JavaVM};
 use winit::platform::android::activity::AndroidApp;
 
 /// The `AndroidApp` handle, installed once from `android_main`.
@@ -115,9 +115,7 @@ pub fn system_insets() -> Option<(f32, f32)> {
                     &[JValue::Int(0x7)],
                 )?
                 .l()?;
-            let t = env
-                .get_field(&bars, jni_str!("top"), jni_sig!("I"))?
-                .i()?;
+            let t = env.get_field(&bars, jni_str!("top"), jni_sig!("I"))?.i()?;
             let b = env
                 .get_field(&bars, jni_str!("bottom"), jni_sig!("I"))?
                 .i()?;

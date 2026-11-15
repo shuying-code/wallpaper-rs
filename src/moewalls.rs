@@ -22,19 +22,58 @@ pub const REFERER: &str = "https://moewalls.com/";
 pub const DL_BASE: &str = "https://go.moewalls.com";
 
 pub const CATEGORIES: &[Category] = &[
-    Category { name: "全部", path: "" },
-    Category { name: "抽象", path: "/category/abstract/" },
-    Category { name: "动物", path: "/category/animal/" },
-    Category { name: "动漫", path: "/category/anime/" },
-    Category { name: "奇幻", path: "/category/fantasy/" },
-    Category { name: "游戏", path: "/category/games/" },
-    Category { name: "风景", path: "/category/landscape/" },
-    Category { name: "生活", path: "/category/lifestyle/" },
-    Category { name: "电影", path: "/category/movies/" },
-    Category { name: "其他", path: "/category/others/" },
-    Category { name: "像素", path: "/category/pixel-art/" },
-    Category { name: "科幻", path: "/category/sci-fi/" },
-    Category { name: "车辆", path: "/category/vehicle/" },
+    Category {
+        name: "全部",
+        path: "",
+    },
+    Category {
+        name: "抽象",
+        path: "/category/abstract/",
+    },
+    Category {
+        name: "动物",
+        path: "/category/animal/",
+    },
+    Category {
+        name: "动漫",
+        path: "/category/anime/",
+    },
+    Category {
+        name: "奇幻",
+        path: "/category/fantasy/",
+    },
+    Category {
+        name: "游戏",
+        path: "/category/games/",
+    },
+    Category {
+        name: "风景",
+        path: "/category/landscape/",
+    },
+    Category {
+        name: "生活",
+        path: "/category/lifestyle/",
+    },
+    Category {
+        name: "电影",
+        path: "/category/movies/",
+    },
+    Category {
+        name: "其他",
+        path: "/category/others/",
+    },
+    Category {
+        name: "像素",
+        path: "/category/pixel-art/",
+    },
+    Category {
+        name: "科幻",
+        path: "/category/sci-fi/",
+    },
+    Category {
+        name: "车辆",
+        path: "/category/vehicle/",
+    },
 ];
 
 fn absolute(u: &str) -> String {
@@ -174,7 +213,9 @@ pub fn full(item: &Item, cache: &Path) -> Result<Full, String> {
         title: item.title.clone(),
         url: poster,
         path: dest,
-        video_name: video.as_ref().map(|_| format!("{}.mp4", slug_of(&item.page))),
+        video_name: video
+            .as_ref()
+            .map(|_| format!("{}.mp4", slug_of(&item.page))),
         video,
     })
 }
@@ -191,7 +232,10 @@ mod tests {
         let items = parse_items(html);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].id, 21641);
-        assert_eq!(items[0].title, "Elaina Blade Wandering Witch Live Wallpaper");
+        assert_eq!(
+            items[0].title,
+            "Elaina Blade Wandering Witch Live Wallpaper"
+        );
         assert_eq!(
             items[0].thumb,
             "https://moewalls.com/wp-content/uploads/2026/11/elaina-blade-wandering-witch-thumb-364x205.jpg"
@@ -213,7 +257,10 @@ mod tests {
 
     #[test]
     fn builds_list_urls() {
-        assert_eq!(list_url("/category/anime/", 2, ""), "https://moewalls.com/category/anime/page/2/");
+        assert_eq!(
+            list_url("/category/anime/", 2, ""),
+            "https://moewalls.com/category/anime/page/2/"
+        );
         assert_eq!(list_url("", 3, ""), "https://moewalls.com/page/3/");
         assert_eq!(list_url("", 1, "elaina"), "https://moewalls.com/?s=elaina");
     }

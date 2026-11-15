@@ -1,6 +1,6 @@
 [package]
 name = "wallpaper-rs"
-version = "0.14.8"
+version = "0.14.9"
 edition = "2021"
 description = "Cross-platform desktop wallpaper app (Windows/macOS/Linux): fixed wallpaper or slideshow/rotation, built with Rust + egui."
 license = "MIT"
@@ -50,6 +50,12 @@ objc = "0.2"
 
 [target.'cfg(all(not(windows), not(target_os = "android")))'.dependencies]
 global-hotkey = "0.6"
+
+[target.'cfg(all(unix, not(target_os = "macos"), not(target_os = "android")))'.dependencies]
+# Linux 托盘（tray-icon）用 `muda` 的 GTK3 后端创建菜单：GTK 必须先初始化，否则
+# 创建菜单时会在 gtk 内部 panic（“GTK has not been initialized. Call `gtk::init`
+# first.”）。这里直接依赖 gtk（与 tray-icon 用的版本一致）以便显式初始化。
+gtk = "0.18"
 
 [target.'cfg(target_os = "android")'.dependencies]
 # Android 系统根证书不是 PEM 文件，`native-certs` 会加载到空的根证书库，导致所有

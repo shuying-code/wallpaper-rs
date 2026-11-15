@@ -22,16 +22,46 @@ pub const BASE: &str = "https://motionbgs.com";
 pub const REFERER: &str = "https://motionbgs.com/";
 
 pub const CATEGORIES: &[Category] = &[
-    Category { name: "全部", path: "" },
-    Category { name: "4K", path: "/4k/" },
-    Category { name: "手机", path: "/mobile/" },
-    Category { name: "GIF", path: "/gifs/" },
-    Category { name: "动漫", path: "/tag:anime/" },
-    Category { name: "游戏", path: "/tag:games/" },
-    Category { name: "自然", path: "/tag:nature/" },
-    Category { name: "车", path: "/tag:car/" },
-    Category { name: "超级英雄", path: "/tag:superhero/" },
-    Category { name: "太空", path: "/tag:space/" },
+    Category {
+        name: "全部",
+        path: "",
+    },
+    Category {
+        name: "4K",
+        path: "/4k/",
+    },
+    Category {
+        name: "手机",
+        path: "/mobile/",
+    },
+    Category {
+        name: "GIF",
+        path: "/gifs/",
+    },
+    Category {
+        name: "动漫",
+        path: "/tag:anime/",
+    },
+    Category {
+        name: "游戏",
+        path: "/tag:games/",
+    },
+    Category {
+        name: "自然",
+        path: "/tag:nature/",
+    },
+    Category {
+        name: "车",
+        path: "/tag:car/",
+    },
+    Category {
+        name: "超级英雄",
+        path: "/tag:superhero/",
+    },
+    Category {
+        name: "太空",
+        path: "/tag:space/",
+    },
 ];
 
 fn agent_noredirect() -> ureq::Agent {
@@ -114,7 +144,9 @@ fn parse_items(html: &str) -> Vec<Item> {
         let after = &rest[i + "<a title=\"".len()..];
         let Some(q) = after.find('"') else { break };
         let title = after[..q].to_string();
-        let Some(endrel) = after.find("</a>") else { break };
+        let Some(endrel) = after.find("</a>") else {
+            break;
+        };
         let seg = &after[..endrel];
         let href = attr_unquoted(seg, "href=");
         let thumb = attr_unquoted(seg, "src=");
@@ -137,7 +169,11 @@ fn parse_items(html: &str) -> Vec<Item> {
                         None
                     };
                     out.push(Item {
-                        id: if id == 0 { crate::websrc::fnv(&href) } else { id },
+                        id: if id == 0 {
+                            crate::websrc::fnv(&href)
+                        } else {
+                            id
+                        },
                         title,
                         thumb: absolute(&thumb),
                         page: absolute(&href),
@@ -205,15 +241,27 @@ mod tests {
         let it = &items[0];
         assert_eq!(it.id, 10270);
         assert_eq!(it.title, "A Galaxy Within live wallpaper");
-        assert_eq!(it.thumb, "https://motionbgs.com/i/c/364x205/media/10270/a-galaxy-within.3840x2160.jpg");
-        assert_eq!(it.full_url.as_deref(), Some("https://motionbgs.com/i/c/1920x1080/media/10270/a-galaxy-within.3840x2160.jpg"));
-        assert_eq!(it.video_url.as_deref(), Some("https://motionbgs.com/dl/hd/10270/"));
+        assert_eq!(
+            it.thumb,
+            "https://motionbgs.com/i/c/364x205/media/10270/a-galaxy-within.3840x2160.jpg"
+        );
+        assert_eq!(
+            it.full_url.as_deref(),
+            Some("https://motionbgs.com/i/c/1920x1080/media/10270/a-galaxy-within.3840x2160.jpg")
+        );
+        assert_eq!(
+            it.video_url.as_deref(),
+            Some("https://motionbgs.com/dl/hd/10270/")
+        );
         assert_eq!(it.src, SRC_MOTIONBGS);
     }
 
     #[test]
     fn list_urls_for_categories() {
-        assert_eq!(list_url("/tag:anime/", 2, ""), "https://motionbgs.com/tag:anime/2/");
+        assert_eq!(
+            list_url("/tag:anime/", 2, ""),
+            "https://motionbgs.com/tag:anime/2/"
+        );
         assert_eq!(list_url("", 3, ""), "https://motionbgs.com/3/");
         assert_eq!(list_url("", 1, ""), "https://motionbgs.com/");
     }
@@ -231,7 +279,10 @@ mod tests {
         let dir = std::env::temp_dir().join("wp_mbgs_live");
         let f = full(&first, &dir).expect("poster");
         let dim = crate::thumbs::image_dimensions(&f.path);
-        println!("motionbgs ok id={} title={:?} dim={:?} video={:?}", f.id, f.title, dim, f.video);
+        println!(
+            "motionbgs ok id={} title={:?} dim={:?} video={:?}",
+            f.id, f.title, dim, f.video
+        );
         assert!(dim.map(|(w, _)| w >= 1280).unwrap_or(false));
         assert!(f.video.is_some());
         let _ = std::fs::remove_dir_all(&dir);

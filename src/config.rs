@@ -8,7 +8,8 @@ use std::path::PathBuf; // 引入依赖
 
 /// 网上壁纸库的一条收藏（可跨站点，持久化保存）。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)] // 语句
-pub struct FavItem { // 结构体 FavItem
+pub struct FavItem {
+    // 结构体 FavItem
     /// 所属站点 key（见 `crate::websrc::SOURCES`）。
     pub key: String, // 字段 key
     /// 站点内稳定的数字 id。
@@ -27,29 +28,33 @@ pub struct FavItem { // 结构体 FavItem
 } // 块结束
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)] // 语句
-pub enum Mode { // 枚举 Mode
-    Fixed, // 语句
+pub enum Mode {
+    // 枚举 Mode
+    Fixed,     // 语句
     Slideshow, // 语句
 } // 块结束
-impl Default for Mode { // 实现
-    fn default() -> Self { // 函数 default
+impl Default for Mode {
+    // 实现
+    fn default() -> Self {
+        // 函数 default
         Mode::Fixed // 语句
     } // 块结束
 } // 块结束
 
 #[derive(Serialize, Deserialize, Clone, Debug)] // 语句
-pub struct Config { // 结构体 Config
+pub struct Config {
+    // 结构体 Config
     pub folder: Option<PathBuf>, // 字段 folder
-    pub recursive: bool, // 字段 recursive
-    pub mode: Mode, // 字段 mode
-    pub interval_secs: u64, // 字段 interval_secs
-    pub shuffle: bool, // 字段 shuffle
-    pub fit: Fit, // 字段 fit
+    pub recursive: bool,         // 字段 recursive
+    pub mode: Mode,              // 字段 mode
+    pub interval_secs: u64,      // 字段 interval_secs
+    pub shuffle: bool,           // 字段 shuffle
+    pub fit: Fit,                // 字段 fit
     /// 0 = light, 1 = dark
     pub theme: usize, // 字段 theme
     pub last_path: Option<PathBuf>, // 字段 last_path
-    pub running: bool, // 字段 running
-    pub search: String, // 字段 search
+    pub running: bool,           // 字段 running
+    pub search: String,          // 字段 search
     /// Launch the app automatically at login (Windows Run key / LaunchAgent / autostart .desktop).
     #[serde(default)] // 语句
     pub autostart: bool, // 字段 autostart
@@ -109,52 +114,59 @@ pub struct Config { // 结构体 Config
     pub report_token: String, // 字段 report_token
 } // 块结束
 
-fn default_true() -> bool { // 函数 default_true
+fn default_true() -> bool {
+    // 函数 default_true
     true // 语句
 } // 块结束
 
-impl Default for Config { // 实现
-    fn default() -> Self { // 函数 default
-        Self { // 语句
-            folder: None, // 字段 folder
-            recursive: true, // 字段 recursive
-            mode: Mode::Fixed, // 字段 mode
-            interval_secs: 60, // 字段 interval_secs
-            shuffle: false, // 字段 shuffle
-            fit: Fit::Fill, // 字段 fit
-            theme: 0, // 字段 theme
-            last_path: None, // 字段 last_path
-            running: false, // 字段 running
-            search: String::new(), // 字段 search
-            autostart: false, // 字段 autostart
-            close_to_background: true, // 字段 close_to_background
+impl Default for Config {
+    // 实现
+    fn default() -> Self {
+        // 函数 default
+        Self {
+            // 语句
+            folder: None,                       // 字段 folder
+            recursive: true,                    // 字段 recursive
+            mode: Mode::Fixed,                  // 字段 mode
+            interval_secs: 60,                  // 字段 interval_secs
+            shuffle: false,                     // 字段 shuffle
+            fit: Fit::Fill,                     // 字段 fit
+            theme: 0,                           // 字段 theme
+            last_path: None,                    // 字段 last_path
+            running: false,                     // 字段 running
+            search: String::new(),              // 字段 search
+            autostart: false,                   // 字段 autostart
+            close_to_background: true,          // 字段 close_to_background
             collapsed_folders: BTreeSet::new(), // 字段 collapsed_folders
-            sidebar_hidden: false, // 字段 sidebar_hidden
-            daily_online: false, // 字段 daily_online
-            online_auto_set: true, // 字段 online_auto_set
-            online_likes: 0, // 字段 online_likes
-            online_dislikes: 0, // 字段 online_dislikes
-            last_online_date: String::new(), // 字段 last_online_date
-            wallpaper_only: true, // 字段 wallpaper_only
-            slideshow: Vec::new(), // 字段 slideshow
-            web_source_key: String::new(), // 字段 web_source_key
-            web_category: 0, // 字段 web_category
-            web_query: String::new(), // 字段 web_query
-            web_search_active: false, // 字段 web_search_active
-            web_only_fav: false, // 字段 web_only_fav
-            web_favorites: Vec::new(), // 字段 web_favorites
-            report_enabled: true, // 字段 report_enabled
-            report_token: String::new(), // 字段 report_token
+            sidebar_hidden: false,              // 字段 sidebar_hidden
+            daily_online: false,                // 字段 daily_online
+            online_auto_set: true,              // 字段 online_auto_set
+            online_likes: 0,                    // 字段 online_likes
+            online_dislikes: 0,                 // 字段 online_dislikes
+            last_online_date: String::new(),    // 字段 last_online_date
+            wallpaper_only: true,               // 字段 wallpaper_only
+            slideshow: Vec::new(),              // 字段 slideshow
+            web_source_key: String::new(),      // 字段 web_source_key
+            web_category: 0,                    // 字段 web_category
+            web_query: String::new(),           // 字段 web_query
+            web_search_active: false,           // 字段 web_search_active
+            web_only_fav: false,                // 字段 web_only_fav
+            web_favorites: Vec::new(),          // 字段 web_favorites
+            report_enabled: true,               // 字段 report_enabled
+            report_token: String::new(),        // 字段 report_token
         } // 块结束
     } // 块结束
 } // 块结束
 
-pub fn home() -> PathBuf { // 函数 home
+pub fn home() -> PathBuf {
+    // 函数 home
     #[cfg(target_os = "android")] // 语句
-    { // 语句
+    {
+        // 语句
         // Android 没有 HOME：以应用私有目录作为「主目录」，让「另存图片」等
         // 依赖 home() 的路径落到可写位置。
-        if let Some(dir) = crate::android_jni::internal_data_dir() { // 条件分支
+        if let Some(dir) = crate::android_jni::internal_data_dir() {
+            // 条件分支
             return dir; // 返回
         } // 块结束
     } // 块结束
@@ -164,29 +176,39 @@ pub fn home() -> PathBuf { // 函数 home
         .unwrap_or_else(|| PathBuf::from(".")) // 语句
 } // 块结束
 
-pub fn config_dir() -> PathBuf { // 函数 config_dir
+pub fn config_dir() -> PathBuf {
+    // 函数 config_dir
     #[cfg(windows)] // 语句
-    { // 语句
-        if let Some(a) = env::var_os("APPDATA") { // 条件分支
+    {
+        // 语句
+        if let Some(a) = env::var_os("APPDATA") {
+            // 条件分支
             return PathBuf::from(a).join("wallpaper-rs"); // 返回
         } // 块结束
         home().join("wallpaper-rs") // 调用 home
     } // 块结束
     #[cfg(target_os = "macos")] // 语句
-    { // 语句
-        home().join("Library").join("Application Support").join("wallpaper-rs") // 调用 home
+    {
+        // 语句
+        home()
+            .join("Library")
+            .join("Application Support")
+            .join("wallpaper-rs") // 调用 home
     } // 块结束
     #[cfg(target_os = "android")] // 语句
-    { // 语句
+    {
+        // 语句
         // Android 无 HOME/XDG 惯例目录：改用应用私有目录
         // （`/data/user/0/<pkg>/files`），否则配置与缓存不可写。
-        if let Some(dir) = crate::android_jni::internal_data_dir() { // 条件分支
+        if let Some(dir) = crate::android_jni::internal_data_dir() {
+            // 条件分支
             return dir.join("wallpaper-rs"); // 返回
         } // 块结束
         home().join(".config").join("wallpaper-rs") // 调用 home
     } // 块结束
     #[cfg(all(unix, not(target_os = "macos"), not(target_os = "android")))] // 语句
-    { // 语句
+    {
+        // 语句
         env::var_os("XDG_CONFIG_HOME") // 调用 var_os
             .map(PathBuf::from) // 语句
             .unwrap_or_else(|| home().join(".config")) // 语句
@@ -194,12 +216,15 @@ pub fn config_dir() -> PathBuf { // 函数 config_dir
     } // 块结束
 } // 块结束
 
-pub fn config_path() -> PathBuf { // 函数 config_path
+pub fn config_path() -> PathBuf {
+    // 函数 config_path
     config_dir().join("config.json") // 调用 config_dir
 } // 块结束
 
-impl Config { // 实现
-    pub fn load() -> Self { // 函数 load
+impl Config {
+    // 实现
+    pub fn load() -> Self {
+        // 函数 load
         // Prefer the live file; fall back to the last-known-good backup if the
         // live file is missing or was left corrupt by an interrupted write.
         parse_file(&config_path()) // 调用 parse_file
@@ -207,41 +232,49 @@ impl Config { // 实现
             .unwrap_or_default() // 语句
     } // 块结束
 
-    pub fn save(&self) { // 函数 save
+    pub fn save(&self) {
+        // 函数 save
         let _ = std::fs::create_dir_all(config_dir()); // 变量 _
-        let Ok(s) = serde_json::to_string_pretty(self) else { // 变量 Ok
+        let Ok(s) = serde_json::to_string_pretty(self) else {
+            // 变量 Ok
             return; // 返回
         }; // 块结束
         let path = config_path(); // 变量 path
-        // Roll the current good file to `.bak` before overwriting.
-        if path.exists() { // 条件分支
+                                  // Roll the current good file to `.bak` before overwriting.
+        if path.exists() {
+            // 条件分支
             let _ = std::fs::copy(&path, path.with_extension("json.bak")); // 变量 _
         } // 块结束
-        // Atomic write: temp file in the same dir, then rename over the target.
+          // Atomic write: temp file in the same dir, then rename over the target.
         let tmp = path.with_extension("json.tmp"); // 变量 tmp
-        if std::fs::write(&tmp, s.as_bytes()).is_ok() { // 条件分支
-            if std::fs::rename(&tmp, &path).is_err() { // 条件分支
+        if std::fs::write(&tmp, s.as_bytes()).is_ok() {
+            // 条件分支
+            if std::fs::rename(&tmp, &path).is_err() {
+                // 条件分支
                 let _ = std::fs::remove_file(&tmp); // 变量 _
             } // 块结束
         } // 块结束
     } // 块结束
 } // 块结束
 
-fn parse_file(p: &std::path::Path) -> Option<Config> { // 函数 parse_file
+fn parse_file(p: &std::path::Path) -> Option<Config> {
+    // 函数 parse_file
     std::fs::read_to_string(p) // 调用 read_to_string
         .ok() // 语句
         .and_then(|s| serde_json::from_str(&s).ok()) // 语句
 } // 块结束
 
 #[cfg(test)] // 语句
-mod tests { // 模块 tests
+mod tests {
+    // 模块 tests
     use super::*; // 引入依赖
 
     /// A config written by an older version must still load, keeping the user's
     /// data and filling new fields with defaults. Legacy `oled_*` / `shift_*`
     /// keys from removed features are simply ignored (serde skips unknown keys).
     #[test] // 语句
-    fn legacy_config_loads_with_defaults() { // 函数 legacy_config_loads_with_defaults
+    fn legacy_config_loads_with_defaults() {
+        // 函数 legacy_config_loads_with_defaults
         let legacy = r#"{
             "folder": "C:\\pics",
             "recursive": true,
@@ -259,13 +292,14 @@ mod tests { // 模块 tests
         assert!(c.shuffle); // 语句
         assert_eq!(c.theme, 1); // 语句
         assert_eq!(c.folder.as_deref(), Some(std::path::Path::new("C:\\pics"))); // 语句
-        // Newer fields fall back to defaults.
+                                                                                 // Newer fields fall back to defaults.
         assert!(c.close_to_background); // 语句
         assert!(!c.autostart); // 语句
     } // 块结束
 
     #[test] // 语句
-    fn unknown_fields_are_ignored() { // 函数 unknown_fields_are_ignored
+    fn unknown_fields_are_ignored() {
+        // 函数 unknown_fields_are_ignored
         let with_extra = r#"{"folder":null,"recursive":true,"mode":"Fixed",
             "interval_secs":60,"shuffle":false,"fit":"Fill","theme":0,
             "last_path":null,"running":false,"search":"","future_field":123}"#; // 语句
@@ -277,7 +311,8 @@ mod tests { // 模块 tests
     /// save rolls the previous file to `.bak`. Uses a temp APPDATA so the real
     /// user config is never touched.
     #[test] // 语句
-    fn save_writes_atomically_and_keeps_backup() { // 函数 save_writes_atomically_and_keeps_backup
+    fn save_writes_atomically_and_keeps_backup() {
+        // 函数 save_writes_atomically_and_keeps_backup
         let dir = std::env::temp_dir().join(format!("wp_cfg_test_{}", std::process::id())); // 变量 dir
         std::fs::create_dir_all(&dir).unwrap(); // 调用 create_dir_all
         let old = std::env::var_os("APPDATA"); // 变量 old
@@ -291,11 +326,17 @@ mod tests { // 模块 tests
 
         let p = config_path(); // 变量 p
         assert!(p.exists(), "config.json should be written"); // 语句
-        assert!(!p.with_extension("json.tmp").exists(), "temp file cleaned up"); // 语句
+        assert!(
+            !p.with_extension("json.tmp").exists(),
+            "temp file cleaned up"
+        ); // 语句
         let loaded = Config::load(); // 变量 loaded
         assert_eq!(loaded.interval_secs, 123); // 语句
         assert!(!loaded.close_to_background); // 语句
-        assert_eq!(loaded.folder.as_deref(), Some(std::path::Path::new("X:/pics"))); // 语句
+        assert_eq!(
+            loaded.folder.as_deref(),
+            Some(std::path::Path::new("X:/pics"))
+        ); // 语句
 
         // Second save rolls the first good file into .bak.
         c.interval_secs = 456; // 语句
@@ -303,9 +344,10 @@ mod tests { // 模块 tests
         assert!(p.with_extension("json.bak").exists(), "backup should exist"); // 语句
         assert_eq!(Config::load().interval_secs, 456); // 语句
 
-        match old { // 分支匹配
+        match old {
+            // 分支匹配
             Some(v) => std::env::set_var("APPDATA", v), // 匹配分支
-            None => std::env::remove_var("APPDATA"), // 匹配分支
+            None => std::env::remove_var("APPDATA"),    // 匹配分支
         } // 块结束
         let _ = std::fs::remove_dir_all(&dir); // 变量 _
     } // 块结束

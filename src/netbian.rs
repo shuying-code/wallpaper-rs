@@ -22,20 +22,62 @@ pub const REFERER: &str = "https://pic.netbian.com/";
 
 /// 4K 站分类导航（`path` 为空表示首页「全部/最新」）。
 pub const CATEGORIES: &[Category] = &[
-    Category { name: "全部", path: "" },
-    Category { name: "4K动漫", path: "/4kdongman/" },
-    Category { name: "4K游戏", path: "/4kyouxi/" },
-    Category { name: "4K美女", path: "/4kmeinv/" },
-    Category { name: "4K风景", path: "/4kfengjing/" },
-    Category { name: "4K剧照", path: "/4kjuzhao/" },
-    Category { name: "4K汽车", path: "/4kqiche/" },
-    Category { name: "4K动物", path: "/4kdongwu/" },
-    Category { name: "4K宗教", path: "/4kzongjiao/" },
-    Category { name: "4K背景", path: "/4kbeijing/" },
-    Category { name: "4K手机", path: "/shoujibizhi/" },
-    Category { name: "车机", path: "/cheji/" },
-    Category { name: "5K带鱼屏", path: "/5120x2160/" },
-    Category { name: "4K极简", path: "/s/4Kjijian/" },
+    Category {
+        name: "全部",
+        path: "",
+    },
+    Category {
+        name: "4K动漫",
+        path: "/4kdongman/",
+    },
+    Category {
+        name: "4K游戏",
+        path: "/4kyouxi/",
+    },
+    Category {
+        name: "4K美女",
+        path: "/4kmeinv/",
+    },
+    Category {
+        name: "4K风景",
+        path: "/4kfengjing/",
+    },
+    Category {
+        name: "4K剧照",
+        path: "/4kjuzhao/",
+    },
+    Category {
+        name: "4K汽车",
+        path: "/4kqiche/",
+    },
+    Category {
+        name: "4K动物",
+        path: "/4kdongwu/",
+    },
+    Category {
+        name: "4K宗教",
+        path: "/4kzongjiao/",
+    },
+    Category {
+        name: "4K背景",
+        path: "/4kbeijing/",
+    },
+    Category {
+        name: "4K手机",
+        path: "/shoujibizhi/",
+    },
+    Category {
+        name: "车机",
+        path: "/cheji/",
+    },
+    Category {
+        name: "5K带鱼屏",
+        path: "/5120x2160/",
+    },
+    Category {
+        name: "4K极简",
+        path: "/s/4Kjijian/",
+    },
 ];
 
 /// 使用全站共享 agent（带 Cookie 罐）：彼岸图网在百度 WAF 之后，必须把首包下发的
@@ -102,8 +144,12 @@ fn parse_items(html: &str) -> Vec<Item> {
             Some(j) => &body[..j],
             None => body,
         };
-        let Some(id) = extract_id(chunk) else { continue };
-        let Some(src) = attr_after(chunk, "src=\"") else { continue };
+        let Some(id) = extract_id(chunk) else {
+            continue;
+        };
+        let Some(src) = attr_after(chunk, "src=\"") else {
+            continue;
+        };
         let title = attr_after(chunk, "alt=\"").unwrap_or_default();
         out.push(Item {
             id,
@@ -283,12 +329,7 @@ fn fetch_search(keyword: &str, page: u32, id: Option<u32>) -> Result<Page, Strin
 }
 
 /// 统一入口：`keyword` 非空走搜索，否则按分类浏览。
-pub fn list(
-    path: &str,
-    page: u32,
-    keyword: &str,
-    search_id: Option<u32>,
-) -> Result<Page, String> {
+pub fn list(path: &str, page: u32, keyword: &str, search_id: Option<u32>) -> Result<Page, String> {
     let kw = keyword.trim();
     if kw.is_empty() {
         fetch_category(path, page)
@@ -339,7 +380,9 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].id, 44679);
         assert_eq!(items[0].title, "天空云朵 山脉 极简4K壁纸");
-        assert!(items[0].thumb.starts_with("https://pic.netbian.com/uploads/"));
+        assert!(items[0]
+            .thumb
+            .starts_with("https://pic.netbian.com/uploads/"));
         assert_eq!(items[0].page, "https://pic.netbian.com/tupian/44679.html");
         assert_eq!(items[0].src, SRC_NETBIAN);
     }
@@ -387,7 +430,10 @@ mod tests {
         let full = full(&first, &dir).expect("detail + download");
         let bytes = std::fs::metadata(&full.path).expect("file exists").len();
         assert!(bytes > 10_000, "downloaded image should be non-trivial");
-        println!("netbian ok first=#{} {:?} bytes={}", full.id, full.title, bytes);
+        println!(
+            "netbian ok first=#{} {:?} bytes={}",
+            full.id, full.title, bytes
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

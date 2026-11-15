@@ -12,7 +12,8 @@ pub const MIN_WALLPAPER_W: u32 = 1280; // 常量 MIN_WALLPAPER_W
 pub const MIN_WALLPAPER_H: u32 = 720; // 常量 MIN_WALLPAPER_H
 
 /// Read only the image header to get (width, height) cheaply (no full decode).
-pub fn image_dimensions(path: &Path) -> Option<(u32, u32)> { // 函数 image_dimensions
+pub fn image_dimensions(path: &Path) -> Option<(u32, u32)> {
+    // 函数 image_dimensions
     image::ImageReader::open(path) // 调用 open
         .ok()? // 语句
         .with_guessed_format() // 语句
@@ -22,15 +23,19 @@ pub fn image_dimensions(path: &Path) -> Option<(u32, u32)> { // 函数 image_dim
 } // 块结束
 
 /// Whether an image of size (w,h) is suitable as a desktop wallpaper.
-pub fn wallpaper_suitable(w: u32, h: u32) -> bool { // 函数 wallpaper_suitable
-    w >= MIN_WALLPAPER_W && h >= MIN_WALLPAPER_H && (w as u64) * 10 >= (h as u64) * 12 // 语句
+pub fn wallpaper_suitable(w: u32, h: u32) -> bool {
+    // 函数 wallpaper_suitable
+    w >= MIN_WALLPAPER_W && h >= MIN_WALLPAPER_H && (w as u64) * 10 >= (h as u64) * 12
+    // 语句
 } // 块结束
 
 /// Convenience: is this file a wallpaper-grade image (reads only the header)?
-pub fn is_wallpaper_file(path: &Path) -> bool { // 函数 is_wallpaper_file
-    match image_dimensions(path) { // 分支匹配
+pub fn is_wallpaper_file(path: &Path) -> bool {
+    // 函数 is_wallpaper_file
+    match image_dimensions(path) {
+        // 分支匹配
         Some((w, h)) => wallpaper_suitable(w, h), // 匹配分支
-        None => false, // 匹配分支
+        None => false,                            // 匹配分支
     } // 块结束
 } // 块结束
 
@@ -38,93 +43,129 @@ pub fn is_wallpaper_file(path: &Path) -> bool { // 函数 is_wallpaper_file
 /// 渲染为桌面壁纸，也可以像静态图片一样加入轮播清单。
 ///
 /// 只按扩展名判定：无需预解码即可在扫描 / 过滤时快速区分静态图与视频。
-pub fn is_video_file(path: &Path) -> bool { // 函数 is_video_file
-    match path.extension().and_then(|s| s.to_str()).map(|s| s.to_ascii_lowercase()) { // 分支匹配
-        Some(ext) => matches!( // 匹配分支
+pub fn is_video_file(path: &Path) -> bool {
+    // 函数 is_video_file
+    match path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase())
+    {
+        // 分支匹配
+        Some(ext) => matches!(
+            // 匹配分支
             ext.as_str(), // 语句
-            "mp4" | "webm" | "mkv" | "mov" | "m4v" | "avi" | "wmv" | "flv" | "ts"
-                | "mpg" | "mpeg" | "ogv" | "3gp" // 语句
+            "mp4"
+                | "webm"
+                | "mkv"
+                | "mov"
+                | "m4v"
+                | "avi"
+                | "wmv"
+                | "flv"
+                | "ts"
+                | "mpg"
+                | "mpeg"
+                | "ogv"
+                | "3gp"  // 语句
         ), // 语句
         None => false, // 匹配分支
     } // 块结束
 } // 块结束
 
-pub struct Thumb { // 结构体 Thumb
-    pub w: usize, // 字段 w
-    pub h: usize, // 字段 h
+pub struct Thumb {
+    // 结构体 Thumb
+    pub w: usize,      // 字段 w
+    pub h: usize,      // 字段 h
     pub rgba: Vec<u8>, // 字段 rgba
 } // 块结束
 
 /// Decode an image file, downscaled so its longest side <= `max`.
-pub fn load_image(path: &Path, max: u32) -> Option<Thumb> { // 函数 load_image
+pub fn load_image(path: &Path, max: u32) -> Option<Thumb> {
+    // 函数 load_image
     let img = image::open(path).ok()?; // 变量 img
     let img = img.thumbnail(max, max); // 变量 img
     let rgba = img.to_rgba8(); // 变量 rgba
     let (w, h) = rgba.dimensions(); // 调用 let
-    Some(Thumb { // 调用 Some
-        w: w as usize, // 字段 w
-        h: h as usize, // 字段 h
+    Some(Thumb {
+        // 调用 Some
+        w: w as usize,         // 字段 w
+        h: h as usize,         // 字段 h
         rgba: rgba.into_raw(), // 字段 rgba
     }) // 语句
 } // 块结束
 
-pub struct Thumbnailer { // 结构体 Thumbnailer
-    tx: Sender<(PathBuf, u64)>, // 字段 tx
+pub struct Thumbnailer {
+    // 结构体 Thumbnailer
+    tx: Sender<(PathBuf, u64)>,                  // 字段 tx
     rx: Receiver<(PathBuf, u64, Option<Thumb>)>, // 字段 rx
-    requested: HashSet<PathBuf>, // 字段 requested
+    requested: HashSet<PathBuf>,                 // 字段 requested
     /// Bumped on `reset()`. Results tagged with an older generation are dropped
     /// so thumbnails queued before a folder change / full-disk scan can never
     /// pollute the new list's texture cache.
     generation: u64, // 字段 generation
 } // 块结束
 
-impl Thumbnailer { // 实现
-    pub fn new() -> Self { // 函数 new
+impl Thumbnailer {
+    // 实现
+    pub fn new() -> Self {
+        // 函数 new
         let (tx, rx_req) = channel::<(PathBuf, u64)>(); // 调用 let
         let (tx_res, rx) = channel::<(PathBuf, u64, Option<Thumb>)>(); // 调用 let
-        thread::spawn(move || { // 调用 spawn
-            while let Ok((p, gen)) = rx_req.recv() { // 循环
+        thread::spawn(move || {
+            // 调用 spawn
+            while let Ok((p, gen)) = rx_req.recv() {
+                // 循环
                 let t = load_image(&p, THUMB_MAX); // 变量 t
-                if tx_res.send((p, gen, t)).is_err() { // 条件分支
+                if tx_res.send((p, gen, t)).is_err() {
+                    // 条件分支
                     break; // 语句
                 } // 块结束
             } // 块结束
         }); // 语句
-        Self { // 语句
-            tx, // 语句
-            rx, // 语句
+        Self {
+            // 语句
+            tx,                        // 语句
+            rx,                        // 语句
             requested: HashSet::new(), // 字段 requested
-            generation: 0, // 字段 generation
+            generation: 0,             // 字段 generation
         } // 块结束
     } // 块结束
 
-    pub fn request(&mut self, p: &Path) { // 函数 request
-        if self.requested.insert(p.to_path_buf()) { // 条件分支
+    pub fn request(&mut self, p: &Path) {
+        // 函数 request
+        if self.requested.insert(p.to_path_buf()) {
+            // 条件分支
             let _ = self.tx.send((p.to_path_buf(), self.generation)); // 变量 _
         } // 块结束
     } // 块结束
 
-    pub fn is_requested(&self, p: &Path) -> bool { // 函数 is_requested
+    pub fn is_requested(&self, p: &Path) -> bool {
+        // 函数 is_requested
         self.requested.contains(p) // 语句
     } // 块结束
 
     /// Allow a path to be requested again (used by LRU texture-cache eviction so
     /// cards that scroll back into view are re-decoded instead of stuck loading).
-    pub fn forget(&mut self, p: &Path) { // 函数 forget
+    pub fn forget(&mut self, p: &Path) {
+        // 函数 forget
         self.requested.remove(p); // 语句
     } // 块结束
 
-    pub fn reset(&mut self) { // 函数 reset
+    pub fn reset(&mut self) {
+        // 函数 reset
         self.requested.clear(); // 语句
         self.generation = self.generation.wrapping_add(1); // 语句
     } // 块结束
 
     /// Non-blocking drain of finished thumbnails. Results produced before the
     /// last `reset()` are discarded.
-    pub fn poll(&mut self) -> Vec<(PathBuf, Option<Thumb>)> { // 函数 poll
+    pub fn poll(&mut self) -> Vec<(PathBuf, Option<Thumb>)> {
+        // 函数 poll
         let mut v = Vec::new(); // 变量 v
-        while let Ok((p, gen, t)) = self.rx.try_recv() { // 循环
-            if gen == self.generation { // 条件分支
+        while let Ok((p, gen, t)) = self.rx.try_recv() {
+            // 循环
+            if gen == self.generation {
+                // 条件分支
                 v.push((p, t)); // 语句
             } // 块结束
         } // 块结束
@@ -132,70 +173,84 @@ impl Thumbnailer { // 实现
     } // 块结束
 } // 块结束
 
- /// 大图预览的后台解码器（库/轮播「当前壁纸」大图、网上壁纸库详情大图）。
- ///
- /// 解码一张 4K 级 JPEG/PNG 是纯 CPU 重活；之前它在 UI 线程里同步进行，是「点击
- /// 浏览时窗口未响应 / 卡顿」的主因。这里放到后台线程串行解码，UI 只负责在结果
- /// 就绪后上传纹理。
- pub struct Previewer { // 结构体 Previewer
-     tx: Sender<(PathBuf, u32)>, // 字段 tx
-     rx: Receiver<(PathBuf, u32, Option<Thumb>)>, // 字段 rx
-     requested: HashSet<(PathBuf, u32)>, // 字段 requested
- } // 块结束
+/// 大图预览的后台解码器（库/轮播「当前壁纸」大图、网上壁纸库详情大图）。
+///
+/// 解码一张 4K 级 JPEG/PNG 是纯 CPU 重活；之前它在 UI 线程里同步进行，是「点击
+/// 浏览时窗口未响应 / 卡顿」的主因。这里放到后台线程串行解码，UI 只负责在结果
+/// 就绪后上传纹理。
+pub struct Previewer {
+    // 结构体 Previewer
+    tx: Sender<(PathBuf, u32)>,                  // 字段 tx
+    rx: Receiver<(PathBuf, u32, Option<Thumb>)>, // 字段 rx
+    requested: HashSet<(PathBuf, u32)>,          // 字段 requested
+} // 块结束
 
- impl Previewer { // 实现
-     pub fn new() -> Self { // 函数 new
-         let (tx, rx_req) = channel::<(PathBuf, u32)>(); // 调用 let
-         let (tx_res, rx) = channel::<(PathBuf, u32, Option<Thumb>)>(); // 调用 let
-         thread::spawn(move || { // 调用 spawn
-             while let Ok((p, max)) = rx_req.recv() { // 循环
-                 let t = load_image(&p, max); // 变量 t
-                 if tx_res.send((p, max, t)).is_err() { // 条件分支
-                     break; // 语句
-                 } // 块结束
-             } // 块结束
-         }); // 语句
-         Self { // 语句
-             tx, // 语句
-             rx, // 语句
-             requested: HashSet::new(), // 字段 requested
-         } // 块结束
-     } // 块结束
+impl Previewer {
+    // 实现
+    pub fn new() -> Self {
+        // 函数 new
+        let (tx, rx_req) = channel::<(PathBuf, u32)>(); // 调用 let
+        let (tx_res, rx) = channel::<(PathBuf, u32, Option<Thumb>)>(); // 调用 let
+        thread::spawn(move || {
+            // 调用 spawn
+            while let Ok((p, max)) = rx_req.recv() {
+                // 循环
+                let t = load_image(&p, max); // 变量 t
+                if tx_res.send((p, max, t)).is_err() {
+                    // 条件分支
+                    break; // 语句
+                } // 块结束
+            } // 块结束
+        }); // 语句
+        Self {
+            // 语句
+            tx,                        // 语句
+            rx,                        // 语句
+            requested: HashSet::new(), // 字段 requested
+        } // 块结束
+    } // 块结束
 
-     /// 请求解码 `p`（最长边 <= `max`）。同一 (路径, 尺寸) 只排队一次。
-     pub fn request(&mut self, p: &Path, max: u32) { // 函数 request
-         if self.requested.insert((p.to_path_buf(), max)) { // 条件分支
-             let _ = self.tx.send((p.to_path_buf(), max)); // 变量 _
-         } // 块结束
-     } // 块结束
+    /// 请求解码 `p`（最长边 <= `max`）。同一 (路径, 尺寸) 只排队一次。
+    pub fn request(&mut self, p: &Path, max: u32) {
+        // 函数 request
+        if self.requested.insert((p.to_path_buf(), max)) {
+            // 条件分支
+            let _ = self.tx.send((p.to_path_buf(), max)); // 变量 _
+        } // 块结束
+    } // 块结束
 
-     /// 允许同一路径重新排队（例如海报生成后内容有更新）。
-     pub fn forget(&mut self, p: &Path, max: u32) { // 函数 forget
-         self.requested.remove(&(p.to_path_buf(), max)); // 语句
-     } // 块结束
+    /// 允许同一路径重新排队（例如海报生成后内容有更新）。
+    pub fn forget(&mut self, p: &Path, max: u32) {
+        // 函数 forget
+        self.requested.remove(&(p.to_path_buf(), max)); // 语句
+    } // 块结束
 
-     /// 非阻塞取出已完成的结果 `(路径, 尺寸, 解码结果)`。
-     pub fn poll(&mut self) -> Vec<(PathBuf, u32, Option<Thumb>)> { // 函数 poll
-         let mut v = Vec::new(); // 变量 v
-         while let Ok(r) = self.rx.try_recv() { // 循环
-             v.push(r); // 语句
-         } // 块结束
-         v // 语句
-     } // 块结束
- } // 块结束
+    /// 非阻塞取出已完成的结果 `(路径, 尺寸, 解码结果)`。
+    pub fn poll(&mut self) -> Vec<(PathBuf, u32, Option<Thumb>)> {
+        // 函数 poll
+        let mut v = Vec::new(); // 变量 v
+        while let Ok(r) = self.rx.try_recv() {
+            // 循环
+            v.push(r); // 语句
+        } // 块结束
+        v // 语句
+    } // 块结束
+} // 块结束
 
 #[cfg(test)] // 语句
-mod tests { // 模块 tests
+mod tests {
+    // 模块 tests
     use super::*; // 引入依赖
 
     #[test] // 语句
-    fn reset_drops_stale_generation() { // 函数 reset_drops_stale_generation
+    fn reset_drops_stale_generation() {
+        // 函数 reset_drops_stale_generation
         // Build a thumbnailer, request a path at generation 0, then reset.
         let mut t = Thumbnailer::new(); // 变量 t
-        // Force a known generation bump without any worker activity.
+                                        // Force a known generation bump without any worker activity.
         t.reset(); // 语句
         assert_eq!(t.generation, 1); // 语句
-        // A path requested at gen 1 is tracked; forgetting allows re-request.
+                                     // A path requested at gen 1 is tracked; forgetting allows re-request.
         let p = Path::new("nonexistent.png"); // 变量 p
         t.request(p); // 语句
         assert!(t.is_requested(p)); // 语句
@@ -204,7 +259,8 @@ mod tests { // 模块 tests
     } // 块结束
 
     #[test] // 语句
-    fn wallpaper_suitability_rules() { // 函数 wallpaper_suitability_rules
+    fn wallpaper_suitability_rules() {
+        // 函数 wallpaper_suitability_rules
         assert!(wallpaper_suitable(1920, 1080)); // 语句
         assert!(wallpaper_suitable(3840, 2160)); // 语句
         assert!(wallpaper_suitable(1280, 720)); // 语句
@@ -215,7 +271,8 @@ mod tests { // 模块 tests
     } // 块结束
 
     #[test] // 语句
-    fn is_wallpaper_file_by_header() { // 函数 is_wallpaper_file_by_header
+    fn is_wallpaper_file_by_header() {
+        // 函数 is_wallpaper_file_by_header
         let dir = std::env::temp_dir().join("wp_suit_test"); // 变量 dir
         std::fs::create_dir_all(&dir).unwrap(); // 调用 create_dir_all
         let big = dir.join("big.png"); // 变量 big
@@ -228,7 +285,8 @@ mod tests { // 模块 tests
     } // 块结束
 
     #[test] // 语句
-    fn video_detected_by_extension() { // 函数 video_detected_by_extension
+    fn video_detected_by_extension() {
+        // 函数 video_detected_by_extension
         assert!(is_video_file(Path::new("a.mp4"))); // 语句
         assert!(is_video_file(Path::new("C:/x/B.MP4"))); // 大小写不敏感
         assert!(is_video_file(Path::new("clip.webm"))); // 语句
@@ -237,7 +295,8 @@ mod tests { // 模块 tests
     } // 块结束
 
     #[test] // 语句
-    fn previewer_decodes_off_thread() { // 函数 previewer_decodes_off_thread
+    fn previewer_decodes_off_thread() {
+        // 函数 previewer_decodes_off_thread
         let dir = std::env::temp_dir().join("wp_preview_test"); // 变量 dir
         std::fs::create_dir_all(&dir).unwrap(); // 调用 create_dir_all
         let p = dir.join("p.png"); // 变量 p
@@ -245,8 +304,10 @@ mod tests { // 模块 tests
         let mut pv = Previewer::new(); // 变量 pv
         pv.request(&p, 128); // 调用 request
         let mut got = false; // 变量 got
-        for _ in 0..200 { // 循环
-            if let Some((path, _max, Some(t))) = pv.poll().into_iter().next() { // 条件分支
+        for _ in 0..200 {
+            // 循环
+            if let Some((path, _max, Some(t))) = pv.poll().into_iter().next() {
+                // 条件分支
                 assert_eq!(path, p); // 语句
                 assert!(t.w > 0 && t.h > 0 && t.w <= 128 && t.h <= 128); // 语句
                 got = true; // 语句

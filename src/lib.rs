@@ -40,17 +40,22 @@ pub mod android_jni; // Android JNI 桥接：系统栏安全区 + WallpaperManag
 pub use eframe::egui; // 语句
 
 /// Platform-aware native window options (desktop window vs. full-screen mobile).
-pub fn native_options() -> eframe::NativeOptions { // 函数 native_options
+pub fn native_options() -> eframe::NativeOptions {
+    // 函数 native_options
     #[cfg(any(target_os = "android", target_os = "ios"))] // 语句
-    { // 语句
-        eframe::NativeOptions { // 语句
+    {
+        // 语句
+        eframe::NativeOptions {
+            // 语句
             viewport: egui::ViewportBuilder::default().with_title("Wallpaper Studio"), // 字段 viewport
-            ..Default::default() // 语句
+            ..Default::default()                                                       // 语句
         } // 块结束
     } // 块结束
     #[cfg(not(any(target_os = "android", target_os = "ios")))] // 语句
-    { // 语句
-        eframe::NativeOptions { // 语句
+    {
+        // 语句
+        eframe::NativeOptions {
+            // 语句
             viewport: egui::ViewportBuilder::default() // 语句
                 .with_inner_size([1080.0, 720.0]) // 语句
                 .with_min_inner_size([360.0, 560.0]) // 语句
@@ -61,11 +66,13 @@ pub fn native_options() -> eframe::NativeOptions { // 函数 native_options
 } // 块结束
 
 /// Run the desktop app (used by the `wallpaper-rs` binary).
-pub fn run_desktop() -> eframe::Result<()> { // 函数 run_desktop
+pub fn run_desktop() -> eframe::Result<()> {
+    // 函数 run_desktop
     let native = native_options(); // 变量 native
-    eframe::run_native( // 调用 run_native
-        "wallpaper-rs", // 语句
-        native, // 语句
+    eframe::run_native(
+        // 调用 run_native
+        "wallpaper-rs",                                 // 语句
+        native,                                         // 语句
         Box::new(|cc| Ok(Box::new(app::App::new(cc)))), // 字段 Box
     ) // 块结束
 } // 块结束
