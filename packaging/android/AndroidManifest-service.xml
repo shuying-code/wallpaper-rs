@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Merged manifest for the Android APK that carries both:
+    * the native egui app (android.app.NativeActivity -> libwallpaper_rs.so)
+    * the Java video live-wallpaper service (VideoWallpaperService)
+
+  It MUST be linked together with the full resource set (packaging/android/res
+  plus assets/res) in a single `aapt2 link` pass so that the compiled
+  AndroidManifest.xml and resources.arsc agree on resource ids. Linking the
+  manifest and the resource table in separate passes previously assigned
+  @mipmap/ic_launcher conflicting ids (manifest 0x7f010000 vs table 0x7f020000),
+  which made the system throw Resources$NotFoundException when opening
+  NativeActivity (it reads the application icon while setting up the window).
+
+  __VERSION_CODE__ / __VERSION_NAME__ are placeholders filled in by the
+  packaging scripts (package-service-apk.ps1 / .sh) from the base APK that
+  cargo-apk produced, so the merged APK keeps the exact same version the
+  updater expects.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.shuying.wallpaperrs"
+    android:versionCode="__VERSION_CODE__"
+    android:versionName="__VERSION_NAME__" >
+
+    <uses-sdk
+        android:minSdkVersion="24"
+        android:targetSdkVersion="34" />
+
+    <uses-permission android:name="android.permission.SET_WALLPAPER" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+
+    <application
+        android:debuggable="false"
+        android:hasCode="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="Wallpaper Studio" >
+
+        <activity
+            android:name="android.app.NativeActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|navigation|uiMode|density|fontScale|layoutDirection|locale|touchscreen|colorMode"
+            android:exported="true" >
+            <meta-data
+                android:name="android.app.lib_name"
+                android:value="wallpaper_rs" />
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name="com.shuying.wallpaperrs.VideoWallpaperService"
+            android:exported="true"
+            android:permission="android.permission.BIND_WALLPAPER" >
+            <intent-filter>
+                <action android:name="android.service.wallpaper.WallpaperService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.wallpaper"
+                android:resource="@xml/wallpaper" />
+        </service>
+    </application>
+
+</manifest>

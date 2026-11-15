@@ -200,8 +200,18 @@ jobs:
           export CARGO_APK_RELEASE_KEYSTORE_PASSWORD=android
           export CARGO_APK_RELEASE_KEYSTORE_KEY_PASSWORD=android
           cargo apk build --release --lib
+      - name: Bundle video live-wallpaper service into APK
+        env:
+          CARGO_APK_RELEASE_KEYSTORE: ${{ github.workspace }}/release.jks
+          CARGO_APK_RELEASE_KEYSTORE_PASSWORD: android
+          CARGO_APK_RELEASE_KEYSTORE_KEY_PASSWORD: android
+        run: |
+          set -euo pipefail
+          # 将 Java 版 VideoWallpaperService（dex/清单/资源）合并进 cargo-apk 产物，
+          # 发行 APK 才能提供「视频动态壁纸」通道。
+          bash packaging/android/package-service-apk.sh
           mkdir -p dist
-          cp target/release/apk/wallpaper-rs.apk dist/wallpaper-rs-android-universal.apk
+          cp target/release/apk/wallpaper-rs-android-video.apk dist/wallpaper-rs-android-universal.apk
       - uses: actions/upload-artifact@v4
         with:
           name: android
