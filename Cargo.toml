@@ -1,6 +1,6 @@
 [package]
 name = "wallpaper-rs"
-version = "0.14.10"
+version = "0.14.11"
 edition = "2021"
 description = "Cross-platform desktop wallpaper app (Windows/macOS/Linux): fixed wallpaper or slideshow/rotation, built with Rust + egui."
 license = "MIT"
@@ -82,6 +82,7 @@ target_sdk_version = 34
 [package.metadata.android.application]
 label = "Wallpaper Studio"
 icon = "@mipmap/ic_launcher"
+has_code = true
 
 # 关键：接管所有常见配置变化，避免系统在配置变化时销毁并重建 Activity。
 # NativeActivity 重建时会在 `unloadNativeCode` 里 `dlclose` 本库，而原生事件循环

@@ -2,6 +2,39 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.14.11] - 2026-11-15
+
+### 修复
+- **Android 动态壁纸设置失败（`Method not found: setVideoWallpaper`）**：`WallpaperManager`
+  并不存在 `setVideoWallpaper` 这类 API——Android 的动态壁纸必须由 `WallpaperService`
+  提供。APK 现已内置 `VideoWallpaperService`（MediaPlayer 静音循环播放）：设置时先把
+  视频原子替换到应用私有目录 `files/live-wallpaper/current-video`，再拉起系统
+  「更改动态壁纸」预览页，由用户点「设为壁纸」生效；之后更换视频，服务会按文件 mtime
+  自动重载。
+- **Android 轮播/切换轮到动态壁纸报「当前平台暂不支持桌面动态壁纸」**：Android 改走
+  系统壁纸服务通道（不再落进桌面 mpv 宿主的「不支持」分支）。由于系统要求动态壁纸
+  在预览页手动确认、无法静默切换，轮播/随机切换会自动跳过动态壁纸并在状态栏提示；
+  详情页「设为动态壁纸」仍可正常设置。
+- **Android「动态壁纸锁屏」报「当前平台暂不支持视频截帧」**：改用系统
+  `MediaMetadataRetriever` 截取视频一帧（按旋转元数据校正方向、压缩为 PNG）作为
+  锁屏海报后设置静态锁屏；视频缩略图与首帧海报也由此生成（不再需要 mpv）。
+
+### 变更
+- **Android 打包流程加入「合并动态壁纸服务」步骤**：新增
+  `packaging/android/package-service-apk.sh`（CI / Linux）并与
+  `package-service-apk.ps1`（本地 / Windows）一起，把 Java 服务的 dex、合并清单与
+  资源并入 cargo-apk 产物；发行 APK 因此自带 `VideoWallpaperService`。
+
+## [0.14.10] - 2026-11-15
+
+### Added
+
+- Android：新增通过系统 `WallpaperManager` 设置视频动态壁纸的通道，不再依赖桌面 mpv 宿主。
+
+### Fixed
+
+- Android：设置壁纸前校验目标文件是否存在，避免传入失效路径后静默失败。
+
 ## [0.14.9] - 2026-11-15
 
 ### 修复
@@ -425,13 +458,4 @@
 - 跨平台壁纸设置：Windows `SystemParametersInfoW`、macOS `osascript`、Linux `gsettings`/`feh`。
 - 系统 CJK 字体加载，界面中文无缺字。
 - `--selftest` 自检与 `--version`。
-## [0.14.10] - 2026-11-15
-
-### Added
-
-- Android：新增通过系统 `WallpaperManager` 设置视频动态壁纸的通道，不再依赖桌面 mpv 宿主。
-
-### Fixed
-
-- Android：设置壁纸前校验目标文件是否存在，避免传入失效路径后静默失败。
 
