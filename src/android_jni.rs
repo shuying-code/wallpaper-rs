@@ -204,10 +204,20 @@ pub fn set_wallpaper(path: &std::path::Path, lock: bool) -> Result<(), String> {
     .and_then(|r| r)
 }
 
-/// Set a live wallpaper by copying the video into app-private storage and
-/// handing it to `WallpaperManager` directly. Android live wallpapers run in
-/// a separate service process, so a private file is required for reliable
-/// access (no shell process / SAF indirection).
+/// Set a video as the live wallpaper.
+///
+/// Android has **no** `WallpaperManager.setVideoWallpaper`-style API: live
+/// wallpapers are provided by a `WallpaperService` (`VideoWallpaperService` in
+/// this APK) and applying one always goes through the system preview where the
+/// user taps “设为壁纸”. So we:
+///
+/// 1. copy the video to the stable app-private path
+///    `files/live-wallpaper/current-video` that the service reads;
+/// 2. launch `android.service.wallpaper.CHANGE_LIVE_WALLPAPER` targeting our
+///    bundled `com.shuying.wallpaperrs.VideoWallpaperService`.
+///
+/// The service watches the file mtime, so setting another video later simply
+/// replaces the file and the running wallpaper picks it up.
 pub fn set_dynamic_wallpaper(path: &std::path::Path) -> Result<(), String> {
     if !path.is_file() {
         return Err(format!("动态壁纸视频不存在：{}", path.display()));
@@ -217,32 +227,213 @@ pub fn set_dynamic_wallpaper(path: &std::path::Path) -> Result<(), String> {
         .ok_or_else(|| "Android 运行环境尚未初始化".to_string())?;
     std::fs::create_dir_all(&source_dir).map_err(|e| format!("创建动态壁纸目录失败：{e}"))?;
     let dest = source_dir.join("current-video");
-    std::fs::copy(path, &dest).map_err(|e| format!("复制动态壁纸失败：{e}"))?;
-    let dest = dest.to_string_lossy().to_string();
+    // 先写临时文件再改名：壁纸服务可能正在播放旧文件，原子替换避免读到
+    // 「写了一半」的内容（服务随后按 mtime 检测并重载新视频）。
+    let tmp = source_dir.join("current-video.new");
+    std::fs::copy(path, &tmp).map_err(|e| format!("复制动态壁纸失败：{e}"))?;
+    if let Err(e) = std::fs::rename(&tmp, &dest) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("更新动态壁纸文件失败：{e}"));
+    }
 
     with_env(move |env, app| -> jni::errors::Result<Result<(), String>> {
         let activity = unsafe { JObject::from_raw(env, app.activity_as_ptr() as sys::jobject) };
-        let service = env.new_string("wallpaper")?;
-        let wm = env
-            .call_method(
-                &activity,
-                jni_str!("getSystemService"),
-                jni_sig!("(Ljava/lang/String;)Ljava/lang/Object;"),
-                &[JValue::Object(&service)],
-            )?
-            .l()?;
-        if wm.as_raw().is_null() {
-            return Ok(Err("Android 系统未提供 WallpaperManager".to_string()));
-        }
-        let value = env.new_string(&dest)?;
-        env.call_method(
-            &wm,
-            jni_str!("setVideoWallpaper"),
+        // Intent intent = new Intent("android.service.wallpaper.CHANGE_LIVE_WALLPAPER");
+        let action = env.new_string("android.service.wallpaper.CHANGE_LIVE_WALLPAPER")?;
+        let intent = env.new_object(
+            jni_str!("android/content/Intent"),
             jni_sig!("(Ljava/lang/String;)V"),
-            &[JValue::Object(&value)],
+            &[JValue::Object(&action)],
+        )?;
+        // intent.putExtra("android.service.wallpaper.extra.LIVE_WALLPAPER_COMPONENT", component)
+        let extra_key =
+            env.new_string("android.service.wallpaper.extra.LIVE_WALLPAPER_COMPONENT")?;
+        let extra_value = env
+            .new_string("com.shuying.wallpaperrs/com.shuying.wallpaperrs.VideoWallpaperService")?;
+        env.call_method(
+            &intent,
+            jni_str!("putExtra"),
+            jni_sig!("(Ljava/lang/String;Ljava/lang/String;)Landroid/content/Intent;"),
+            &[JValue::Object(&extra_key), JValue::Object(&extra_value)],
+        )?;
+        // activity.startActivity(intent)：打开系统壁纸预览，用户点「设为壁纸」生效。
+        env.call_method(
+            &activity,
+            jni_str!("startActivity"),
+            jni_sig!("(Landroid/content/Intent;)V"),
+            &[JValue::Object(&intent)],
         )?;
         Ok(Ok(()))
     })
     .map_err(|e| format!("设置动态壁纸失败：{e}"))
     .and_then(|r| r)
+}
+
+/// Extract one frame of a video as a PNG poster (used for the lock screen and
+/// video thumbnails), via the system `MediaMetadataRetriever` — no mpv needed
+/// on Android.
+///
+/// Tries a frame at 1s (`OPTION_CLOSEST_SYNC`, the cheapest decode), then the
+/// first sync frame, then `OPTION_CLOSEST` at 1s; applies the rotation
+/// metadata so portrait videos come out upright; compresses to PNG through
+/// `Bitmap.compress(CompressFormat.PNG, …)`.
+pub fn extract_video_poster(
+    video: &std::path::Path,
+    out: &std::path::Path,
+) -> Result<(), String> {
+    if !video.is_file() {
+        return Err(format!("视频文件不存在：{}", video.display()));
+    }
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("创建海报目录失败：{e}"))?;
+    }
+    let _ = std::fs::remove_file(out);
+    let cleanup = out.to_path_buf();
+    let video = video.to_string_lossy().to_string();
+    let out = out.to_string_lossy().to_string();
+
+    let result = with_env(move |env, _app| -> jni::errors::Result<Result<(), String>> {
+        // MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        let retriever = env.new_object(
+            jni_str!("android/media/MediaMetadataRetriever"),
+            jni_sig!("()V"),
+            &[],
+        )?;
+        // retriever.setDataSource(video);
+        let jvideo = env.new_string(&video)?;
+        env.call_method(
+            &retriever,
+            jni_str!("setDataSource"),
+            jni_sig!("(Ljava/lang/String;)V"),
+            &[JValue::Object(&jvideo)],
+        )?;
+
+        // Bitmap bmp = retriever.getFrameAtTime(timeUs, option)
+        // OPTION_CLOSEST_SYNC = 1（只解关键帧，最省），OPTION_CLOSEST = 2（时间精确）。
+        let mut bmp = JObject::null();
+        for (time_us, option) in [(1_000_000_i64, 1_i32), (0, 1), (1_000_000, 2)] {
+            let frame = env
+                .call_method(
+                    &retriever,
+                    jni_str!("getFrameAtTime"),
+                    jni_sig!("(JI)Landroid/graphics/Bitmap;"),
+                    &[JValue::Long(time_us), JValue::Int(option)],
+                )?
+                .l()?;
+            if !frame.as_raw().is_null() {
+                bmp = frame;
+                break;
+            }
+        }
+        if bmp.as_raw().is_null() {
+            let _ = env.call_method(&retriever, jni_str!("release"), jni_sig!("()V"), &[]);
+            return Ok(Err("视频截帧失败：系统解码器未返回任何帧".to_string()));
+        }
+
+        // 竖拍视频：按 METADATA_KEY_VIDEO_ROTATION(24) 旋转，避免海报横躺。
+        // （借 `Integer.parseInt` 解析元数据字符串，省去 JNI 字符串转换。）
+        let rotation: f32 = env
+            .call_method(
+                &retriever,
+                jni_str!("extractMetadata"),
+                jni_sig!("(I)Ljava/lang/String;"),
+                &[JValue::Int(24)],
+            )
+            .ok()
+            .and_then(|v| v.l().ok())
+            .filter(|s| !s.as_raw().is_null())
+            .and_then(|s| {
+                env.call_static_method(
+                    jni_str!("java/lang/Integer"),
+                    jni_str!("parseInt"),
+                    jni_sig!("(Ljava/lang/String;)I"),
+                    &[JValue::Object(&s)],
+                )
+                .ok()
+                .and_then(|v| v.i().ok())
+                .map(|d| d as f32)
+            })
+            .unwrap_or(0.0);
+        if rotation == 90.0 || rotation == 270.0 {
+            // Matrix matrix = new Matrix(); matrix.postRotate(rotation);
+            let matrix = env.new_object(
+                jni_str!("android/graphics/Matrix"),
+                jni_sig!("()V"),
+                &[],
+            )?;
+            env.call_method(
+                &matrix,
+                jni_str!("postRotate"),
+                jni_sig!("(F)V"),
+                &[JValue::Float(rotation)],
+            )?;
+            let w = env
+                .call_method(&bmp, jni_str!("getWidth"), jni_sig!("()I"), &[])?
+                .i()?;
+            let h = env
+                .call_method(&bmp, jni_str!("getHeight"), jni_sig!("()I"), &[])?
+                .i()?;
+            // Bitmap.createBitmap(bmp, 0, 0, w, h, matrix, true)
+            let rotated = env
+                .call_static_method(
+                    jni_str!("android/graphics/Bitmap"),
+                    jni_str!("createBitmap"),
+                    jni_sig!(
+                        "(Landroid/graphics/Bitmap;IIIILandroid/graphics/Matrix;Z)Landroid/graphics/Bitmap;"
+                    ),
+                    &[
+                        JValue::Object(&bmp),
+                        JValue::Int(0),
+                        JValue::Int(0),
+                        JValue::Int(w),
+                        JValue::Int(h),
+                        JValue::Object(&matrix),
+                        JValue::Bool(true),
+                    ],
+                )?
+                .l()?;
+            if !rotated.as_raw().is_null() {
+                bmp = rotated;
+            }
+        }
+
+        // FileOutputStream fos = new FileOutputStream(out);
+        let jout = env.new_string(&out)?;
+        let fos = env.new_object(
+            jni_str!("java/io/FileOutputStream"),
+            jni_sig!("(Ljava/lang/String;)V"),
+            &[JValue::Object(&jout)],
+        )?;
+        // bmp.compress(Bitmap.CompressFormat.PNG, 100, fos)
+        let png = env
+            .get_static_field(
+                jni_str!("android/graphics/Bitmap$CompressFormat"),
+                jni_str!("PNG"),
+                jni_sig!("Landroid/graphics/Bitmap$CompressFormat;"),
+            )?
+            .l()?;
+        let ok = env
+            .call_method(
+                &bmp,
+                jni_str!("compress"),
+                jni_sig!("(Landroid/graphics/Bitmap$CompressFormat;ILjava/io/OutputStream;)Z"),
+                &[JValue::Object(&png), JValue::Int(100), JValue::Object(&fos)],
+            )?
+            .z()?;
+        env.call_method(&fos, jni_str!("flush"), jni_sig!("()V"), &[])?;
+        env.call_method(&fos, jni_str!("close"), jni_sig!("()V"), &[])?;
+        let _ = env.call_method(&retriever, jni_str!("release"), jni_sig!("()V"), &[]);
+
+        if ok {
+            Ok(Ok(()))
+        } else {
+            Ok(Err("视频截帧失败：PNG 写入失败".to_string()))
+        }
+    })
+    .map_err(|e| format!("视频截帧失败：{e}"))
+    .and_then(|r| r);
+    if result.is_err() {
+        let _ = std::fs::remove_file(&cleanup);
+    }
+    result
 }

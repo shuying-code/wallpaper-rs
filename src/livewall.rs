@@ -43,7 +43,8 @@ pub use unsupported::{
 ///
 /// 顺序：`WALLPAPER_MPV` → exe 同目录 `mpv` → `PATH` 各目录 → 常见安装目录
 /// （含 Linux 各发行版、Snap / Flatpak(用户级)、`~/.local/bin`、macOS Homebrew/MacPorts）。
-#[cfg(not(windows))]
+/// Android 不需要 mpv（动态壁纸由系统壁纸服务提供），故排除。
+#[cfg(all(not(windows), not(target_os = "android")))]
 fn mpv_candidates() -> Vec<std::path::PathBuf> {
     use std::path::{Path, PathBuf};
     let mut c: Vec<PathBuf> = Vec::new();
@@ -80,7 +81,7 @@ fn mpv_candidates() -> Vec<std::path::PathBuf> {
 }
 
 /// 非 Windows 平台共用的 mpv 查找：返回第一个真实存在的候选。
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(target_os = "android")))]
 fn find_mpv_local() -> Option<std::path::PathBuf> {
     mpv_candidates().into_iter().find(|p| p.is_file())
 }
@@ -96,7 +97,11 @@ pub fn mpv_install_hint() -> &'static str {
 /// 供「问题上报」使用：列出 mpv 探测详情（已解析路径 + 各候选是否存在）。
 pub fn mpv_probe_report() -> String {
     let mut s = String::new();
-    #[cfg(not(windows))]
+    #[cfg(target_os = "android")]
+    {
+        s.push_str("mpv 路径  : 不适用（Android 动态壁纸由系统壁纸服务提供，无需 mpv）\n");
+    }
+    #[cfg(all(not(windows), not(target_os = "android")))]
     {
         match find_mpv_local() {
             Some(p) => s.push_str(&format!("mpv 路径  : {}\n", p.display())),
@@ -568,7 +573,9 @@ mod android_imp {
         true
     }
     pub fn set_live_wallpaper(_video: &Path) -> Result<(), String> {
-        Err("动态壁纸由 WallpaperManager 直接处理".to_string())
+        // Android 的动态壁纸经系统壁纸服务（`VideoWallpaperService`）设置，
+        // 由 `android_jni::set_dynamic_wallpaper` 发起，不会走到这里。
+        Err("Android 动态壁纸由系统壁纸服务处理".to_string())
     }
     pub fn stop() -> Result<(), String> {
         Ok(())
@@ -582,8 +589,9 @@ mod android_imp {
     pub fn ensure_mpv() -> Result<PathBuf, String> {
         Ok(PathBuf::new())
     }
-    pub fn poster_frame(_video: &Path, _out: &Path) -> Result<(), String> {
-        Err("当前平台暂不支持视频截帧".to_string())
+    pub fn poster_frame(video: &Path, out: &Path) -> Result<(), String> {
+        // 系统 `MediaMetadataRetriever` 截帧（无需 mpv），用于锁屏海报 / 缩略图。
+        crate::android_jni::extract_video_poster(video, out)
     }
 }
 

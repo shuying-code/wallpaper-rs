@@ -116,6 +116,8 @@ enum WallDone {
     Static {
         path: PathBuf,
         name: String,
+        /// Android：这是「动态壁纸」（已拉起系统预览，需用户点「设为壁纸」确认）。
+        dynamic: bool,
         result: Result<(), String>,
     }, // 语句
     Poster {
@@ -237,6 +239,7 @@ fn spawn_wall_worker() -> (std::sync::mpsc::Sender<WallJob>, Receiver<WallDone>)
                         // 语句
                         path: p.clone(),                           // 字段 path
                         name,                                      // 语句
+                        dynamic: false,                            // 字段 dynamic
                         result: wallpaper::set_wallpaper(&p, fit), // 字段 result
                     } // 块结束
                 } // 块结束
@@ -249,6 +252,7 @@ fn spawn_wall_worker() -> (std::sync::mpsc::Sender<WallJob>, Receiver<WallDone>)
                     WallDone::Static {
                         path: p.clone(),
                         name,
+                        dynamic: true,
                         result: crate::android_jni::set_dynamic_wallpaper(&p),
                     }
                 }
@@ -964,9 +968,42 @@ impl App {
         } // 块结束
     } // 块结束
 
+    /// Android：轮播 / 随机切换要先跳过动态壁纸视频。
+    ///
+    /// 系统要求动态壁纸必须在预览页由用户手动确认，不能静默切换；轮播直接
+    /// 轮换到视频、每次都弹系统预览会不断打断使用。因此轮换时只从静态壁纸里
+    /// 挑选；整份清单都是视频时保持当前壁纸不动并提示（可在详情页手动设置）。
+    #[cfg(target_os = "android")]
+    fn rotation_list(&self, list: Vec<PathBuf>) -> Vec<PathBuf> {
+        let statics: Vec<PathBuf> = list
+            .iter()
+            .filter(|p| !crate::thumbs::is_video_file(p))
+            .cloned()
+            .collect();
+        if statics.is_empty() {
+            list
+        } else {
+            statics
+        }
+    }
+
+    /// Android：轮换目标落到了动态壁纸（整份清单都是视频）时保持当前壁纸不动。
+    #[cfg(target_os = "android")]
+    fn skip_live_video(&mut self, path: &Path) -> bool {
+        if crate::thumbs::is_video_file(path) {
+            self.status =
+                "已跳过动态壁纸（Android 需在详情页手动设置并通过系统确认）".to_string();
+            true
+        } else {
+            false
+        }
+    }
+
     fn advance(&mut self, ctx: &egui::Context) {
         // 函数 advance
         let list = self.slide_paths(); // 变量 list
+        #[cfg(target_os = "android")]
+        let list = self.rotation_list(list); // Android 轮换跳过动态壁纸视频
         if list.is_empty() {
             // 条件分支
             return; // 返回
@@ -992,12 +1029,18 @@ impl App {
             } // 块结束
         }; // 块结束
         let path = list[next].clone(); // 变量 path
+        #[cfg(target_os = "android")]
+        if self.skip_live_video(&path) {
+            return;
+        } // Android 清单均为动态壁纸时保持不动
         self.apply_path(ctx, &path); // 语句
     } // 块结束
 
     fn step_back(&mut self, ctx: &egui::Context) {
         // 函数 step_back
         let list = self.slide_paths(); // 变量 list
+        #[cfg(target_os = "android")]
+        let list = self.rotation_list(list); // Android 轮换跳过动态壁纸视频
         if list.is_empty() {
             // 条件分支
             return; // 返回
@@ -1009,12 +1052,18 @@ impl App {
             None => 0,                                    // 匹配分支
         }; // 块结束
         let path = list[prev].clone(); // 变量 path
+        #[cfg(target_os = "android")]
+        if self.skip_live_video(&path) {
+            return;
+        } // Android 清单均为动态壁纸时保持不动
         self.apply_path(ctx, &path); // 语句
     } // 块结束
 
     fn random_pick(&mut self, ctx: &egui::Context) {
         // 函数 random_pick
         let list = self.slide_paths(); // 变量 list
+        #[cfg(target_os = "android")]
+        let list = self.rotation_list(list); // Android 轮换跳过动态壁纸视频
         if list.is_empty() {
             // 条件分支
             return; // 返回
@@ -1029,6 +1078,10 @@ impl App {
             } // 块结束
         } // 块结束
         let path = list[k].clone(); // 变量 path
+        #[cfg(target_os = "android")]
+        if self.skip_live_video(&path) {
+            return;
+        } // Android 清单均为动态壁纸时保持不动
         self.apply_path(ctx, &path); // 语句
     } // 块结束
 
@@ -6551,14 +6604,29 @@ impl eframe::App for App {
             }; // 块结束
             match done {
                 // 分支匹配
-                WallDone::Static { path, name, result } => {
+                WallDone::Static {
+                    path,
+                    name,
+                    result,
+                    dynamic,
+                } => {
                     // 匹配分支
                     match result {
                         // 分支匹配
+                        // Android 动态壁纸要等用户在系统预览页点「设为壁纸」才真正生效，
+                        // 这里只报告「已打开预览」。
+                        Ok(_) if dynamic => {
+                            self.status =
+                                format!("已打开系统壁纸预览：{name}（点「设为壁纸」生效）")
+                        }
                         Ok(_) => self.status = format!("已设置静态壁纸：{name}"), // 匹配分支
                         Err(e) => {
                             // 匹配分支
-                            self.status = format!("设置静态壁纸失败：{e}"); // 语句
+                            self.status = if dynamic {
+                                format!("设置动态壁纸失败：{e}")
+                            } else {
+                                format!("设置静态壁纸失败：{e}")
+                            }; // 语句
                             crate::report::report_error("设置壁纸", &e); // 调用 report_error
                         } // 块结束
                     } // 块结束
