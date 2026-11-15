@@ -33,7 +33,11 @@ export CARGO_APK_RELEASE_KEYSTORE=/path/to/release.jks
 export CARGO_APK_RELEASE_KEYSTORE_PASSWORD=******
 # 关键：加 --lib，只构建 cdylib（否则 cargo-apk 会把桌面 bin 也当 cdylib 处理而报错）
 cargo apk build --release --lib
-# 产物：target/release/apk/wallpaper-rs.apk
+# 合并内置的「视频动态壁纸」服务（VideoWallpaperService）：
+#   Linux / CI：  bash packaging/android/package-service-apk.sh
+#   Windows 本地：powershell -File packaging/android/package-service-apk.ps1
+# 产物：target/release/apk/wallpaper-rs-android-video.apk（CI 里重命名为
+# wallpaper-rs-android-universal.apk 发布）
 ```
 > 未配置签名时可去掉环境变量构建 **debug** APK（`cargo apk build --lib`，自动使用调试密钥，可直接侧载安装）。
 
@@ -49,6 +53,13 @@ adb install -r wallpaper-rs-android-universal.apk
 - 选择图片目录目前仍需接入系统相册（MediaStore）选择器；当前可在设置里指定目录后扫描，
   在线「每日壁纸」（INTERNET）可直接使用。下一步可接入 Android 照片选择器以完整浏览本机图片。
 - 设置壁纸通过 `WallpaperManager`（需 `SET_WALLPAPER`），已在 `src/wallpaper.rs` 的 android 分支实现。
+- **视频动态壁纸**：APK 内置 `VideoWallpaperService`（Java，MediaPlayer 静音循环播放）。
+  在「网上壁纸库」视频详情页点「设为动态壁纸」后，视频会先复制到应用私有目录，再打开系统
+  「更改动态壁纸」预览页——**需要点「设为壁纸」确认**（Android 平台要求，无法静默切换）；
+  之后更换视频时服务会按文件 mtime 自动重载。轮播/随机切换会自动跳过动态壁纸（避免反复
+  弹出系统确认页），请在详情页手动设置。
+- **动态壁纸锁屏**：Android 锁屏不支持视频，先用系统 `MediaMetadataRetriever` 截取视频一帧
+  （自动校正旋转方向）作海报，再设为静态锁屏；视频缩略图/首帧海报也由它生成。
 
 ---
 
