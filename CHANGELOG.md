@@ -425,3 +425,13 @@
 - 跨平台壁纸设置：Windows `SystemParametersInfoW`、macOS `osascript`、Linux `gsettings`/`feh`。
 - 系统 CJK 字体加载，界面中文无缺字。
 - `--selftest` 自检与 `--version`。
+## [0.14.10] - 2026-11-15
+
+### Added
+
+- Android：新增通过系统 `WallpaperManager` 设置视频动态壁纸的通道，不再依赖桌面 mpv 宿主。
+
+### Fixed
+
+- Android：设置壁纸前校验目标文件是否存在，避免传入失效路径后静默失败。
+
