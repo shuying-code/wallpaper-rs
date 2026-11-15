@@ -787,7 +787,12 @@ impl App {
             // 条件分支
             self.queue_poster(path); // 语句
         } // 块结束
-        self.status = "已加入轮播清单".to_string(); // 语句
+        let kind = if crate::thumbs::is_video_file(path) {
+            "动态"
+        } else {
+            "静态"
+        };
+        self.status = format!("已加入轮播清单（{kind}壁纸）"); // 语句
     } // 块结束
 
     /// Remove `path` from the slideshow playlist, materialising the "all" default
@@ -799,7 +804,12 @@ impl App {
             self.cfg.slideshow = self.images.clone(); // 语句
         } // 块结束
         self.cfg.slideshow.retain(|p| p != path); // 语句
-        self.status = "已从轮播清单移除".to_string(); // 语句
+        let kind = if crate::thumbs::is_video_file(path) {
+            "动态"
+        } else {
+            "静态"
+        };
+        self.status = format!("已从轮播清单移除（{kind}壁纸）"); // 语句
     } // 块结束
 
     /// 保持自定义轮播清单可用：剔除丢失文件，并把当前桌面壁纸补入清单。
@@ -859,7 +869,7 @@ impl App {
             // 是新壁纸，不会「闪过」上一张固定壁纸。
             crate::report::set_scene("切换 → 静态壁纸"); // 语句
             self.pending_live = None; // 取消尚未启动的动态壁纸
-            self.status = format!("正在设置壁纸：{name}"); // 语句
+            self.status = format!("正在设置静态壁纸：{name}"); // 语句
             self.submit_set_static(path); // 调用 submit_set_static
                                           // 新静态图铺好后收掉动态壁纸宿主（无宿主时为空操作）。不先判断
                                           // `active_video()`：宿主可能是刚刚提交、还没建好的（异步），此时它返回
@@ -1341,7 +1351,7 @@ impl App {
             } // 块结束
         }; // 块结束
         self.submit_set_static(&path); // 后台设置，避免 SPI 广播阻塞 UI
-        self.status = format!("正在设置桌面壁纸：{title}"); // 语句
+        self.status = format!("正在设置静态壁纸：{title}"); // 语句
     } // 块结束
 
     fn set_lock_from_current(&mut self) {
@@ -1405,7 +1415,7 @@ impl App {
         // 函数 apply_lock_screen
         match wallpaper::set_lock_screen(path) {
             // 分支匹配
-            Ok(_) => self.status = "已设置锁屏壁纸".to_string(), // 匹配分支
+            Ok(_) => self.status = "已设置静态锁屏壁纸".to_string(), // 匹配分支
             Err(e) if e.needs_admin && !crate::elevate::is_elevated() => {
                 // 匹配分支
                 // 提权会弹 UAC 并 `WaitForSingleObject(INFINITE)` 等子进程完成，可能阻塞
@@ -1452,7 +1462,7 @@ impl App {
         ui.add_space(2.0); // 语句
         ui.label( // 语句
             RichText::new( // 调用 new
-                "联网获取 Bing 每日壁纸（cn.bing.com，国内可直接访问）。可设为桌面 / 锁屏、赞或踩、切换上一张/下一张，并支持每日自动更换。", // 语句
+                "联网获取 Bing 每日静态壁纸（cn.bing.com，国内可直接访问）。可设为静态桌面 / 静态锁屏、赞或踩、切换上一张/下一张，并支持每日自动更换。", // 语句
             ) // 块结束
             .size(11.5) // 语句
             .color(theme::subtext()), // 语句
@@ -1470,7 +1480,7 @@ impl App {
                     ui.label(
                         // 语句
                         RichText::new(format!( // 调用 new
-                            "⚠ 检测到可能在接管桌面壁纸的程序：{}。若点击「设为桌面壁纸」后桌面没有变化，请退出该程序（例如华硕 Armoury Crate 的 Aura 壁纸功能）后重试。", // 语句
+                            "⚠ 检测到可能在接管桌面壁纸的程序：{}。若点击「设为静态桌面壁纸」后桌面没有变化，请退出该程序（例如华硕 Armoury Crate 的 Aura 壁纸功能）后重试。", // 语句
                             self.wallpaper_managers.join("、") // 语句
                         )) // 语句
                         .size(11.5) // 语句
@@ -1530,7 +1540,7 @@ impl App {
                             } // 块结束
                         } // 块结束
                         let mut a = self.cfg.online_auto_set; // 变量 a
-                        if ui.checkbox(&mut a, "获取后自动设为桌面").changed() {
+                        if ui.checkbox(&mut a, "获取后自动设为静态桌面").changed() {
                             // 条件分支
                             self.cfg.online_auto_set = a; // 语句
                         } // 块结束
@@ -1574,7 +1584,7 @@ impl App {
                                 } // 块结束
                             } // 块结束
                             let mut a = self.cfg.online_auto_set; // 变量 a
-                            if ui.checkbox(&mut a, "获取后自动设为桌面").changed() {
+                            if ui.checkbox(&mut a, "获取后自动设为静态桌面").changed() {
                                 // 条件分支
                                 self.cfg.online_auto_set = a; // 语句
                             } // 块结束
@@ -1723,11 +1733,11 @@ impl App {
                 ui.add_space(10.0); // 语句
                 ui.horizontal_wrapped(|ui| {
                     // 语句
-                    if primary_button(ui, "设为桌面壁纸").clicked() {
+                    if primary_button(ui, "设为静态桌面壁纸").clicked() {
                         // 条件分支
                         self.apply_online_wallpaper(); // 语句
                     } // 块结束
-                    if ghost_button(ui, "设为锁屏").clicked() {
+                    if ghost_button(ui, "设为静态锁屏").clicked() {
                         // 条件分支
                         self.set_lock_from_online(); // 语句
                     } // 块结束
@@ -1736,17 +1746,17 @@ impl App {
                         // 条件分支
                         let in_pl = self.in_playlist(&opath); // 变量 in_pl
                         let lbl = if in_pl {
-                            "移出轮播"
+                            "移出静态轮播"
                         } else {
-                            "+ 加入轮播"
+                            "+ 加入静态轮播"
                         }; // 变量 lbl
                         if ghost_button(ui, lbl) // 条件分支
                             .on_hover_text(if in_pl {
                                 // 语句
-                                "从轮播清单移除这张每日壁纸" // 语句
+                                "从轮播清单移除这张静态每日壁纸" // 语句
                             } else {
                                 // 语句
-                                "把这张每日壁纸加入轮播清单" // 语句
+                                "把这张静态每日壁纸加入轮播清单" // 语句
                             }) // 语句
                             .clicked()
                         // 语句
@@ -1881,7 +1891,7 @@ impl App {
         match kind {
             WebApply::Wallpaper => {
                 self.submit_set_static(&path); // 后台设置，避免 SPI 广播阻塞 UI
-                self.status = format!("正在设置桌面壁纸：{}", full.title);
+                self.status = format!("正在设置静态壁纸：{}", full.title);
             }
             WebApply::Lock => self.apply_lock_screen(&path),
             WebApply::Save => self.web_save(full),
@@ -2323,11 +2333,11 @@ impl App {
         ui.add_space(2.0); // 语句
         let note = if s.video {
             // 变量 note
-            "联网浏览动态壁纸站：支持关键词搜索、按分类浏览、分页翻页；可下载封面设为桌面/锁屏，也可下载动态 MP4，或直接「设为动态壁纸」。"
+            "联网浏览动态壁纸站：支持关键词搜索、按分类浏览、分页翻页；封面可设为静态桌面 / 静态锁屏，也可下载动态壁纸 MP4，或直接「设为动态壁纸（MP4）」。"
         // 语句
         } else {
             // 语句
-            "联网浏览高清壁纸：支持关键词搜索、按分类浏览、分页翻页；可下载原图、设为桌面壁纸或锁屏。"
+            "联网浏览静态壁纸站：支持关键词搜索、按分类浏览、分页翻页；可下载静态原图、设为静态桌面壁纸或静态锁屏。"
             // 语句
         }; // 块结束
         ui.label(
@@ -2707,11 +2717,16 @@ impl App {
                             .color(theme::subtext()), // 语句
                         ); // 块结束
                     } // 块结束
+                    if full.as_ref().map(|f| f.video.is_some()).unwrap_or(false) {
+                        chip(ui, "🎬 动态壁纸", theme::accent(), Color32::WHITE);
+                    } else {
+                        chip(ui, "🖼 静态壁纸", theme::extreme(), theme::text());
+                    }
                 }); // 语句
                 ui.add_space(8.0); // 语句
                 ui.horizontal_wrapped(|ui| {
                     // 语句
-                    if primary_button(ui, "设为桌面壁纸").clicked() {
+                    if primary_button(ui, "设为静态桌面壁纸").clicked() {
                         // 条件分支
                         if full.is_some() {
                             // 条件分支
@@ -2722,7 +2737,7 @@ impl App {
                             self.web_prepare(id); // 语句
                         } // 块结束
                     } // 块结束
-                    if ghost_button(ui, "设为锁屏").clicked() {
+                    if ghost_button(ui, "设为静态锁屏").clicked() {
                         // 条件分支
                         if full.is_some() {
                             // 条件分支
@@ -2733,7 +2748,7 @@ impl App {
                             self.web_prepare(id); // 语句
                         } // 块结束
                     } // 块结束
-                    if ghost_button(ui, "下载原图").clicked() {
+                    if ghost_button(ui, "下载静态原图").clicked() {
                         // 条件分支
                         if full.is_some() {
                             // 条件分支
@@ -2757,7 +2772,7 @@ impl App {
                                 ); // 语句
                             } // 块结束
                               // 设为动态壁纸：已下载过就直接设置，否则先下载再自动设置。
-                            if ghost_button(ui, "设为动态壁纸").clicked() {
+                            if ghost_button(ui, "设为动态壁纸（MP4）").clicked() {
                                 // 条件分支
                                 let dest = self.web_save_dir().join(&name); // 变量 dest
                                 if dest.is_file() {
@@ -2774,7 +2789,7 @@ impl App {
                                 } // 块结束
                             } // 块结束
                               // 设为锁屏：Windows 锁屏只能设置静态图片，这里从视频截取一帧作为锁屏海报。
-                            if ghost_button(ui, "设为锁屏(动态)").clicked() {
+                            if ghost_button(ui, "设为静态锁屏帧").clicked() {
                                 // 条件分支
                                 let dest = self.web_save_dir().join(&name); // 变量 dest
                                 if dest.is_file() {
@@ -2853,9 +2868,9 @@ impl App {
                         let in_pl = self.in_playlist(&f.path); // 变量 in_pl
                                                                // 封面原图加入轮播；动态条目另有「＋ 轮播(原视频)」按钮。
                         let lbl = if in_pl {
-                            "移出轮播(原图)"
+                            "移出静态轮播(原图)"
                         } else {
-                            "＋ 轮播(原图)"
+                            "＋ 静态轮播(原图)"
                         }; // 变量 lbl
                         if ghost_button(ui, lbl).clicked() {
                             // 条件分支
@@ -3009,14 +3024,14 @@ impl App {
                             // 条件分支
                             let badge = egui::Rect::from_min_size(
                                 rect.left_top() + Vec2::new(6.0, 6.0),
-                                Vec2::new(48.0, 18.0),
+                                Vec2::new(92.0, 20.0),
                             ); // 变量 badge
                             painter.rect_filled(badge, Rounding::same(9.0), theme::accent()); // 语句
                             painter.text(
                                 badge.center(),
                                 egui::Align2::CENTER_CENTER,
-                                "▶ MP4",
-                                egui::FontId::proportional(10.5),
+                                "▶ 动态壁纸",
+                                egui::FontId::proportional(10.0),
                                 Color32::WHITE,
                             ); // 语句
                         } // 块结束
@@ -4093,9 +4108,9 @@ impl App {
                                     pill.center(),               // 语句
                                     egui::Align2::CENTER_CENTER, // 字段 egui
                                     if is_video {
-                                        "设为动态壁纸"
+                                        "设为动态壁纸（MP4）"
                                     } else {
-                                        "设为壁纸"
+                                        "设为静态壁纸"
                                     }, // 语句
                                     egui::FontId::proportional(12.5), // 字段 egui
                                     Color32::WHITE,              // 字段 Color32
@@ -4177,6 +4192,11 @@ impl App {
                                     ui.label(RichText::new(ext).size(9.5).color(theme::subtext()));
                                     // 语句
                                 }); // 语句
+                            if is_video {
+                                chip(ui, "🎬 动态壁纸", theme::accent(), Color32::WHITE);
+                            } else {
+                                chip(ui, "🖼 静态壁纸", theme::extreme(), theme::text());
+                            }
                             if is_current {
                                 // 条件分支
                                 ui.label(RichText::new("● 当前").size(11.0).color(theme::ok()));
@@ -4187,9 +4207,9 @@ impl App {
                                     egui::Button::new(
                                         // 调用 new
                                         RichText::new(if is_video {
-                                            "设为动态壁纸"
+                                            "设为动态壁纸（MP4）"
                                         } else {
-                                            "设为壁纸"
+                                            "设为静态壁纸"
                                         }) // 调用 new
                                         .size(11.0) // 语句
                                         .color(theme::accent()), // 字段 RichText
@@ -4209,12 +4229,12 @@ impl App {
                             && ui // 语句
                                 .add( // 语句
                                     egui::Button::new( // 调用 new
-                                        RichText::new("设为锁屏").size(11.0).color(theme::subtext()), // 调用 new
+                                        RichText::new("设为静态锁屏帧").size(11.0).color(theme::subtext()), // 调用 new
                                     ) // 块结束
                                     .fill(theme::extreme()) // 语句
                                     .rounding(Rounding::same(7.0)), // 语句
                                 ) // 块结束
-                                .on_hover_text("从视频截取一帧作为锁屏壁纸") // 语句
+                                .on_hover_text("从动态壁纸截取一帧，作为静态锁屏图片") // 语句
                                 .clicked()
                             // 语句
                             {
@@ -4240,9 +4260,9 @@ impl App {
                                     .rounding(Rounding::same(7.0)), // 语句
                             ) // 块结束
                             .on_hover_text(if in_pl { // 语句
-                                "从轮播清单移除" // 语句
+                                "从轮播清单移除该壁纸" // 语句
                             } else { // 语句
-                                "加入轮播清单" // 语句
+                                "加入轮播清单（静态图显示图片，视频播放动态壁纸）" // 语句
                             }) // 语句
                             .clicked() // 语句
                         { // 语句
@@ -4375,6 +4395,25 @@ impl App {
                         egui::FontId::proportional(11.5), // 字段 egui
                         chip_col,                         // 语句
                     ); // 块结束
+                    let is_current_video = cur
+                        .as_deref()
+                        .map(crate::thumbs::is_video_file)
+                        .unwrap_or(false);
+                    let type_txt = if is_current_video {
+                        "🎬 动态壁纸"
+                    } else {
+                        "🖼 静态壁纸"
+                    };
+                    let (type_fill, type_col) = if is_current_video {
+                        (theme::accent(), Color32::WHITE)
+                    } else {
+                        (theme::extreme(), theme::text())
+                    };
+                    let tg = painter.layout_no_wrap(
+                        type_txt.to_string(),
+                        egui::FontId::proportional(11.5),
+                        type_col,
+                    );
                     let cw = g.size().x + 22.0; // 变量 cw
                     let pill = egui::Rect::from_min_size(
                         // 变量 pill
@@ -4388,7 +4427,18 @@ impl App {
                         g,                                                                  // 语句
                         chip_col,                                                           // 语句
                     ); // 块结束
-                       // filename pill (bottom-left)
+                    let tg_size = tg.size();
+                    let tpill = egui::Rect::from_min_size(
+                        egui::pos2(pill.right() + 8.0, pill.top()),
+                        egui::vec2(tg_size.x + 22.0, pill.height()),
+                    );
+                    painter.rect_filled(tpill, Rounding::same(13.0), type_fill);
+                    painter.galley(
+                        egui::pos2(tpill.left() + 11.0, tpill.center().y - tg_size.y * 0.5),
+                        tg,
+                        type_col,
+                    );
+                    // filename pill (bottom-left)
                     if let Some(pth) = &cur {
                         // 条件分支
                         let name = pth // 变量 name
@@ -4637,7 +4687,7 @@ impl App {
                     ui.add_space(6.0); // 语句
                     ui.label(
                         // 语句
-                        RichText::new("固定模式：在「本地壁纸库」点击任意图片即可设为桌面壁纸。") // 调用 new
+                        RichText::new("固定模式：在「本地壁纸库」点击静态壁纸即可设为静态桌面壁纸；点击视频则设为动态壁纸。") // 调用 new
                             .size(12.0) // 语句
                             .color(theme::subtext()), // 语句
                     ); // 块结束
@@ -4721,9 +4771,9 @@ impl App {
                 ui.add_space(4.0); // 语句
                 ui.label( // 语句
                     RichText::new(if using_all { // 调用 new
-                        "尚未自定义清单：当前轮播本地壁纸库全部图片。可在「本地壁纸库」或「每日壁纸」点「加入轮播 / 移出轮播」来自定义。" // 语句
+                        "尚未自定义清单：当前轮播本地壁纸库全部内容。静态壁纸显示为桌面图片，动态壁纸用 MP4 循环播放。可在「本地壁纸库」或「每日壁纸」点「加入轮播 / 移出轮播」来自定义。" // 语句
                     } else { // 语句
-                        "以下图片将按顺序（或随机）轮播；点「移除」可从清单去掉，「设为当前」立即切换。" // 语句
+                        "以下内容按顺序（或随机）轮播：静态壁纸显示为桌面图片，动态壁纸用 MP4 循环播放；点「移除」可从清单去掉，「设为当前」立即切换。" // 语句
                     }) // 语句
                     .size(11.5) // 语句
                     .color(theme::subtext()), // 语句
@@ -4733,9 +4783,11 @@ impl App {
                     // 条件分支
                     ui.label(
                         // 语句
-                        RichText::new("清单为空，请到「本地壁纸库」或「每日壁纸」添加图片。") // 调用 new
-                            .size(12.0) // 语句
-                            .color(theme::subtext()), // 语句
+                        RichText::new(
+                            "清单为空，请到「本地壁纸库」或「每日壁纸」添加静态壁纸或动态壁纸。",
+                        ) // 调用 new
+                        .size(12.0) // 语句
+                        .color(theme::subtext()), // 语句
                     ); // 块结束
                     return; // 返回
                 } // 块结束
@@ -4749,146 +4801,181 @@ impl App {
                         // 调用 vertical
                         for path in stored.iter().take(cap) {
                             // 循环
-                            ui.horizontal(|ui| {
-                                // 语句
-                                let is_current = current.as_deref() == Some(path.as_path());
-                                let (rect, resp) = ui.allocate_exact_size(
-                                    // 调用 let
-                                    Vec2::new(64.0, 40.0), // 字段 Vec2
-                                    egui::Sense::click(),  // 字段 egui
-                                ); // 块结束
-                                   // 视频（动态壁纸）：有首帧海报就用海报当缩略图，没有则显示 ▶。
-                                let tex_key = self.thumb_source(path); // 变量 tex_key
-                                if let Some(k) = tex_key.as_deref() {
-                                    // 条件分支
-                                    if ui.is_rect_visible(rect) // 语句
+                            let is_current = current.as_deref() == Some(path.as_path());
+                            let row_fill = if is_current {
+                                theme::accent_soft()
+                            } else {
+                                Color32::TRANSPARENT
+                            };
+                            let row_stroke = if is_current {
+                                Stroke::new(1.5_f32, theme::accent())
+                            } else {
+                                Stroke::NONE
+                            };
+                            egui::Frame::none()
+                                .fill(row_fill)
+                                .stroke(row_stroke)
+                                .rounding(Rounding::same(10.0))
+                                .inner_margin(egui::Margin::symmetric(8.0, 5.0))
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.horizontal(|ui| {
+                                        // 语句
+                                        let (rect, resp) = ui.allocate_exact_size(
+                                            // 调用 let
+                                            Vec2::new(64.0, 40.0), // 字段 Vec2
+                                            egui::Sense::click(),  // 字段 egui
+                                        ); // 块结束
+                                           // 视频（动态壁纸）：有首帧海报就用海报当缩略图，没有则显示 ▶。
+                                        let tex_key = self.thumb_source(path); // 变量 tex_key
+                                        if let Some(k) = tex_key.as_deref() {
+                                            // 条件分支
+                                            if ui.is_rect_visible(rect) // 语句
                                     && !self.tex_cache.contains_key(k) // 语句
                                     && !self.thumb.is_requested(k)
-                                    // 语句
-                                    {
-                                        // 语句
-                                        self.thumb.request(k); // 语句
-                                    } // 块结束
-                                } // 块结束
-                                {
-                                    // 语句
-                                    let painter = ui.painter(); // 变量 painter
-                                    painter.rect_filled(
-                                        rect,
-                                        Rounding::same(6.0),
-                                        if is_current {
-                                            theme::accent2()
-                                        } else {
-                                            theme::extreme()
-                                        },
-                                    ); // 语句
-                                    let mut drew = false; // 变量 drew
-                                    if let Some(k) = tex_key.as_deref() {
-                                        // 条件分支
-                                        if let Some(Some(tex)) = self.tex_cache.get(k) {
-                                            // 条件分支
-                                            let ts = tex.size(); // 变量 ts
-                                            let (tw, th) = (ts[0] as f32, ts[1] as f32); // 调用 let
-                                            if tw > 0.0 && th > 0.0 {
+                                            // 语句
+                                            {
+                                                // 语句
+                                                self.thumb.request(k); // 语句
+                                            } // 块结束
+                                        } // 块结束
+                                        {
+                                            // 语句
+                                            let painter = ui.painter(); // 变量 painter
+                                            painter.rect_filled(
+                                                rect,
+                                                Rounding::same(6.0),
+                                                if is_current {
+                                                    theme::accent2()
+                                                } else {
+                                                    theme::extreme()
+                                                },
+                                            ); // 语句
+                                            let mut drew = false; // 变量 drew
+                                            if let Some(k) = tex_key.as_deref() {
                                                 // 条件分支
-                                                let s = (rect.width() / tw).min(rect.height() / th); // 变量 s
-                                                let ir = egui::Rect::from_center_size(
-                                                    // 变量 ir
-                                                    rect.center(),             // 语句
-                                                    Vec2::new(tw * s, th * s), // 字段 Vec2
-                                                ); // 块结束
-                                                painter.image(
+                                                if let Some(Some(tex)) = self.tex_cache.get(k) {
+                                                    // 条件分支
+                                                    let ts = tex.size(); // 变量 ts
+                                                    let (tw, th) = (ts[0] as f32, ts[1] as f32); // 调用 let
+                                                    if tw > 0.0 && th > 0.0 {
+                                                        // 条件分支
+                                                        let s = (rect.width() / tw)
+                                                            .min(rect.height() / th); // 变量 s
+                                                        let ir = egui::Rect::from_center_size(
+                                                            // 变量 ir
+                                                            rect.center(), // 语句
+                                                            Vec2::new(tw * s, th * s), // 字段 Vec2
+                                                        ); // 块结束
+                                                        painter.image(
+                                                            // 语句
+                                                            tex.id(), // 语句
+                                                            ir,       // 语句
+                                                            egui::Rect::from_min_max(
+                                                                // 调用 from_min_max
+                                                                egui::pos2(0.0, 0.0), // 字段 egui
+                                                                egui::pos2(1.0, 1.0), // 字段 egui
+                                                            ), // 语句
+                                                            Color32::WHITE, // 字段 Color32
+                                                        ); // 块结束
+                                                    } // 块结束
+                                                    drew = true; // 语句
+                                                } // 块结束
+                                            } // 块结束
+                                            if !drew {
+                                                // 条件分支
+                                                // 无海报的视频 / 载入失败的图片：占位符。
+                                                painter.text(
                                                     // 语句
-                                                    tex.id(), // 语句
-                                                    ir,       // 语句
-                                                    egui::Rect::from_min_max(
-                                                        // 调用 from_min_max
-                                                        egui::pos2(0.0, 0.0), // 字段 egui
-                                                        egui::pos2(1.0, 1.0), // 字段 egui
-                                                    ), // 语句
-                                                    Color32::WHITE, // 字段 Color32
+                                                    rect.center(),               // 语句
+                                                    egui::Align2::CENTER_CENTER, // 字段 egui
+                                                    if crate::thumbs::is_video_file(path) {
+                                                        "▶"
+                                                    } else {
+                                                        "🖼"
+                                                    }, // 语句
+                                                    egui::FontId::proportional(16.0), // 字段 egui
+                                                    theme::accent(),             // 字段 theme
                                                 ); // 块结束
                                             } // 块结束
-                                            drew = true; // 语句
                                         } // 块结束
-                                    } // 块结束
-                                    if !drew {
-                                        // 条件分支
-                                        // 无海报的视频 / 载入失败的图片：占位符。
-                                        painter.text(
+                                        if resp.clicked() {
+                                            // 条件分支
+                                            actions.push(Action::SetPath(path.clone()));
                                             // 语句
-                                            rect.center(),               // 语句
-                                            egui::Align2::CENTER_CENTER, // 字段 egui
-                                            if crate::thumbs::is_video_file(path) {
-                                                "▶"
-                                            } else {
-                                                "🖼"
-                                            }, // 语句
-                                            egui::FontId::proportional(16.0), // 字段 egui
-                                            theme::accent(),             // 字段 theme
-                                        ); // 块结束
-                                    } // 块结束
-                                } // 块结束
-                                if resp.clicked() {
-                                    // 条件分支
-                                    actions.push(Action::SetPath(path.clone()));
-                                    // 语句
-                                } // 块结束
-                                let name = path // 变量 name
+                                        } // 块结束
+                                        let name = path // 变量 name
                                     .file_name() // 语句
                                     .map(|s| s.to_string_lossy().to_string()) // 语句
                                     .unwrap_or_default(); // 语句
-                                ui.add_space(8.0); // 语句
-                                ui.add(egui::Label::new(
-                                    // 语句
-                                    RichText::new(if is_current {
-                                        format!("● {}", ellipsis(&name, 28))
-                                    } else {
-                                        ellipsis(&name, 30)
-                                    })
-                                    .size(12.0)
-                                    .color(if is_current {
-                                        Color32::WHITE
-                                    } else {
-                                        theme::text()
-                                    }),
-                                )); // 语句
-                                if !self.compact {
-                                    // 条件分支
-                                    ui.with_layout(
-                                        // 语句
-                                        egui::Layout::right_to_left(egui::Align::Center), // 字段 egui
-                                        |ui| {
+                                        ui.add_space(8.0); // 语句
+                                        ui.add(egui::Label::new(
                                             // 语句
-                                            if ghost_button(ui, "移除").clicked() {
-                                                // 条件分支
-                                                to_remove = Some(path.clone()); // 语句
-                                            } // 块结束
+                                            RichText::new(if is_current {
+                                                format!("● {}", ellipsis(&name, 28))
+                                            } else {
+                                                ellipsis(&name, 30)
+                                            })
+                                            .size(12.0)
+                                            .color(if is_current {
+                                                Color32::WHITE
+                                            } else {
+                                                theme::text()
+                                            })
+                                            .strong(),
+                                        )); // 语句
+                                        ui.label(
+                                            RichText::new(if crate::thumbs::is_video_file(path) {
+                                                "🎬 动态壁纸"
+                                            } else {
+                                                "🖼 静态壁纸"
+                                            })
+                                            .size(10.5)
+                                            .color(if crate::thumbs::is_video_file(path) {
+                                                theme::accent()
+                                            } else {
+                                                theme::subtext()
+                                            })
+                                            .strong(),
+                                        );
+                                        if !self.compact {
+                                            // 条件分支
+                                            ui.with_layout(
+                                                // 语句
+                                                egui::Layout::right_to_left(egui::Align::Center), // 字段 egui
+                                                |ui| {
+                                                    // 语句
+                                                    if ghost_button(ui, "移除").clicked() {
+                                                        // 条件分支
+                                                        to_remove = Some(path.clone());
+                                                        // 语句
+                                                    } // 块结束
+                                                    if ghost_button(ui, "设为当前").clicked() {
+                                                        // 条件分支
+                                                        actions.push(Action::SetPath(path.clone()));
+                                                        // 语句
+                                                    } // 块结束
+                                                }, // 块结束
+                                            ); // 块结束
+                                        } // 块结束
+                                    }); // 语句
+                                    if self.compact {
+                                        // 条件分支
+                                        // 紧凑布局：操作按钮换到文件名下方一行，避免横向溢出。
+                                        ui.horizontal_wrapped(|ui| {
+                                            // 语句
                                             if ghost_button(ui, "设为当前").clicked() {
                                                 // 条件分支
                                                 actions.push(Action::SetPath(path.clone()));
                                                 // 语句
                                             } // 块结束
-                                        }, // 块结束
-                                    ); // 块结束
-                                } // 块结束
-                            }); // 语句
-                            if self.compact {
-                                // 条件分支
-                                // 紧凑布局：操作按钮换到文件名下方一行，避免横向溢出。
-                                ui.horizontal_wrapped(|ui| {
-                                    // 语句
-                                    if ghost_button(ui, "设为当前").clicked() {
-                                        // 条件分支
-                                        actions.push(Action::SetPath(path.clone()));
-                                        // 语句
+                                            if ghost_button(ui, "移除").clicked() {
+                                                // 条件分支
+                                                to_remove = Some(path.clone()); // 语句
+                                            } // 块结束
+                                        }); // 语句
                                     } // 块结束
-                                    if ghost_button(ui, "移除").clicked() {
-                                        // 条件分支
-                                        to_remove = Some(path.clone()); // 语句
-                                    } // 块结束
-                                }); // 语句
-                            } // 块结束
+                                }); // 行高亮框结束
                             ui.add_space(4.0); // 语句
                         } // 块结束
                         if stored.len() > cap {
@@ -5338,14 +5425,14 @@ impl App {
                 section_header(ui, "锁屏壁纸"); // 调用 section_header
                 ui.add_space(4.0); // 语句
                 ui.label( // 语句
-                    RichText::new("把当前壁纸同时设为系统锁屏。Windows 通过 PersonalizationCSP 写入 HKLM，首次点击会弹出系统管理员授权（UAC），点「是」后自动完成，无需手动以管理员身份运行；Ubuntu / GNOME 通过 gsettings 设置锁屏 picture-uri；macOS 锁屏跟随系统壁纸。") // 调用 new
+                        RichText::new("把当前静态壁纸设为系统锁屏；动态壁纸会先截取一帧再设为静态锁屏。Windows 通过 PersonalizationCSP 写入 HKLM，首次点击会弹出系统管理员授权（UAC），点「是」后自动完成，无需手动以管理员身份运行；Ubuntu / GNOME 通过 gsettings 设置锁屏 picture-uri；macOS 锁屏跟随系统壁纸。") // 调用 new
                         .size(11.5) // 语句
                         .color(theme::subtext()), // 语句
                 ); // 块结束
                 ui.add_space(12.0); // 语句
                 ui.horizontal_wrapped(|ui| {
                     // 语句
-                    if primary_button(ui, "将当前壁纸设为锁屏").clicked() {
+                    if primary_button(ui, "将当前静态壁纸设为静态锁屏").clicked() {
                         // 条件分支
                         self.set_lock_from_current(); // 语句
                     } // 块结束
@@ -5505,7 +5592,7 @@ impl App {
                 let features = [
                     // 变量 features
                     ("📁", "批量载入", "从本地文件夹载入图片，可递归子目录"), // 语句
-                    ("📌", "固定壁纸", "点击任意图片即设为桌面壁纸"),         // 语句
+                    ("📌", "固定壁纸", "静态图片设为静态壁纸；视频设为动态壁纸"), // 语句
                     (
                         "🎞",
                         "自动轮播",
@@ -6124,10 +6211,10 @@ impl eframe::App for App {
                     // 匹配分支
                     match result {
                         // 分支匹配
-                        Ok(_) => self.status = format!("已设置壁纸：{name}"), // 匹配分支
+                        Ok(_) => self.status = format!("已设置静态壁纸：{name}"), // 匹配分支
                         Err(e) => {
                             // 匹配分支
-                            self.status = format!("设置失败：{e}"); // 语句
+                            self.status = format!("设置静态壁纸失败：{e}"); // 语句
                             crate::report::report_error("设置壁纸", &e); // 调用 report_error
                         } // 块结束
                     } // 块结束
