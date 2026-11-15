@@ -154,6 +154,9 @@ const FLAG_LOCK: i32 = 2;
 /// `lock` selects the lock screen instead of the home screen. `fit` is ignored
 /// on Android (the system applies its own crop / zoom).
 pub fn set_wallpaper(path: &std::path::Path, lock: bool) -> Result<(), String> {
+    if !path.is_file() {
+        return Err(format!("壁纸文件不存在：{}", path.display()));
+    }
     let path = path.to_string_lossy().to_string();
     with_env(move |env, app| -> jni::errors::Result<Result<(), String>> {
         // SAFETY: as above — a global reference valid for the app lifetime.
@@ -198,5 +201,48 @@ pub fn set_wallpaper(path: &std::path::Path, lock: bool) -> Result<(), String> {
         Ok(Ok(()))
     })
     .map_err(|e| format!("设置壁纸失败：{e}"))
+    .and_then(|r| r)
+}
+
+/// Set a live wallpaper by copying the video into app-private storage and
+/// handing it to `WallpaperManager` directly. Android live wallpapers run in
+/// a separate service process, so a private file is required for reliable
+/// access (no shell process / SAF indirection).
+pub fn set_dynamic_wallpaper(path: &std::path::Path) -> Result<(), String> {
+    if !path.is_file() {
+        return Err(format!("动态壁纸视频不存在：{}", path.display()));
+    }
+    let source_dir = internal_data_dir()
+        .map(|dir| dir.join("live-wallpaper"))
+        .ok_or_else(|| "Android 运行环境尚未初始化".to_string())?;
+    std::fs::create_dir_all(&source_dir).map_err(|e| format!("创建动态壁纸目录失败：{e}"))?;
+    let dest = source_dir.join("current-video");
+    std::fs::copy(path, &dest).map_err(|e| format!("复制动态壁纸失败：{e}"))?;
+    let dest = dest.to_string_lossy().to_string();
+
+    with_env(move |env, app| -> jni::errors::Result<Result<(), String>> {
+        let activity = unsafe { JObject::from_raw(env, app.activity_as_ptr() as sys::jobject) };
+        let service = env.new_string("wallpaper")?;
+        let wm = env
+            .call_method(
+                &activity,
+                jni_str!("getSystemService"),
+                jni_sig!("(Ljava/lang/String;)Ljava/lang/Object;"),
+                &[JValue::Object(&service)],
+            )?
+            .l()?;
+        if wm.as_raw().is_null() {
+            return Ok(Err("Android 系统未提供 WallpaperManager".to_string()));
+        }
+        let value = env.new_string(&dest)?;
+        env.call_method(
+            &wm,
+            jni_str!("setVideoWallpaper"),
+            jni_sig!("(Ljava/lang/String;)V"),
+            &[JValue::Object(&value)],
+        )?;
+        Ok(Ok(()))
+    })
+    .map_err(|e| format!("设置动态壁纸失败：{e}"))
     .and_then(|r| r)
 }

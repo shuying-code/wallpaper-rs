@@ -99,6 +99,9 @@ enum WallJob {
     // 枚举 WallJob
     /// 设置静态壁纸（含显示方式）。
     SetStatic(PathBuf, Fit), // 语句
+    /// Android：通过 JNI 设置动态壁纸。
+    #[cfg(target_os = "android")]
+    SetDynamic(PathBuf),
     /// 从视频截取一帧作为海报；`to_lock` 表示截好后设为锁屏。
     Poster {
         video: PathBuf,
@@ -237,6 +240,18 @@ fn spawn_wall_worker() -> (std::sync::mpsc::Sender<WallJob>, Receiver<WallDone>)
                         result: wallpaper::set_wallpaper(&p, fit), // 字段 result
                     } // 块结束
                 } // 块结束
+                #[cfg(target_os = "android")]
+                WallJob::SetDynamic(p) => {
+                    let name = p
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    WallDone::Static {
+                        path: p.clone(),
+                        name,
+                        result: crate::android_jni::set_dynamic_wallpaper(&p),
+                    }
+                }
                 WallJob::Poster {
                     video,
                     out,
@@ -881,9 +896,18 @@ impl App {
             .unwrap_or_default(); // 语句
         if crate::thumbs::is_video_file(path) {
             // 条件分支
-            // 视频 -> 动态壁纸宿主（mpv 循环渲染）；mpv 缺失时（Windows）按需下载。
-            crate::report::set_scene("切换 → 动态壁纸（视频）"); // 记录场景，供卡死定位
-            self.with_mpv_or_download(AfterMpv::LiveWallpaper(path.to_path_buf()));
+            // 视频 -> Android 走 WallpaperManager 动态壁纸通道；桌面走 mpv 宿主。
+            #[cfg(target_os = "android")]
+            {
+                crate::report::set_scene("切换 → 动态壁纸（Android）");
+                self.status = format!("正在设置动态壁纸：{name}");
+                let _ = self.wall_tx.send(WallJob::SetDynamic(path.to_path_buf()));
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                crate::report::set_scene("切换 → 动态壁纸（视频）"); // 记录场景，供卡死定位
+                self.with_mpv_or_download(AfterMpv::LiveWallpaper(path.to_path_buf()));
+            }
         // 语句
         } else {
             // 语句
@@ -1135,7 +1159,7 @@ impl App {
                     let target = self.permission_issues.first().cloned(); // 变量 target
                     crate::permissions::open_authorization(target.as_deref()); // 调用 open_authorization
                 } // 块结束
-                Action::DismissPermissions => self.permission_issues.clear(), // 匹配分支
+                Action::DismissPermissions => self.permission_issues.clear(),  // 匹配分支
                 Action::Quit => {
                     // 匹配分支
                     // Explicit quit always truly ends the process, even if
@@ -2055,6 +2079,12 @@ impl App {
     /// 需要 mpv 的动态壁纸 / 锁屏动作：mpv 已就绪则直接执行；缺失时（Windows）先在
     /// 后台按需下载 mpv，下载完成后再执行 `after`。mpv 不随安装包分发。
     fn with_mpv_or_download(&mut self, after: AfterMpv) {
+        #[cfg(target_os = "android")]
+        if let AfterMpv::LiveWallpaper(path) = after {
+            self.status = format!("正在设置动态壁纸：{}", path.display());
+            let _ = self.wall_tx.send(WallJob::SetDynamic(path));
+            return;
+        }
         if crate::livewall::mpv_available() || !crate::livewall::supported() {
             self.run_after_mpv(after);
             return;
@@ -3231,10 +3261,15 @@ impl App {
                         "固定"
                     }; // 变量 mode
                     let mode_chip = ui.add(
-                        egui::Button::new(RichText::new(mode).size(11.5).strong().color(theme::accent()))
-                            .fill(theme::accent_soft())
-                            .rounding(Rounding::same(20.0))
-                            .min_size(egui::vec2(0.0, 22.0)),
+                        egui::Button::new(
+                            RichText::new(mode)
+                                .size(11.5)
+                                .strong()
+                                .color(theme::accent()),
+                        )
+                        .fill(theme::accent_soft())
+                        .rounding(Rounding::same(20.0))
+                        .min_size(egui::vec2(0.0, 22.0)),
                     ); // 调用 add
                     if mode_chip.clicked() {
                         actions.push(Action::ToggleMode);

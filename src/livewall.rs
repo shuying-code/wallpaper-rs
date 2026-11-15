@@ -32,7 +32,8 @@ pub use linux::{
 #[cfg(not(any(
     windows,
     target_os = "macos",
-    all(unix, not(target_os = "macos"), not(target_os = "android"))
+    all(unix, not(target_os = "macos"), not(target_os = "android")),
+    target_os = "android"
 )))]
 pub use unsupported::{
     active_video, ensure_mpv, mpv_available, poster_frame, set_live_wallpaper, stop, supported,
@@ -129,13 +130,13 @@ pub fn mpv_probe_report() -> String {
 }
 
 /// 非 Windows：有 mpv 即可用；缺失时提示安装（不自动下载）。
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(target_os = "android")))]
 fn ensure_mpv_shared() -> Result<std::path::PathBuf, String> {
     find_mpv_local().ok_or_else(|| mpv_install_hint().to_string())
 }
 
 /// 非 Windows 共用的「从视频截取一帧作为海报图」（锁屏用）。
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(target_os = "android")))]
 fn poster_frame_shared(video: &Path, out: &Path) -> Result<(), String> {
     if !video.is_file() {
         return Err(format!("视频文件不存在：{}", video.display()));
@@ -192,7 +193,7 @@ fn poster_frame_shared(video: &Path, out: &Path) -> Result<(), String> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(target_os = "android")))]
 use std::path::{Path, PathBuf};
 
 /// Linux（X11）动态壁纸宿主：创建 `_NET_WM_WINDOW_TYPE_DESKTOP` 类型的全屏窗口并
@@ -558,11 +559,45 @@ mod macos {
     }
 }
 
-/// 其他平台（Android / 未知）：不支持桌面动态壁纸宿主。
+/// Android 走系统动态壁纸通道；这里的宿主 API 仅用于让上层逻辑不依赖 mpv。
+#[cfg(target_os = "android")]
+mod android_imp {
+    use std::path::{Path, PathBuf};
+
+    pub fn supported() -> bool {
+        true
+    }
+    pub fn set_live_wallpaper(_video: &Path) -> Result<(), String> {
+        Err("动态壁纸由 WallpaperManager 直接处理".to_string())
+    }
+    pub fn stop() -> Result<(), String> {
+        Ok(())
+    }
+    pub fn active_video() -> Option<PathBuf> {
+        None
+    }
+    pub fn mpv_available() -> bool {
+        true
+    }
+    pub fn ensure_mpv() -> Result<PathBuf, String> {
+        Ok(PathBuf::new())
+    }
+    pub fn poster_frame(_video: &Path, _out: &Path) -> Result<(), String> {
+        Err("当前平台暂不支持视频截帧".to_string())
+    }
+}
+
+#[cfg(target_os = "android")]
+pub use android_imp::{
+    active_video, ensure_mpv, mpv_available, poster_frame, set_live_wallpaper, stop, supported,
+};
+
+/// 其他平台：不支持桌面动态壁纸宿主。
 #[cfg(not(any(
     windows,
     target_os = "macos",
-    all(unix, not(target_os = "macos"), not(target_os = "android"))
+    all(unix, not(target_os = "macos")),
+    target_os = "android"
 )))]
 mod unsupported {
     use std::path::{Path, PathBuf};
@@ -571,7 +606,7 @@ mod unsupported {
         false
     }
     pub fn set_live_wallpaper(_video: &Path) -> Result<(), String> {
-        Err("当前平台暂不支持桌面动态壁纸".to_string())
+        Err("当前平台暂不支持动态壁纸".to_string())
     }
     pub fn stop() -> Result<(), String> {
         Ok(())
