@@ -855,13 +855,21 @@ impl App {
     } // 块结束
 
     /// 保持自定义轮播清单可用：剔除丢失文件，并把当前桌面壁纸补入清单。
+    ///
+    /// 补入当前桌面壁纸时**必须排除 App 自己生成的海报缓存**：轮播轮到动态壁纸
+    /// （视频）时会把它的首帧海报铺成桌面静态壁纸（见 [`Self::apply_live_wallpaper`]），
+    /// 于是 [`wallpaper::current_wallpaper`] 会读回这张海报——它是「动态壁纸的静态
+    /// 帧」，不是用户的壁纸，一旦被补进清单就会在后续轮播里当作独立一张轮播（bug）。
+    /// 同理，之前版本误加进去的海报也要一并清掉。
     fn sync_playlist(&mut self) {
         if self.cfg.slideshow.is_empty() {
             return;
         }
-        self.cfg.slideshow.retain(|p| p.is_file());
+        self.cfg
+            .slideshow
+            .retain(|p| p.is_file() && !is_generated_poster(p)); // 语句
         if let Some(wp) = wallpaper::current_wallpaper().filter(|p| p.is_file()) {
-            if !self.cfg.slideshow.iter().any(|p| p == &wp) {
+            if !is_generated_poster(&wp) && !self.cfg.slideshow.iter().any(|p| p == &wp) {
                 self.cfg.slideshow.push(wp);
             }
         }
@@ -7440,6 +7448,24 @@ fn evict_plan(order: &[PathBuf], cap: usize) -> Vec<PathBuf> {
     order[..order.len() - cap].to_vec() // 语句
 } // 块结束
 
+/// 这张图是 App 自己生成的海报缓存吗（动态壁纸首帧 / 视频锁屏截帧）？
+///
+/// 海报统一写在配置目录下的 `live_posters` / `lock_posters` 子目录里（见
+/// [`App::live_poster_path`] 与 [`App::set_lock_from_video`]），只是「动态壁纸的
+/// 静态帧」缓存，并非用户的壁纸，因此不能进入轮播清单。这里只比较父目录名，
+/// 以免 Windows 盘符 / 大小写差异导致路径前缀比对失效。
+fn is_generated_poster(path: &Path) -> bool {
+    // 函数 is_generated_poster
+    path.parent()
+        .and_then(|dir| dir.file_name())
+        .and_then(|name| name.to_str())
+        .map(|name| {
+            // 语句
+            name.eq_ignore_ascii_case("live_posters") || name.eq_ignore_ascii_case("lock_posters")
+        })
+        .unwrap_or(false)
+} // 块结束
+
 /// 网格列数：紧凑布局固定 2–3 列，桌面布局按可用宽度自适应（宽屏笔记本一屏放更多张）。
 fn grid_cols(avail: f32, compact: bool) -> usize {
     if compact {
@@ -7489,8 +7515,8 @@ fn is_narrow(ctx: &egui::Context) -> bool {
 #[cfg(test)] // 语句
 mod tests {
     // 模块 tests
-    use super::{evict_plan, should_background_on_close}; // 引入依赖
-    use std::path::PathBuf; // 引入依赖
+    use super::{evict_plan, is_generated_poster, should_background_on_close}; // 引入依赖
+    use std::path::{Path, PathBuf}; // 引入依赖
 
     #[test] // 语句
     fn close_logic_matrix() {
@@ -7519,5 +7545,18 @@ mod tests {
         assert_eq!(plan.len(), 3); // 语句
         assert_eq!(plan[0], PathBuf::from("0.png")); // 语句
         assert_eq!(plan[2], PathBuf::from("2.png")); // 语句
+    } // 块结束
+
+    #[test] // 语句
+    fn posters_of_live_wallpapers_are_detected() {
+        // 函数 posters_of_live_wallpapers_are_detected
+        // 动态壁纸首帧海报 / 视频锁屏截帧都写在配置目录的海报子目录里，必须能识别出来；
+        // 用户自己的壁纸（哪怕名字里就带 `live_posters`）则不应被误判。
+        assert!(is_generated_poster(Path::new("/cfg/live_posters/a.png"))); // 语句
+        assert!(is_generated_poster(Path::new("/cfg/lock_posters/a.png"))); // 语句
+        assert!(!is_generated_poster(Path::new("/pics/loop.mp4"))); // 语句
+        assert!(!is_generated_poster(Path::new("/pics/live_posters.png"))); // 语句
+        assert!(!is_generated_poster(Path::new("/cfg/a.png"))); // 语句
+        assert!(!is_generated_poster(Path::new("a.png"))); // 语句
     } // 块结束
 } // 块结束
