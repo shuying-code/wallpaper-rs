@@ -45,6 +45,16 @@ struct DailyView: View {
                         LoadingCard(text: "正在获取必应每日壁纸…")
                     }
 
+                    if !store.isLoading && store.daily.isEmpty {
+                        RetryCard(
+                            title: "暂时没有加载到每日壁纸",
+                            detail: "检查网络后重试，也可以下拉刷新。",
+                            actionTitle: "重新加载"
+                        ) {
+                            Task { await store.refreshDaily() }
+                        }
+                    }
+
                     ForEach(store.daily) { item in
                         Button {
                             selected = item.detail
@@ -94,11 +104,13 @@ struct DailyView: View {
 struct GalleryView: View {
     @EnvironmentObject private var store: WallpaperStore
     @State private var selected: WallpaperDetail?
+    @FocusState private var searchFocused: Bool
 
-    private let columns = [
-        GridItem(.flexible(minimum: 140), spacing: 12),
-        GridItem(.flexible(minimum: 140), spacing: 12)
-    ]
+    private var rows: [[GalleryItem]] {
+        stride(from: 0, to: store.gallery.count, by: 2).map { index in
+            Array(store.gallery[index..<min(index + 2, store.gallery.count)])
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -116,11 +128,14 @@ struct GalleryView: View {
                         TextField("搜索森林、城市、猫…", text: $store.query)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
+                            .focused($searchFocused)
                             .submitLabel(.search)
                             .onSubmit {
+                                searchFocused = false
                                 Task { await store.search() }
                             }
                         Button("搜索") {
+                            searchFocused = false
                             Task { await store.search() }
                         }
                         .font(.subheadline.weight(.semibold))
@@ -135,14 +150,34 @@ struct GalleryView: View {
                         LoadingCard(text: "正在连接 4K 图库…")
                     }
 
-                    LazyVGrid(columns: columns, spacing: 14) {
-                        ForEach(store.gallery) { item in
-                            Button {
-                                selected = item.detail
-                            } label: {
-                                GalleryCard(item: item)
+                    if !store.isLoading && store.gallery.isEmpty {
+                        RetryCard(
+                            title: store.query.isEmpty ? "暂时没有加载到图库" : "没有找到匹配的壁纸",
+                            detail: "检查网络或换个关键词后重试。",
+                            actionTitle: "重新搜索"
+                        ) {
+                            Task { await store.search() }
+                        }
+                    }
+
+                    LazyVStack(spacing: 14) {
+                        ForEach(rows.indices, id: \.self) { index in
+                            HStack(alignment: .top, spacing: 12) {
+                                ForEach(rows[index]) { item in
+                                    Button {
+                                        selected = item.detail
+                                    } label: {
+                                        GalleryCard(item: item)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .frame(maxWidth: .infinity)
+                                }
+
+                                if rows[index].count == 1 {
+                                    Color.clear
+                                        .frame(maxWidth: .infinity)
+                                }
                             }
-                            .buttonStyle(.plain)
                         }
                     }
 
@@ -171,6 +206,7 @@ struct GalleryView: View {
                 .padding(.bottom, 28)
             }
             .background(AppTheme.background.ignoresSafeArea())
+            .scrollDismissesKeyboard(.interactively)
             .navigationBarTitleDisplayMode(.inline)
             .task {
                 await store.loadGalleryIfNeeded()
@@ -286,32 +322,37 @@ struct GalleryCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            AsyncImage(url: item.thumbnailURL) { phase in
-                switch phase {
-                case .success(let image):
-                    image
-                        .resizable()
-                        .scaledToFill()
-                case .failure:
-                    placeholder
-                case .empty:
-                    placeholder
-                        .overlay(ProgressView().tint(.white))
-                @unknown default:
-                    placeholder
+            Color.clear
+                .frame(height: 150)
+                .overlay {
+                    AsyncImage(url: item.thumbnailURL) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image
+                                .resizable()
+                                .scaledToFill()
+                        case .failure:
+                            placeholder
+                        case .empty:
+                            placeholder
+                                .overlay(ProgressView().tint(.white))
+                        @unknown default:
+                            placeholder
+                        }
+                    }
                 }
-            }
-            .frame(height: 150)
-            .frame(maxWidth: .infinity)
-            .clipped()
+                .clipped()
 
             Text(item.title.isEmpty ? "4K 壁纸" : item.title)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(AppTheme.ink)
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(12)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .studioCard()
     }
 
@@ -335,6 +376,38 @@ struct LoadingCard: View {
             Text(text)
                 .font(.subheadline)
                 .foregroundStyle(AppTheme.muted)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .studioCard()
+    }
+}
+
+struct RetryCard: View {
+    let title: String
+    let detail: String
+    let actionTitle: String
+    let action: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.headline)
+                .foregroundStyle(AppTheme.ink)
+            Text(detail)
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+            Button(action: action) {
+                Text(actionTitle)
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 9)
+                    .background(AppTheme.terracotta)
+                    .foregroundStyle(.white)
+                    .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(18)
