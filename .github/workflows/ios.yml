@@ -1,0 +1,59 @@
+name: iOS Build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'ios/**'
+      - '.github/workflows/ios.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build unsigned IPA
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Build device app
+        working-directory: ios
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project WallpaperStudio.xcodeproj \
+            -scheme WallpaperStudio \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package unsigned IPA
+        working-directory: ios
+        run: |
+          set -euo pipefail
+          APP_PATH="build/Build/Products/Release-iphoneos/WallpaperStudio.app"
+          test -d "$APP_PATH"
+          rm -rf Payload
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          ditto -c -k --sequesterRsrc --keepParent Payload WallpaperStudio-unsigned.ipa
+          shasum -a 256 WallpaperStudio-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wallpaper-studio-ios-unsigned
+          path: ios/WallpaperStudio-unsigned.ipa
+          if-no-files-found: error
