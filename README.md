@@ -46,8 +46,8 @@
 
 ## 功能
 
-- **网上壁纸库（多站点在线，默认首页）**：联网浏览四个真实壁纸站点，顶部一键切换来源——**① 微软必应每日壁纸 4K**（`bing.ioliu.cn`，每日更新，可下载 3840×2160 原图）、**② 彼岸图网**（`pic.netbian.com`，4K / 5K / 8K）、**③ MoeWalls**（`moewalls.com`）、**④ MotionBGs**（`motionbgs.com`）。每个站点均支持**关键词搜索**、**按分类 / 标签浏览**、**分页翻页**；缩略图懒加载，点开大图预览后可**下载原图 / 设为桌面壁纸 / 设为锁屏**，原图下载完成后自动执行所选操作。MoeWalls / MotionBGs 为动态壁纸站，除可下载封面静图外，还额外提供**「下载动态壁纸 MP4」**按钮（保存到 `图片/网上壁纸库/<站点>`）；还提供**「设为动态壁纸」**（Windows / macOS / Linux-X11：自建桌面宿主把 MP4 铺在图标层之下循环播放，依赖 mpv——Windows 会检测本机 mpv，缺失时按需下载；macOS / Linux 需本机已安装 mpv，可用 WALLPAPER_MPV 指定路径，见随包 THIRD-PARTY-NOTICES.md）。列表支持**收藏 / 仅看收藏**与「清理缩略图缓存」，预览里还提供「打开图片页面」「设为锁屏」「**轮播(原图)**」「上一张 / 下一张」。
-- **动态壁纸（Windows / macOS / Linux-X11，自建桌面宿主）**：在动态壁纸站（MoeWalls / MotionBGs）的预览里点「**设为动态壁纸**」，程序会在桌面**图标层之下**自建一个宿主窗口（Windows `WorkerW` / `Progman`；macOS 桌面层 `NSWindow`；Linux X11 `_NET_WM_WINDOW_TYPE_DESKTOP`），用 **mpv** 循环播放 MP4（`--wid`），桌面图标与任务栏照常使用；点「**停止动态壁纸**」或退出程序即恢复。**mpv 不随发行包分发**——Windows 会检测本机 mpv，缺失时从上游按需下载到 `%LOCALAPPDATA%\wallpaper-rs\mpv-runtime`；macOS / Linux 需本机已安装 mpv（`brew install mpv` / `apt install mpv`）。mpv 为第三方 GPL 组件，见随包 `THIRD-PARTY-NOTICES.md`。
+- **网上壁纸库（多站点在线，默认首页）**：联网浏览四个真实壁纸站点，顶部一键切换来源——**① 微软必应每日壁纸 4K**（`bing.ioliu.cn`，每日更新，可下载 3840×2160 原图）、**② 彼岸图网**（`pic.netbian.com`，4K / 5K / 8K）、**③ MoeWalls**（`moewalls.com`）、**④ MotionBGs**（`motionbgs.com`）。每个站点均支持**关键词搜索**、**按分类 / 标签浏览**、**分页翻页**；缩略图懒加载，点开大图预览后可**下载原图 / 设为桌面壁纸 / 设为锁屏**，原图下载完成后自动执行所选操作。MoeWalls / MotionBGs 为动态壁纸站，除可下载封面静图外，还额外提供**「下载动态壁纸 MP4」**按钮（保存到 `图片/网上壁纸库/<站点>`）；还提供**「设为动态壁纸」**（Windows / macOS / Linux-X11 自建桌面宿主，Android 使用系统动态壁纸服务）。列表支持**收藏 / 仅看收藏**与「清理缩略图缓存」，预览里还提供「打开图片页面」「设为锁屏」「**轮播(原图)**」「上一张 / 下一张」。
+- **动态壁纸（Windows / macOS / Linux-X11 / Android）**：在动态壁纸站（MoeWalls / MotionBGs）的预览里点「**设为动态壁纸**」。Windows / macOS / Linux-X11 会在桌面**图标层之下**自建宿主窗口（Windows `WorkerW` / `Progman`；macOS 桌面层 `NSWindow`；Linux X11 `_NET_WM_WINDOW_TYPE_DESKTOP`），用 **mpv** 循环播放 MP4（`--wid`），按原始宽高比完整显示、不裁剪边缘。Android 通过内置 `VideoWallpaperService` 循环播放，并经 OpenGL 等比适配完整画面；视频比例与屏幕不一致时会留黑边，而不是裁切或拉伸，首次设置需在系统预览页点「设为壁纸」确认。点「**停止动态壁纸**」或退出程序即恢复。**mpv 不随发行包分发**——Windows 会检测本机 mpv，缺失时从上游按需下载到 `%LOCALAPPDATA%\wallpaper-rs\mpv-runtime`；macOS / Linux 需本机已安装 mpv（`brew install mpv` / `apt install mpv`）。mpv 为第三方 GPL 组件，见随包 `THIRD-PARTY-NOTICES.md`。
 - **本地壁纸库（按文件夹相册）**：从本地文件夹批量扫描**图片与视频**（可含子文件夹），自动按所在文件夹分组为相册；每个相册可单独**展开 / 折叠**，顶部提供「全部展开 / 全部折叠」，并支持按文件名搜索过滤。视频卡片提供「**设为动态壁纸** / 设为锁屏」，也可加入轮播。
 - **侧栏显隐**：点击标题栏左上角 `☰` 可一键隐藏 / 显示左侧导航栏，专注看图；状态自动记忆。
 - **权限请求与授权引导**：扫描遇到无读取权限的目录时不再静默忽略，而是显示提示条，可「请求权限 / 重试」（macOS 触发系统隐私授权）、「打开文件夹位置 / 打开授权设置」跳到系统授权页面或资源管理器，由操作人确认授权。
@@ -59,7 +59,7 @@
 - **显示方式**：填充 / 适应 / 拉伸 / 居中 / 平铺（Windows 写注册表，Linux 通过 GNOME `picture-options`）。
 - **主题**：浅色 / 深色一键切换，样式即时生效。
 - **配置持久化**：文件夹、模式、间隔、显示方式、主题、上次壁纸等自动保存到本地配置文件。
-- **开机自启**：一键开关，Windows 写 `Run` 注册表、macOS 写 `LaunchAgent`、Linux 写 autostart `.desktop`。
+- **开机自启**：一键开关，Windows 写 `Run` 注册表（移动 exe 后会自动修复路径）、macOS 写 `LaunchAgent`、Linux 写 autostart `.desktop`、Android 使用 `BootReceiver`。Android 10+ 若系统拒绝后台打开界面，会保留一条可点击的启动通知；部分厂商还需在电池/自启动设置中放行本应用。
 - **全盘扫描**：后台扫描全部磁盘的图片并载入壁纸库（跳过系统目录、限量收集）。
 - **关闭到系统托盘（图标常显）**：点击右上角「×」不退出，而是隐藏到系统托盘（Windows 右下角通知区域 / macOS 菜单栏 / Linux 状态区），任务栏图标消失、程序与轮播继续在后台运行。程序会在 Windows 上尽量把自身托盘图标固定为「始终显示」（写入 `NotifyIconSettings` 的 `IsPromoted`），避免被 Win11 收进「显示隐藏的图标」；设置页也提供「打开托盘设置」一键手动固定。单击托盘图标即可唤回并居中显示；右键菜单「退出 wallpaper-rs」为真正的退出——不仅结束后台进程，还会一并结束本机所有其它 wallpaper-rs 实例。
 - **全局快捷键**：`Ctrl+Alt+W` 一键显示 / 隐藏窗口（被占用时自动回退到 `Ctrl+Alt+Shift+W` / `Ctrl+Alt+F9`）。
@@ -108,7 +108,7 @@
 | Windows x64 | ✅ 已构建验证 | `SystemParametersInfoW` + 注册表 `Control Panel\Desktop`；**动态壁纸**：桌面图标层之下自建宿主窗口 + `mpv` 循环播放 MP4（mpv 缺失时按需下载） |
 | macOS | ✅ 源码支持 | `osascript` 调用 System Events 设置桌面图片；**动态壁纸**：桌面层（`kCGDesktopWindowLevel`）无边框窗口 + `mpv` |
 | Linux / Ubuntu | ✅ 源码支持 | GNOME/Ubuntu `gsettings`（含 `picture-options`），或回退到 `feh`；**动态壁纸**：X11 `_NET_WM_WINDOW_TYPE_DESKTOP` 窗口 + `mpv`（Wayland 会话暂不支持） |
-| Android | 🧩 界面适配（需移动端工具链） | 移动宿主经 `WallpaperManager` 设置（需 `SET_WALLPAPER` 权限）；界面已做触控 / 窄屏适配 |
+| Android | ✅ 已真机验证 | 静态壁纸经 `WallpaperManager` 设置；动态壁纸由 `VideoWallpaperService` + OpenGL 等比完整显示；开机自启由 `BootReceiver` 恢复，系统限制后台启动时保留可点击通知 |
 | iOS / iPadOS | 🧩 界面适配（仅浏览） | 系统不允许 App 直接改壁纸，需「导出到相册」后手动设为墙纸；界面已做触控 / 窄屏适配 |
 
 桌面三平台共用同一套源码；移动端复用同一套 egui 界面并提供各平台能力说明。配置文件写入各平台的标准目录（见下）。

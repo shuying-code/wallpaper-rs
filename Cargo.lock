@@ -3715,7 +3715,7 @@ dependencies = [
 
 [[package]]
 name = "wallpaper-rs"
-version = "0.14.12"
+version = "0.14.13"
 dependencies = [
  "android_logger",
  "eframe",
@@ -3729,6 +3729,7 @@ dependencies = [
  "rand",
  "raw-window-handle",
  "rfd",
+ "semver",
  "serde",
  "serde_json",
  "tray-icon",

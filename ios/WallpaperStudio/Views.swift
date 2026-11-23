@@ -603,7 +603,7 @@ struct AboutView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                     }
 
-                    Text("版本 \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.14.12") · 非 App Store 侧载构建")
+                    Text("版本 \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.14.13") · 非 App Store 侧载构建")
                         .font(.caption)
                         .foregroundStyle(AppTheme.muted)
                 }

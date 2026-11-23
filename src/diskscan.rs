@@ -77,7 +77,23 @@ fn roots() -> Vec<PathBuf> {
     v // 语句
 } // 块结束
 
-#[cfg(not(windows))] // 语句
+#[cfg(target_os = "android")]
+fn roots() -> Vec<PathBuf> {
+    // Android's app sandbox cannot usefully walk `/`: most system directories
+    // are unreadable, while traversing them consumes VISIT_CAP before the walker
+    // reaches shared storage. Scan the user's shared storage directly so local
+    // images and MP4 live wallpapers are actually discovered.
+    let shared = std::env::var_os("EXTERNAL_STORAGE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/sdcard"));
+    if shared.is_dir() {
+        vec![shared]
+    } else {
+        vec![PathBuf::from("/sdcard")]
+    }
+}
+
+#[cfg(all(not(windows), not(target_os = "android")))] // 语句
 fn roots() -> Vec<PathBuf> {
     // 函数 roots
     let mut v = vec![PathBuf::from("/")]; // 变量 v

@@ -171,6 +171,7 @@ struct Snapshot {
     folder: Option<PathBuf>,             // 字段 folder
     last_path: Option<PathBuf>,          // 字段 last_path
     close_bg: bool,                      // 字段 close_bg
+    autostart: bool,                     // 字段 autostart
     collapsed_folders: BTreeSet<String>, // 字段 collapsed_folders
     sidebar_hidden: bool,                // 字段 sidebar_hidden
     daily_online: bool,                  // 字段 daily_online
@@ -201,6 +202,7 @@ impl Snapshot {
             folder: c.folder.clone(),                       // 字段 folder
             last_path: c.last_path.clone(),                 // 字段 last_path
             close_bg: c.close_to_background,                // 字段 close_bg
+            autostart: c.autostart,                         // 字段 autostart
             collapsed_folders: c.collapsed_folders.clone(), // 字段 collapsed_folders
             sidebar_hidden: c.sidebar_hidden,               // 字段 sidebar_hidden
             daily_online: c.daily_online,                   // 字段 daily_online
@@ -492,6 +494,8 @@ pub struct App {
     detail_path: Option<PathBuf>,
     /// 手机端当前页是否由底部导航打开；用于切换到全屏页面并显示返回按钮。
     nav_from_mobile: bool,
+    /// 由开机自启项启动：恢复上次壁纸后隐藏主窗口，避免抢焦点。
+    autostart_launch: bool,
 } // 块结束
 
 impl App {
@@ -499,6 +503,9 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // 函数 new
         let cfg = Config::load(); // 变量 cfg
+                                  // Repair stale paths left by older builds, and mirror the persisted
+                                  // switch into the current platform's registration on every launch.
+        let autostart_error = crate::autostart::reconcile(cfg.autostart).err();
         theme::apply(&cc.egui_ctx, cfg.theme == 1); // 调用 apply
                                                     // 让滚动条常驻可见（实心、会占位）：右侧内容「可上下滑动」一目了然，
                                                     // 且不会像浮动滚动条那样遮住最右侧的内容。
@@ -619,6 +626,7 @@ impl App {
             window_fitted: false, // 字段 window_fitted
             detail_path: None,
             nav_from_mobile: false,
+            autostart_launch: crate::autostart::started_from_autostart(),
         }; // 块结束
            // Optional deep-link to a tab, e.g. `wallpaper-rs --tab settings`.
         if let Some(pos) = std::env::args().position(|a| a == "--tab") {
@@ -667,13 +675,32 @@ impl App {
             }); // 语句
         } // 块结束
         app.scan(); // 语句
-                    // 打开软件时若播放模式已是「轮播」，默认就开始轮播，并**立刻先换一张**，
-                    // 随后按「间隔」一张一张地换（不必再点「▶ 开始轮播」）。
+        #[cfg(target_os = "android")]
+        if let Err(error) = crate::android_jni::request_media_permissions() {
+            app.status = format!("请求媒体权限失败：{error}");
+        }
+        #[cfg(target_os = "android")]
+        {
+            // BootReceiver posts this fallback in case Android refuses the
+            // background Activity launch. If we are now visible, it is stale.
+            let _ = crate::android_jni::clear_boot_notification();
+        }
+        // 打开软件时若播放模式已是「轮播」，默认就开始轮播，并**立刻先换一张**，
+        // 随后按「间隔」一张一张地换（不必再点「▶ 开始轮播」）。
         if app.cfg.mode == Mode::Slideshow {
             // 条件分支
             app.cfg.running = true; // 语句
             app.advance(&cc.egui_ctx); // 打开瞬间立刻换下一张
+        } else if app.autostart_launch {
+            // 固定壁纸模式的开机自启：把上次壁纸（包括动态视频）真正恢复，
+            // 而不是只把主窗口打开。
+            if let Some(path) = app.current_path().filter(|path| path.is_file()) {
+                app.apply_path(&cc.egui_ctx, &path);
+            }
         } // 块结束
+        if let Some(error) = autostart_error {
+            app.status = format!("开机自启同步失败：{error}");
+        }
         app // 语句
     } // 块结束
 
@@ -999,8 +1026,7 @@ impl App {
     #[cfg(target_os = "android")]
     fn skip_live_video(&mut self, path: &Path) -> bool {
         if crate::thumbs::is_video_file(path) {
-            self.status =
-                "已跳过动态壁纸（Android 需在详情页手动设置并通过系统确认）".to_string();
+            self.status = "已跳过动态壁纸（Android 需在详情页手动设置并通过系统确认）".to_string();
             true
         } else {
             false
@@ -5515,8 +5541,9 @@ impl App {
                         } // 块结束
                     },
                 ); // 语句
-                   // Autostart is desktop-only (login items / Run key / .desktop).
-                if !crate::platform::is_mobile() {
+                   // Windows/macOS/Linux use login items; Android uses a boot
+                   // receiver. iOS deliberately has no equivalent.
+                if crate::autostart::supported() {
                     // 条件分支
                     ui.add_space(8.0); // 语句
                     ui.separator(); // 语句
@@ -5536,6 +5563,9 @@ impl App {
                                     Ok(_) => {
                                         // 匹配分支
                                         self.cfg.autostart = auto; // 语句
+                                                                   // The toggle must survive closing to the
+                                                                   // tray, not only a full process exit.
+                                        self.cfg.save();
                                         self.status = if auto {
                                             // 语句
                                             "已开启开机自启".to_string() // 语句
@@ -6167,10 +6197,19 @@ impl eframe::App for App {
         // 函数 update
         // 看门狗心跳：每帧打点，监控线程据此判断 UI 是否卡死。
         crate::report::heartbeat(); // 调用 heartbeat
-                                    // 本帧开始时的配置基线：必须在处理任何后台任务结果（下载完成 → 加入轮播 /
-                                    // 在线壁纸日期等）之前取，否则这些异步改动会被算进基线，末尾的自动保存
-                                    // 认为「没有变化」而不落盘——表现为「＋ 轮播(原视频)」提示已加入、重启后却丢失。
+        if crate::instances::take_show_request() {
+            self.autostart_launch = false;
+            crate::report::note("单实例：唤回主界面");
+            self.show_window(ctx);
+        }
+        // 本帧开始时的配置基线：必须在处理任何后台任务结果（下载完成 → 加入轮播 /
+        // 在线壁纸日期等）之前取，否则这些异步改动会被算进基线，末尾的自动保存
+        // 认为「没有变化」而不落盘——表现为「＋ 轮播(原视频)」提示已加入、重启后却丢失。
         let snap = Snapshot::of(&self.cfg); // 变量 snap
+        if self.autostart_launch {
+            self.autostart_launch = false;
+            self.hide_to_tray(ctx);
+        }
         if self.applied_theme != self.cfg.theme {
             // 条件分支
             theme::apply(ctx, self.cfg.theme == 1); // 调用 apply

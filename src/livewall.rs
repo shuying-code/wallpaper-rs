@@ -804,8 +804,6 @@ mod imp {
         spawn_worker();
         let inst = GetModuleHandleW(std::ptr::null());
         ensure_class(inst);
-        let w = GetSystemMetrics(SM_CXVIRTUALSCREEN).max(1);
-        let h = GetSystemMetrics(SM_CYVIRTUALSCREEN).max(1);
         let class = to_wide(CLASS_NAME);
         let mut parents: Vec<Hwnd> = Vec::new();
         if let Some(wk) = classic_workerw() {
@@ -817,6 +815,11 @@ mod imp {
         }
         let mut last = std::io::Error::from_raw_os_error(0);
         for parent in parents {
+            // A child window is clipped to its parent's client area. Using the
+            // virtual-screen metrics here left the right/bottom cut off when the
+            // desktop parent did not start at (0, 0) or had a different client
+            // size (mixed-DPI / multi-monitor layouts).
+            let (w, h) = parent_client_size(parent);
             let hwnd = CreateWindowExW(
                 WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
                 class.as_ptr(),
@@ -862,6 +865,24 @@ mod imp {
             last = std::io::Error::last_os_error();
         }
         Err(format!("创建动态壁纸窗口失败：{last}"))
+    }
+
+    /// Client size of the desktop parent window, in the parent's coordinate
+    /// space. Falls back to the virtual-screen bounds if the OS returns an empty
+    /// rectangle (for example while Explorer is restarting).
+    unsafe fn parent_client_size(parent: Hwnd) -> (i32, i32) {
+        let mut rect = Rect::default();
+        if GetClientRect(parent, &mut rect) != 0 {
+            let width = (rect.right - rect.left).max(1);
+            let height = (rect.bottom - rect.top).max(1);
+            if width > 1 && height > 1 {
+                return (width, height);
+            }
+        }
+        (
+            GetSystemMetrics(SM_CXVIRTUALSCREEN).max(1),
+            GetSystemMetrics(SM_CYVIRTUALSCREEN).max(1),
+        )
     }
 
     unsafe fn destroy_window(hwnd: Hwnd) {
@@ -1257,7 +1278,8 @@ mod imp {
     fn spawn_mpv(mpv: &Path, window: Hwnd, video: &Path) -> Result<Child, String> {
         use std::os::windows::process::CommandExt;
         let mut cmd = Command::new(mpv);
-        cmd.arg(format!("--wid={window}"))
+        cmd.arg("--no-config")
+            .arg(format!("--wid={window}"))
             .arg("--loop-file=inf")
             .arg("--no-audio")
             .arg("--no-osc")
@@ -1267,6 +1289,14 @@ mod imp {
             .arg("--really-quiet")
             .arg("--vo=gpu")
             .arg("--hwdec=auto-safe")
+            .arg("--force-window=yes")
+            // Fit the complete frame into the host. User/global mpv profiles
+            // could otherwise enable panscan/zoom and crop the wallpaper.
+            .arg("--keepaspect=yes")
+            .arg("--panscan=0")
+            .arg("--video-zoom=0")
+            .arg("--video-aspect-override=no")
+            .arg("--background-color=#000000")
             .arg(video);
         cmd.creation_flags(CREATE_NO_WINDOW);
         // 诊断用：设置 `WALLPAPER_MPV_LOG` 可让 mpv 把日志写入该文件。
@@ -1296,6 +1326,15 @@ mod imp {
         lpsz_menu_name: *const u16,
         lpsz_class_name: *const u16,
         h_icon_sm: isize,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct Rect {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
     }
 
     #[link(name = "user32")]
@@ -1347,6 +1386,7 @@ mod imp {
         fn DefWindowProcW(hwnd: Hwnd, msg: u32, wparam: usize, lparam: isize) -> isize;
         fn RegisterClassExW(wc: *const WndClassExW) -> u16;
         fn GetSystemMetrics(index: i32) -> i32;
+        fn GetClientRect(hwnd: Hwnd, rect: *mut Rect) -> i32;
         fn IsWindow(hwnd: Hwnd) -> i32;
     }
 

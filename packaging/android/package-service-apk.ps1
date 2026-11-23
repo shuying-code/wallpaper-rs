@@ -56,59 +56,30 @@ if ($LASTEXITCODE -ne 0) { throw "aapt2 compile failed" }
     -o "$workDir\compiled-res\service-res.apk" "$workDir\resources.zip"
 if ($LASTEXITCODE -ne 0) { throw "aapt2 link failed" }
 
-Copy-Item $InputApk "$workDir\apk\base.apk" -Force
 $dexPath = Join-Path $workDir "classes\classes.dex"
 $merged = "$workDir\apk\merged.apk"
-Remove-Item $merged -ErrorAction SilentlyContinue
+$repackerClasses = "$workDir\repacker-classes"
+$javac = if ($env:JAVA_HOME) { Join-Path $env:JAVA_HOME "bin\javac.exe" } else { "javac" }
+$java = if ($env:JAVA_HOME) { Join-Path $env:JAVA_HOME "bin\java.exe" } else { "java" }
 
-# Rebuild the APK as a brand-new archive (Create mode). .NET's Update mode does
-# not honour CompressionLevel::NoCompression here, so resources.arsc ended up
-# deflated and Android 11+ rejected the install with:
-#   "-124: ... resources.arsc ... uncompressed and aligned".
-# Writing a fresh archive guarantees resources.arsc is STORED; zipalign then
-# fixes its 4-byte alignment.
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-$baseZip = [System.IO.Compression.ZipFile]::OpenRead("$workDir\apk\base.apk")
-$svcZip = [System.IO.Compression.ZipFile]::OpenRead("$workDir\compiled-res\service-res.apk")
-$outFs = [System.IO.File]::Open($merged, "Create")
-$outZip = New-Object System.IO.Compression.ZipArchive($outFs, "Create")
-try {
-    $svcNames = @{}
-    foreach ($e in $svcZip.Entries) { $svcNames[$e.FullName] = $true }
-
-    # (1) resources.arsc first, stored uncompressed.
-    $arsc = $svcZip.GetEntry("resources.arsc")
-    $ne = $outZip.CreateEntry("resources.arsc", [System.IO.Compression.CompressionLevel]::NoCompression)
-    $os = $ne.Open(); $arsc.Open().CopyTo($os); $os.Close()
-
-    # (2) merged AndroidManifest.xml + service resources (from the linked APK).
-    foreach ($e in $svcZip.Entries) {
-        if ($e.FullName -eq "resources.arsc") { continue }
-        $ne = $outZip.CreateEntry($e.FullName, [System.IO.Compression.CompressionLevel]::Optimal)
-        $os = $ne.Open(); $e.Open().CopyTo($os); $os.Close()
-    }
-
-    # (3) native libraries and the rest of the cargo-apk base (skip replaced entries).
-    foreach ($e in $baseZip.Entries) {
-        if ($e.FullName -eq "resources.arsc") { continue }
-        if ($e.FullName -eq "classes.dex") { continue }
-        if ($svcNames.ContainsKey($e.FullName)) { continue }
-        $ne = $outZip.CreateEntry($e.FullName, [System.IO.Compression.CompressionLevel]::Optimal)
-        $os = $ne.Open(); $e.Open().CopyTo($os); $os.Close()
-    }
-
-    # (4) the live-wallpaper service bytecode.
-    $ne = $outZip.CreateEntry("classes.dex", [System.IO.Compression.CompressionLevel]::Optimal)
-    $os = $ne.Open(); $dex = [System.IO.File]::OpenRead($dexPath); $dex.CopyTo($os); $dex.Close(); $os.Close()
-} finally {
-    $outZip.Dispose()
-    $outFs.Close()
-    $baseZip.Dispose()
-    $svcZip.Dispose()
-}
+# Android 11+ requires resources.arsc to be STORED and 4-byte aligned. .NET's
+# CompressionLevel.NoCompression still writes a DEFLATE stream, so use the JDK
+# repacker to produce a genuinely STORED resource table.
+New-Item -ItemType Directory -Force "$repackerClasses" | Out-Null
+& $javac -encoding UTF-8 --release 8 -d $repackerClasses `
+    (Join-Path $PSScriptRoot "ApkRepacker.java")
+if ($LASTEXITCODE -ne 0) { throw "apk repacker build failed" }
+& $java -cp $repackerClasses ApkRepacker $InputApk `
+    "$workDir\compiled-res\service-res.apk" $dexPath $merged
+if ($LASTEXITCODE -ne 0) { throw "apk repacker failed" }
 
 & (Join-Path $buildTools "zipalign.exe") -f -p 4 $merged "$workDir\apk\aligned.apk"
 if ($LASTEXITCODE -ne 0) { throw "zipalign failed" }
+$alignment = & (Join-Path $buildTools "zipalign.exe") -c -v -p 4 "$workDir\apk\aligned.apk"
+if ($LASTEXITCODE -ne 0) { throw "zipalign verification failed" }
+if ($alignment -match "resources\.arsc.*compressed") {
+    throw "resources.arsc is compressed; Android 11+ will reject this APK"
+}
 
 # 签名密钥放在固定位置（work/ 下，不随每次构建的临时目录一起删除）：
 # 每次重新生成密钥会导致「覆盖安装」失败（签名不一致）。

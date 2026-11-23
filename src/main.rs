@@ -80,6 +80,11 @@ fn main() -> eframe::Result<()> {
         } // 块结束
     } // 块结束
 
+    let show_existing = !wallpaper_rs::autostart::started_from_autostart();
+    if !wallpaper_rs::instances::claim_single_instance(env!("CARGO_PKG_VERSION"), show_existing) {
+        return Ok(());
+    }
+
     let native = wallpaper_rs::native_options(); // 变量 native
     eframe::run_native(
         // 调用 run_native

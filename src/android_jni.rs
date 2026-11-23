@@ -16,7 +16,7 @@
 
 use std::sync::Mutex;
 
-use jni::objects::JObject;
+use jni::objects::{JClass, JObject};
 use jni::{jni_sig, jni_str, sys, Env, JValue, JavaVM};
 use winit::platform::android::activity::AndroidApp;
 
@@ -42,6 +42,133 @@ fn app_snapshot() -> Option<AndroidApp> {
 /// Activity 提供的真实私有目录，保证 [`crate::config::config_dir`] 可写。
 pub fn internal_data_dir() -> Option<std::path::PathBuf> {
     app_snapshot().and_then(|app| app.internal_data_path())
+}
+
+/// Ask for the media permissions needed by the local video/image scanner.
+///
+/// `READ_EXTERNAL_STORAGE` is the relevant grant on Android 12 and older;
+/// Android 13 replaced it with the per-type `READ_MEDIA_*` permissions. The
+/// request is idempotent: when access is already granted Android returns
+/// immediately without showing another dialog.
+pub fn request_media_permissions() -> Result<(), String> {
+    with_env(|env, app| -> jni::errors::Result<()> {
+        let activity = unsafe { JObject::from_raw(env, app.activity_as_ptr() as sys::jobject) };
+        let sdk = env
+            .get_static_field(
+                jni_str!("android/os/Build$VERSION"),
+                jni_str!("SDK_INT"),
+                jni_sig!("I"),
+            )?
+            .i()?;
+        let mut permissions: Vec<&str> = if sdk >= 33 {
+            vec![
+                "android.permission.READ_MEDIA_IMAGES",
+                "android.permission.READ_MEDIA_VIDEO",
+            ]
+        } else {
+            vec!["android.permission.READ_EXTERNAL_STORAGE"]
+        };
+        if sdk >= 33 {
+            // BootReceiver falls back to a notification when Android refuses a
+            // background Activity launch.
+            permissions.push("android.permission.POST_NOTIFICATIONS");
+        }
+        let array = env.new_object_array(
+            permissions.len() as i32,
+            jni_str!("java/lang/String"),
+            JObject::null(),
+        )?;
+        for (index, permission) in permissions.iter().enumerate() {
+            let value = env.new_string(permission)?;
+            array.set_element(env, index, &value)?;
+        }
+        env.call_method(
+            &activity,
+            jni_str!("requestPermissions"),
+            jni_sig!("([Ljava/lang/String;I)V"),
+            &[JValue::Object(&array), JValue::Int(0x5750)],
+        )?;
+        Ok(())
+    })
+}
+
+/// Dismiss the fallback notification posted by `BootReceiver` after a boot.
+pub fn clear_boot_notification() -> Result<(), String> {
+    with_env(|env, app| -> jni::errors::Result<()> {
+        let activity = unsafe { JObject::from_raw(env, app.activity_as_ptr() as sys::jobject) };
+        let receiver = load_app_class(env, &activity, "com.shuying.wallpaperrs.BootReceiver")?;
+        env.call_static_method(
+            &receiver,
+            jni_str!("clearBootNotification"),
+            jni_sig!("(Landroid/content/Context;)V"),
+            &[JValue::Object(&activity)],
+        )?;
+        Ok(())
+    })
+    .map_err(|error| format!("清除 Android 开机自启通知失败：{error}"))
+}
+
+/// Persist the boot-autostart switch in the same `SharedPreferences` file read
+/// by `BootReceiver`.
+pub fn set_autostart(enable: bool) -> Result<(), String> {
+    with_env(move |env, app| -> jni::errors::Result<()> {
+        let activity = unsafe { JObject::from_raw(env, app.activity_as_ptr() as sys::jobject) };
+        let settings = load_app_class(env, &activity, "com.shuying.wallpaperrs.AutostartSettings")?;
+        env.call_static_method(
+            &settings,
+            jni_str!("setEnabled"),
+            jni_sig!("(Landroid/content/Context;Z)V"),
+            &[JValue::Object(&activity), JValue::Bool(enable)],
+        )?;
+        Ok(())
+    })
+    .map_err(|error| format!("设置 Android 开机自启失败：{error}"))
+}
+
+/// Read back the persisted boot-autostart switch.
+pub fn is_autostart_enabled() -> Result<bool, String> {
+    with_env(|env, app| -> jni::errors::Result<bool> {
+        let activity = unsafe { JObject::from_raw(env, app.activity_as_ptr() as sys::jobject) };
+        let settings = load_app_class(env, &activity, "com.shuying.wallpaperrs.AutostartSettings")?;
+        env.call_static_method(
+            &settings,
+            jni_str!("isEnabled"),
+            jni_sig!("(Landroid/content/Context;)Z"),
+            &[JValue::Object(&activity)],
+        )?
+        .z()
+    })
+    .map_err(|error| format!("读取 Android 开机自启设置失败：{error}"))
+}
+
+/// Resolve an application class through the Activity's class loader.
+///
+/// `Env::find_class` called from a Rust-attached thread uses the system class
+/// loader, which cannot see classes in the APK. This was the reason the
+/// autostart switch failed on a real Android 12 device.
+fn load_app_class<'local>(
+    env: &mut Env<'local>,
+    activity: &JObject<'local>,
+    name: &str,
+) -> jni::errors::Result<JClass<'local>> {
+    let loader = env
+        .call_method(
+            activity,
+            jni_str!("getClassLoader"),
+            jni_sig!("()Ljava/lang/ClassLoader;"),
+            &[],
+        )?
+        .l()?;
+    let name = env.new_string(name)?;
+    let class = env
+        .call_method(
+            &loader,
+            jni_str!("loadClass"),
+            jni_sig!("(Ljava/lang/String;)Ljava/lang/Class;"),
+            &[JValue::Object(&name)],
+        )?
+        .l()?;
+    env.cast_local::<JClass>(class)
 }
 
 /// Run `f` on the current thread with an attached JNI environment.
@@ -245,16 +372,32 @@ pub fn set_dynamic_wallpaper(path: &std::path::Path) -> Result<(), String> {
             jni_sig!("(Ljava/lang/String;)V"),
             &[JValue::Object(&action)],
         )?;
+        // ComponentName component = new ComponentName(
+        //         activity.getPackageName(), "com.shuying.wallpaperrs.VideoWallpaperService");
+        let package_name = env
+            .call_method(
+                &activity,
+                jni_str!("getPackageName"),
+                jni_sig!("()Ljava/lang/String;"),
+                &[],
+            )?
+            .l()?;
+        let service_name = env.new_string("com.shuying.wallpaperrs.VideoWallpaperService")?;
+        let component = env.new_object(
+            jni_str!("android/content/ComponentName"),
+            jni_sig!("(Ljava/lang/String;Ljava/lang/String;)V"),
+            &[JValue::Object(&package_name), JValue::Object(&service_name)],
+        )?;
         // intent.putExtra("android.service.wallpaper.extra.LIVE_WALLPAPER_COMPONENT", component)
+        // The framework reads this extra with getParcelableExtra(), so it must be a
+        // ComponentName. Passing a String makes the system live-wallpaper picker fail.
         let extra_key =
             env.new_string("android.service.wallpaper.extra.LIVE_WALLPAPER_COMPONENT")?;
-        let extra_value = env
-            .new_string("com.shuying.wallpaperrs/com.shuying.wallpaperrs.VideoWallpaperService")?;
         env.call_method(
             &intent,
             jni_str!("putExtra"),
-            jni_sig!("(Ljava/lang/String;Ljava/lang/String;)Landroid/content/Intent;"),
-            &[JValue::Object(&extra_key), JValue::Object(&extra_value)],
+            jni_sig!("(Ljava/lang/String;Landroid/os/Parcelable;)Landroid/content/Intent;"),
+            &[JValue::Object(&extra_key), JValue::Object(&component)],
         )?;
         // activity.startActivity(intent)：打开系统壁纸预览，用户点「设为壁纸」生效。
         env.call_method(
@@ -277,10 +420,7 @@ pub fn set_dynamic_wallpaper(path: &std::path::Path) -> Result<(), String> {
 /// first sync frame, then `OPTION_CLOSEST` at 1s; applies the rotation
 /// metadata so portrait videos come out upright; compresses to PNG through
 /// `Bitmap.compress(CompressFormat.PNG, …)`.
-pub fn extract_video_poster(
-    video: &std::path::Path,
-    out: &std::path::Path,
-) -> Result<(), String> {
+pub fn extract_video_poster(video: &std::path::Path, out: &std::path::Path) -> Result<(), String> {
     if !video.is_file() {
         return Err(format!("视频文件不存在：{}", video.display()));
     }
