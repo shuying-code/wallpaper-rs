@@ -664,7 +664,23 @@ impl App {
         #[cfg(not(windows))] // 语句
         let tray_hwnd = 0isize; // 变量 tray_hwnd
         app.tray = crate::tray::Tray::install(cc.egui_ctx.clone(), tray_hwnd); // 语句
-                                                                               // Keep timers (slideshow / daily wallpaper) ticking even while hidden.
+        #[cfg(windows)]
+        {
+            // The UI thread may stop receiving redraws while the window is
+            // minimized. Handle single-instance activation on a dedicated
+            // thread so opening the app always restores the running window.
+            let c = cc.egui_ctx.clone();
+            let hwnd = window_hwnd;
+            std::thread::spawn(move || loop {
+                std::thread::sleep(Duration::from_millis(200));
+                if crate::instances::take_show_request() {
+                    unsafe { crate::winhide::show_from_tray(hwnd) };
+                    crate::report::note("单实例：原生线程唤回主界面");
+                    c.request_repaint();
+                }
+            });
+        }
+        // Keep timers (slideshow / daily wallpaper) ticking even while hidden.
         {
             // 语句
             let c = cc.egui_ctx.clone(); // 变量 c
@@ -6283,7 +6299,12 @@ impl eframe::App for App {
         #[cfg(windows)] // 语句
         {
             // 语句
+            let was_hidden = self.window_hidden;
             self.window_hidden = crate::winhide::is_hidden(); // 语句
+            if was_hidden && !self.window_hidden && self.status.contains("已隐藏到系统托盘")
+            {
+                self.status = "已唤回窗口".to_string();
+            }
         } // 块结束
 
         // Global hotkey: show / hide the window (bonus shortcut, tray optional).

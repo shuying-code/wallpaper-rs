@@ -191,6 +191,8 @@ mod desktop {
 
     fn forward_to(copy: &RunningCopy, show_existing: bool) {
         if show_existing {
+            #[cfg(windows)]
+            platform::allow_foreground(copy.pid);
             let _ = request_show(copy.pid);
         }
     }
@@ -289,6 +291,12 @@ mod desktop {
         const WAIT_TIMEOUT: u32 = 258;
         const ERROR_ALREADY_EXISTS: u32 = 183;
         const INSTANCE_MUTEX: &str = "Local\\wallpaper-rs-single-instance-v1";
+
+        pub fn allow_foreground(pid: u32) {
+            unsafe {
+                AllowSetForegroundWindow(pid);
+            }
+        }
 
         pub fn process_entries() -> Vec<ProcessEntry> {
             let mut entries = Vec::new();
@@ -399,6 +407,11 @@ mod desktop {
             fn CloseHandle(handle: *mut c_void) -> i32;
             fn GetLastError() -> i32;
             fn SetLastError(error: u32);
+        }
+
+        #[link(name = "user32")]
+        extern "system" {
+            fn AllowSetForegroundWindow(pid: u32) -> i32;
         }
     }
 
