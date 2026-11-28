@@ -53,6 +53,15 @@ pub struct AuraDevice {
 }
 
 impl AuraDevice {
+    /// 稳定的逐设备配置键：类型 + 设备序号。
+    pub fn key(&self) -> String {
+        Self::key_for(&self.kind, self.index)
+    }
+
+    pub fn key_for(kind: &str, index: u32) -> String {
+        format!("{kind}#{index}")
+    }
+
     pub fn display_name(&self) -> String {
         if self.model.is_empty() || self.model == "Unkown" {
             format!("{} #{}", self.kind, self.index + 1)
@@ -97,6 +106,11 @@ pub struct AuraSnapshot {
     pub active_color: Option<String>,
     pub brightness: u8,
     pub speed: u8,
+    /// 状态 XML 的 Group S0 中出现过 LED 节点的设备键。
+    ///
+    /// 只有这些设备能在同步组里被单独熄灭；例如本机 WallPaper 不在 Group 中，
+    /// UI 会禁用它的开关并明说 Aura 没有提供独立通道。
+    pub switchable_devices: std::collections::BTreeSet<String>,
     /// 采样时间（用于 UI 显示「x 秒前更新」）。
     pub sampled: Option<std::time::Instant>,
 }

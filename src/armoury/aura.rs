@@ -80,6 +80,18 @@ fn powershell() -> &'static str {
     "powershell"
 }
 
+/// PowerShell 只用于后台 COM 采样/下发，绝不能让控制台窗口出现在用户桌面上。
+fn powershell_command() -> std::process::Command {
+    let mut cmd = std::process::Command::new(powershell());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 /// 一次同步读取（200 ms 级）。仅供后台线程调用。
 pub fn sample(cfg: &ArmouryCfg) -> AuraSnapshot {
     let sampled = Some(std::time::Instant::now());
@@ -106,7 +118,7 @@ pub fn sample(cfg: &ArmouryCfg) -> AuraSnapshot {
     let out = dir.join(format!("snap-{}", std::process::id()));
     let out_s = out.to_string_lossy().to_string();
     let _ = std::fs::remove_file(format!("{out_s}.error"));
-    let status = std::process::Command::new(powershell())
+    let status = powershell_command()
         .args([
             "-NoProfile",
             "-NonInteractive",
@@ -147,6 +159,7 @@ pub fn sample(cfg: &ArmouryCfg) -> AuraSnapshot {
         health: Some(AuraHealth::Ready),
         devices: parse_devices(&devices),
         modes: parse_modes(&caps),
+        switchable_devices: parse_switchable_devices(&status_xml),
         exclusive: excl.trim().parse::<i32>().map(|v| v != 0).unwrap_or(true),
         sampled,
         ..Default::default()
@@ -225,7 +238,7 @@ pub fn apply(cfg: &ArmouryCfg) -> Result<(), String> {
     let result_path = dir.join("apply.txt");
     let _ = std::fs::remove_file(&result_path);
 
-    let out = std::process::Command::new(powershell())
+    let out = powershell_command()
         .args([
             "-NoProfile",
             "-NonInteractive",
@@ -316,6 +329,35 @@ fn parse_modes(body: &str) -> Vec<LightMode> {
             })
         })
         .collect()
+}
+
+/// Group S0 中实际带 LED 节点的设备（可被逐设备熄灭）。
+fn parse_switchable_devices(status: &str) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    let Some(group) = xml::nodes(status, "device")
+        .into_iter()
+        .find(|n| xml::attr(&n.tag, "key").as_deref() == Some("Group"))
+    else {
+        return out;
+    };
+    let group_body = &status[group.body_start..group.body_end];
+    let Some(scene) = xml::nodes(group_body, "scene")
+        .into_iter()
+        .find(|n| matches!(xml::attr(&n.tag, "key").as_deref(), Some("S0") | Some("0")))
+    else {
+        return out;
+    };
+    let scene_body = &group_body[scene.body_start..scene.body_end];
+    let mut seen: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+    for led in xml::nodes(scene_body, "led") {
+        let Some(name) = xml::child_text(scene_body, &led, "DeviceName") else {
+            continue;
+        };
+        let index = seen.entry(name.clone()).or_insert(0);
+        out.insert(AuraDevice::key_for(&name, *index));
+        *index += 1;
+    }
+    out
 }
 
 /// 当前生效模式 + 第一颗灯珠的 HSL + 亮度 + 速度。
@@ -441,14 +483,13 @@ pub fn build_payload(status: &str, cfg: &ArmouryCfg) -> Result<String, String> {
     let group_body = &status[group.body_start..group.body_end];
 
     // 1) S0 场景下第一个 `mode key` 改成目标模式。
+    // 2) S0 场景下每颗灯珠的 HSL 与速度（只改已存在的标签，不新增字段）。
+    //    逐设备开关也只作用于 Group S0：关闭的设备写 0，其他设备保持当前效果。
+    //    Non-S0 是关机 / 休眠态，不能拿来做正常灯效模板。
     let scenes = xml::nodes(group_body, "scene");
     let scene = scenes
         .iter()
-        .find(|n| {
-            let k = xml::attr(&n.tag, "key").unwrap_or_default();
-            k == "S0" || k == "0"
-        })
-        .or_else(|| scenes.first());
+        .find(|n| matches!(xml::attr(&n.tag, "key").as_deref(), Some("S0") | Some("0")));
     if let Some(scene) = scene {
         let scene_body = &group_body[scene.body_start..scene.body_end];
         if let Some(mode) = xml::nodes(scene_body, "mode").into_iter().next() {
@@ -456,30 +497,47 @@ pub fn build_payload(status: &str, cfg: &ArmouryCfg) -> Result<String, String> {
             let tag_end = group.body_start + scene.body_start + mode.body_start;
             edits.push((tag_start, tag_end, retag_key(&mode.tag, cfg.lighting.mode)));
         }
-    }
 
-    // 2) 每颗灯珠的 HSL 与速度（只改已存在的标签，不新增字段）。
-    let (h, s, l) = {
-        let c = crate::ui_kit::parse_hex(&cfg.lighting.color);
-        rgb2hsl(c.r(), c.g(), c.b())
-    };
-    for led in xml::nodes(group_body, "led") {
-        let led_start = group.body_start + led.body_start;
-        let led_body = &group_body[led.body_start..led.body_end];
-        for (tag, value) in [
-            ("hue", format!("{h:.6}")),
-            ("saturation", format!("{s:.6}")),
-            ("lightness", format!("{l:.6}")),
-            ("hashue2", format!("{h:.6}")),
-            ("hue2", format!("{h:.6}")),
-            ("speed", format!("{:.0}", cfg.lighting.speed as f32)),
-        ] {
-            if let Some(node) = xml::nodes(led_body, tag).into_iter().next() {
-                edits.push((
-                    led_start + node.body_start,
-                    led_start + node.body_end,
-                    value,
-                ));
+        let (h, s, l) = {
+            let c = crate::ui_kit::parse_hex(&cfg.lighting.color);
+            rgb2hsl(c.r(), c.g(), c.b())
+        };
+        let mut seen: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+        for led in xml::nodes(scene_body, "led") {
+            let led_start = group.body_start + scene.body_start + led.body_start;
+            let led_body = &scene_body[led.body_start..led.body_end];
+            let device = xml::text(led_body, "DeviceName").unwrap_or_default();
+            let index = seen.entry(device.clone()).or_insert(0);
+            let key = AuraDevice::key_for(&device, *index);
+            *index += 1;
+            let on = cfg.lighting.device_enabled(&key);
+            let values = if on {
+                [
+                    ("hue", format!("{h:.6}")),
+                    ("saturation", format!("{s:.6}")),
+                    ("lightness", format!("{l:.6}")),
+                    ("hashue2", format!("{h:.6}")),
+                    ("hue2", format!("{h:.6}")),
+                    ("speed", format!("{:.0}", cfg.lighting.speed as f32)),
+                ]
+            } else {
+                [
+                    ("hue", "0.000000".to_string()),
+                    ("saturation", "0.000000".to_string()),
+                    ("lightness", "0.000000".to_string()),
+                    ("hashue2", "0.000000".to_string()),
+                    ("hue2", "0.000000".to_string()),
+                    ("speed", "0".to_string()),
+                ]
+            };
+            for (tag, value) in values {
+                if let Some(node) = xml::nodes(led_body, tag).into_iter().next() {
+                    edits.push((
+                        led_start + node.body_start,
+                        led_start + node.body_end,
+                        value,
+                    ));
+                }
             }
         }
     }
@@ -544,6 +602,78 @@ mod tests {
     fn missing_group_is_an_error_not_a_silent_write() {
         let cfg = ArmouryCfg::default();
         assert!(build_payload("<root></root>", &cfg).is_err());
+    }
+
+    #[test]
+    fn per_device_switch_only_dims_that_device() {
+        let status = r#"<root><funcid>1</funcid><device key="Group">
+<scene key="S0"><mode key="1">
+<led key="0"><DeviceName>Mainboard_Master</DeviceName><hue>0.1</hue><saturation>0.2</saturation><lightness>0.3</lightness><speed>4</speed></led>
+<led key="1"><DeviceName>AddressableStrip</DeviceName><hue>0.1</hue><saturation>0.2</saturation><lightness>0.3</lightness><speed>4</speed></led>
+</mode></scene></device></root>"#;
+        let mut cfg = ArmouryCfg::default();
+        cfg.lighting.set_device_enabled("AddressableStrip#0", false);
+        let p = build_payload(status, &cfg).expect("payload");
+
+        let first = p.find("Mainboard_Master").unwrap();
+        let second = p.find("AddressableStrip").unwrap();
+        let mainboard = &p[first..second];
+        let strip = &p[second..];
+        assert!(mainboard.contains("<lightness>"), "主板灯光应保留: {p}");
+        assert!(
+            !mainboard.contains("<lightness>0.000000</lightness>"),
+            "主板不应被熄灭: {p}"
+        );
+        assert!(
+            strip.contains("<lightness>0.000000</lightness>"),
+            "ARGB 设备应被熄灭: {p}"
+        );
+    }
+
+    #[test]
+    fn per_device_switch_leaves_non_s0_scene_untouched() {
+        let status = r#"<root><funcid>1</funcid><device key="Group">
+<scene key="S0"><mode key="1">
+<led key="0"><DeviceName>AddressableStrip</DeviceName><hue>0.1</hue><saturation>0.2</saturation><lightness>0.3</lightness><speed>4</speed></led>
+</mode></scene>
+<scene key="Non-S0"><mode key="5">
+<led key="0"><DeviceName>Other</DeviceName><hue>0.4</hue><saturation>0.5</saturation><lightness>0.6</lightness><speed>7</speed></led>
+</mode></scene></device></root>"#;
+        let mut cfg = ArmouryCfg::default();
+        cfg.lighting.set_device_enabled("AddressableStrip#0", false);
+        cfg.lighting.set_device_enabled("Other#0", false);
+        let p = build_payload(status, &cfg).expect("payload");
+
+        let other = p.find("Other").expect("Non-S0 LED 必须保留");
+        let tail = &p[other..];
+        assert!(tail.contains("<hue>0.4</hue>"), "Non-S0 不应被改写: {p}");
+        assert!(
+            tail.contains("<saturation>0.5</saturation>"),
+            "Non-S0 不应被改写: {p}"
+        );
+        assert!(
+            tail.contains("<lightness>0.6</lightness>"),
+            "Non-S0 不应被熄灭: {p}"
+        );
+        assert!(tail.contains("<speed>7</speed>"), "Non-S0 速度应保留: {p}");
+        assert!(
+            p.contains(r#"<scene key="Non-S0"><mode key="5">"#),
+            "Non-S0 的模式不应被改写: {p}"
+        );
+    }
+
+    #[test]
+    fn switchable_devices_follow_group_s0_leds() {
+        let status = r#"<root><device key="Group"><scene key="S0"><mode key="1">
+<led><DeviceName>Mainboard_Master</DeviceName></led>
+<led><DeviceName>AddressableStrip</DeviceName></led>
+<led><DeviceName>AddressableStrip</DeviceName></led>
+</mode></scene><scene key="Non-S0"><mode key="5"><led><DeviceName>Other</DeviceName></led></mode></scene></device></root>"#;
+        let keys = parse_switchable_devices(status);
+        assert!(keys.contains("Mainboard_Master#0"));
+        assert!(keys.contains("AddressableStrip#0"));
+        assert!(keys.contains("AddressableStrip#1"));
+        assert!(!keys.contains("Other#0"));
     }
 
     /// 真实服务集成测试：默认忽略，用 `cargo test --lib aura -- --ignored` 手动跑。

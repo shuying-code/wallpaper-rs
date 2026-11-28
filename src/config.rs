@@ -2,6 +2,7 @@
 
 use crate::wallpaper::Fit; // 引入依赖
 use serde::{Deserialize, Serialize}; // 引入依赖
+use std::collections::BTreeMap;
 use std::collections::BTreeSet; // 引入依赖
 use std::env; // 引入依赖
 use std::path::PathBuf; // 引入依赖
@@ -141,6 +142,9 @@ pub struct LightingCfg {
     pub exclusive_on_write: bool,
     /// 跟随壁纸取色（里程碑）。
     pub sync_with_wallpaper: bool,
+    /// 逐设备灯光开关：key 为稳定设备键（`类型#序号`），缺省视为开启。
+    #[serde(default)]
+    pub devices: BTreeMap<String, bool>,
 }
 
 impl Default for LightingCfg {
@@ -152,7 +156,28 @@ impl Default for LightingCfg {
             speed: 46,
             exclusive_on_write: true,
             sync_with_wallpaper: false,
+            devices: BTreeMap::new(),
         }
+    }
+}
+
+impl LightingCfg {
+    /// 缺省未写入的设备按「开启」处理，旧配置无需迁移。
+    pub fn device_enabled(&self, key: &str) -> bool {
+        self.devices.get(key).copied().unwrap_or(true)
+    }
+
+    pub fn set_device_enabled(&mut self, key: &str, on: bool) {
+        if on {
+            self.devices.remove(key);
+        } else {
+            self.devices.insert(key.to_string(), false);
+        }
+    }
+
+    /// 至少有一台设备处于熄灭状态。
+    pub fn any_device_off(&self) -> bool {
+        self.devices.values().any(|on| !on)
     }
 }
 
@@ -229,12 +254,24 @@ pub struct MediaCfg {
     /// 视频库扫描目录（可多个，递归）。
     #[serde(default)]
     pub video_dirs: Vec<PathBuf>,
-    /// 播放器音量 0–130，默认 80。
+    /// 旧版统一音量 0–130：仅用于迁移，新配置写入 `music_volume` / `video_volume`。
+    #[serde(default)]
+    pub volume: Option<f64>,
+    /// 旧版统一列表循环：仅用于迁移，新配置写入 `music_repeat` / `video_repeat`。
+    #[serde(default)]
+    pub repeat: Option<bool>,
+    /// 音乐播放器音量 0–130，默认 80。
     #[serde(default = "default_volume")]
-    pub volume: f64,
-    /// 列表循环：播完最后一首回到第一首。
+    pub music_volume: f64,
+    /// 视频播放器音量 0–130，默认 80。
+    #[serde(default = "default_volume")]
+    pub video_volume: f64,
+    /// 音乐列表循环：播完最后一首回到第一首。
     #[serde(default = "default_true")]
-    pub repeat: bool,
+    pub music_repeat: bool,
+    /// 视频列表循环：播完最后一段回到第一段。
+    #[serde(default = "default_true")]
+    pub video_repeat: bool,
 }
 
 impl Default for MediaCfg {
@@ -242,8 +279,59 @@ impl Default for MediaCfg {
         Self {
             music_dirs: Vec::new(),
             video_dirs: Vec::new(),
-            volume: 80.0,
-            repeat: true,
+            volume: None,
+            repeat: None,
+            music_volume: 80.0,
+            video_volume: 80.0,
+            music_repeat: true,
+            video_repeat: true,
+        }
+    }
+}
+
+impl MediaCfg {
+    /// 旧配置只有统一的 `volume` / `repeat`：读取时迁移到音乐与视频两份设置，
+    /// 避免升级后音量 / 循环状态凭空丢失。
+    pub fn migrate_legacy(&mut self) {
+        if let Some(v) = self.volume.take() {
+            if v.is_finite() {
+                let v = v.clamp(0.0, 130.0);
+                self.music_volume = v;
+                self.video_volume = v;
+            }
+        }
+        if let Some(r) = self.repeat.take() {
+            self.music_repeat = r;
+            self.video_repeat = r;
+        }
+    }
+
+    pub fn volume_for(&self, kind: crate::media::Kind) -> f64 {
+        match kind {
+            crate::media::Kind::Audio => self.music_volume,
+            crate::media::Kind::Video => self.video_volume,
+        }
+    }
+
+    pub fn set_volume_for(&mut self, kind: crate::media::Kind, volume: f64) {
+        let volume = volume.clamp(0.0, 130.0);
+        match kind {
+            crate::media::Kind::Audio => self.music_volume = volume,
+            crate::media::Kind::Video => self.video_volume = volume,
+        }
+    }
+
+    pub fn repeat_for(&self, kind: crate::media::Kind) -> bool {
+        match kind {
+            crate::media::Kind::Audio => self.music_repeat,
+            crate::media::Kind::Video => self.video_repeat,
+        }
+    }
+
+    pub fn set_repeat_for(&mut self, kind: crate::media::Kind, repeat: bool) {
+        match kind {
+            crate::media::Kind::Audio => self.music_repeat = repeat,
+            crate::media::Kind::Video => self.video_repeat = repeat,
         }
     }
 }
@@ -444,14 +532,23 @@ pub fn config_path() -> PathBuf {
     config_dir().join("config.json") // 调用 config_dir
 } // 块结束
 
+/// 读取 `config.json` 后统一做旧字段迁移，保证 `load()` 与 `.bak` 回退都走同一条路径。
+fn parse_and_migrate(p: &std::path::Path) -> Option<Config> {
+    let mut c: Config = std::fs::read_to_string(p)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())?;
+    c.media.migrate_legacy();
+    Some(c)
+}
+
 impl Config {
     // 实现
     pub fn load() -> Self {
         // 函数 load
         // Prefer the live file; fall back to the last-known-good backup if the
         // live file is missing or was left corrupt by an interrupted write.
-        parse_file(&config_path()) // 调用 parse_file
-            .or_else(|| parse_file(&config_path().with_extension("json.bak"))) // 语句
+        parse_and_migrate(&config_path())
+            .or_else(|| parse_and_migrate(&config_path().with_extension("json.bak")))
             .unwrap_or_default() // 语句
     } // 块结束
 
@@ -478,13 +575,6 @@ impl Config {
             } // 块结束
         } // 块结束
     } // 块结束
-} // 块结束
-
-fn parse_file(p: &std::path::Path) -> Option<Config> {
-    // 函数 parse_file
-    std::fs::read_to_string(p) // 调用 read_to_string
-        .ok() // 语句
-        .and_then(|s| serde_json::from_str(&s).ok()) // 语句
 } // 块结束
 
 #[cfg(test)] // 语句
@@ -555,6 +645,9 @@ mod tests {
         c.sense.away_secs = 180;
         c.sense.lock_actions = vec![LockAction::MonitorOff, LockAction::Lock];
         c.armoury.lighting.color = "#F2557A".to_string();
+        c.armoury
+            .lighting
+            .set_device_enabled("AddressableStrip#1", false);
         c.armoury.fans.preset = "turbo".to_string();
         let s = serde_json::to_string(&c).expect("serialize");
         let back: Config = serde_json::from_str(&s).expect("deserialize");
@@ -562,6 +655,57 @@ mod tests {
         assert_eq!(back.sense.lock_actions.len(), 2);
         assert_eq!(back.armoury.lighting.color, "#F2557A");
         assert_eq!(back.armoury.fans.preset, "turbo");
+        assert!(!back.armoury.lighting.device_enabled("AddressableStrip#1"));
+        assert!(back.armoury.lighting.device_enabled("Mainboard_Master#0"));
+    }
+
+    #[test]
+    fn legacy_lighting_defaults_to_all_devices_on() {
+        let legacy = r##"{"folder":null,"recursive":true,"mode":"Fixed",
+            "interval_secs":60,"shuffle":false,"fit":"Fill","theme":0,
+            "last_path":null,"running":false,"search":"",
+            "armoury":{"enabled":true,"poll_ms":1000,
+                "lighting":{"mode":1,"color":"#2F4BFF","brightness":82,"speed":46,
+                    "exclusive_on_write":true,"sync_with_wallpaper":false},
+                "fans":{"preset":"standard","hysteresis_c":3,"takeover":false,"curve":[]}}}"##;
+        let c: Config = serde_json::from_str(legacy).expect("legacy lighting config should parse");
+        assert!(c.armoury.lighting.device_enabled("Mainboard_Master#0"));
+        assert!(c.armoury.lighting.device_enabled("AddressableStrip#2"));
+    }
+
+    /// 旧配置只有统一的 `volume` / `repeat`：加载时必须迁移到音乐与视频两份设置。
+    /// 这里直接验证迁移函数（`load()` 也走同一路径）。
+    #[test]
+    fn legacy_media_volume_and_repeat_migrate_to_both_sections() {
+        let legacy = r#"{"folder":null,"recursive":true,"mode":"Fixed",
+            "interval_secs":60,"shuffle":false,"fit":"Fill","theme":0,
+            "last_path":null,"running":false,"search":"",
+            "media":{"volume":37.0,"repeat":false}}"#;
+        let mut c: Config = serde_json::from_str(legacy).expect("legacy media config should parse");
+        c.media.migrate_legacy();
+        assert_eq!(c.media.music_volume, 37.0);
+        assert_eq!(c.media.video_volume, 37.0);
+        assert!(!c.media.music_repeat);
+        assert!(!c.media.video_repeat);
+        // 迁移后旧字段被清空，再次保存不会继续携带它。
+        assert!(c.media.volume.is_none());
+        assert!(c.media.repeat.is_none());
+    }
+
+    /// 新配置里音乐 / 视频音量互相独立，各自往返不串值。
+    #[test]
+    fn media_volumes_are_independent_per_section() {
+        let mut c = Config::default();
+        c.media.set_volume_for(crate::media::Kind::Audio, 25.0);
+        c.media.set_volume_for(crate::media::Kind::Video, 95.0);
+        c.media.set_repeat_for(crate::media::Kind::Audio, true);
+        c.media.set_repeat_for(crate::media::Kind::Video, false);
+        let s = serde_json::to_string(&c).expect("serialize");
+        let back: Config = serde_json::from_str(&s).expect("deserialize");
+        assert_eq!(back.media.volume_for(crate::media::Kind::Audio), 25.0);
+        assert_eq!(back.media.volume_for(crate::media::Kind::Video), 95.0);
+        assert!(back.media.repeat_for(crate::media::Kind::Audio));
+        assert!(!back.media.repeat_for(crate::media::Kind::Video));
     }
 
     /// Atomic save writes config.json; reloading it preserves values; a second

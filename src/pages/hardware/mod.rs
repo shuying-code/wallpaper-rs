@@ -58,7 +58,7 @@ pub fn mobile_notice(ui: &mut egui::Ui, tab: crate::app::Tab) {
     ui.add_space(10.0);
     ui.label(
         egui::RichText::new(
-            "移动端只保留「壁纸 / 感知 / 策略 / 设置」四页，硬件控制请在桌面端操作。",
+            "移动端只保留壁纸 / 识别 / 策略 / 通用设置等基础页，硬件控制请在桌面端操作。",
         )
         .size(10.5)
         .color(theme::faint()),

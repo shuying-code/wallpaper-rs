@@ -6,7 +6,7 @@
 
 use crate::theme;
 use eframe::egui;
-use egui::{Align2, Color32, FontId, Pos2, Rect, Response, Rounding, Sense, Stroke, Ui, Vec2};
+use egui::{Align2, Color32, FontId, Id, Pos2, Rect, Response, Rounding, Sense, Stroke, Ui, Vec2};
 
 /// 卡片圆角（设计稿 13px）。
 pub const CARD_R: f32 = 13.0;
@@ -117,19 +117,51 @@ pub fn status_pill(ui: &mut Ui, text: &str, color: Color32) -> Response {
 /// 34×19 胶囊开关。返回是否被点击。
 pub fn switch(ui: &mut Ui, on: &mut bool) -> Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(34.0, 19.0), Sense::click());
-    let t = ui.ctx().animate_bool(resp.id, *on);
-    let track = lerp_color(theme::border2(), theme::accent(), t);
-    ui.painter().rect_filled(rect, Rounding::same(9.5), track);
-    let cx = rect.left() + 9.5 + (rect.width() - 19.0) * t;
-    ui.painter()
-        .circle_filled(Pos2::new(cx, rect.center().y), 7.5, Color32::WHITE);
-    if resp.hovered() {
+    let enabled = ui.is_enabled();
+    paint_switch(ui, rect, resp.id, *on, enabled);
+    if resp.hovered() && enabled {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    if resp.clicked() {
+    if resp.clicked() && enabled {
         *on = !*on;
     }
     resp
+}
+
+/// 在固定矩形里画开关并接管点击，不推进父 `Ui` 的布局游标。
+///
+/// 自绘列表行需要把开关嵌进行内；若这里再开子 `Ui`，父行的布局游标会被
+/// 子控件高度覆盖，导致后续行重叠、副标题被裁掉（实测）。
+pub fn switch_at(ui: &mut Ui, rect: Rect, id: Id, on: &mut bool, enabled: bool) -> Response {
+    let resp = ui.interact(rect, id, Sense::click());
+    paint_switch(ui, rect, resp.id, *on, enabled);
+    if resp.hovered() && enabled {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if resp.clicked() && enabled {
+        *on = !*on;
+    }
+    resp
+}
+
+fn paint_switch(ui: &Ui, rect: Rect, anim_id: Id, on: bool, enabled: bool) {
+    let t = ui.ctx().animate_bool(anim_id, on);
+    let track = if enabled {
+        lerp_color(theme::border2(), theme::accent(), t)
+    } else {
+        theme::extreme()
+    };
+    ui.painter().rect_filled(rect, Rounding::same(9.5), track);
+    let cx = rect.left() + 9.5 + (rect.width() - 19.0) * t;
+    ui.painter().circle_filled(
+        Pos2::new(cx, rect.center().y),
+        7.5,
+        if enabled {
+            Color32::WHITE
+        } else {
+            theme::faint()
+        },
+    );
 }
 
 /// 分段组：返回被点中的下标（未点击返回 `None`）。

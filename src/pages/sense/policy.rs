@@ -68,7 +68,7 @@ struct Preset {
 const PRESETS: [Preset; 3] = [
     Preset {
         name: "办公室",
-        desc: "30s · 人脸解锁 · 陌生人立即锁",
+        desc: "30s · 自动唤醒提示 · 陌生人策略待接入",
         away: 30,
         pin: false,
         stranger: true,
@@ -84,7 +84,7 @@ const PRESETS: [Preset; 3] = [
     },
     Preset {
         name: "公共空间",
-        desc: "10s · 人脸+PIN · 全量本地留痕",
+        desc: "10s · 需 PIN 提示 · 快照待接入",
         away: 10,
         pin: true,
         stranger: true,
@@ -204,8 +204,16 @@ fn away_card(ctx: &mut SenseCtx, ui: &mut Ui) {
             let mut picked = None;
             setting_row(
                 ui,
-                "人脸消失时长",
-                "连续检测不到人脸达到阈值后开始锁定倒计时",
+                if ctx.view.camera_live {
+                    "人脸消失时长"
+                } else {
+                    "键鼠空闲时长"
+                },
+                if ctx.view.camera_live {
+                    "连续检测不到人脸达到阈值后开始锁定倒计时"
+                } else {
+                    "摄像头未接入：连续无键鼠输入达到阈值后开始锁定倒计时"
+                },
                 super::segments_width(ui, &refs),
                 |ui| {
                     picked = super::segmented_right(ui, &refs, idx);
@@ -493,7 +501,15 @@ fn unlock_card(ctx: &mut SenseCtx, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui_kit::card_title(ui, "解锁策略");
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(RichText::new("仅授权人脸").size(9.0).color(theme::faint()));
+                ui.label(
+                    RichText::new(if ctx.view.camera_live {
+                        "仅授权人脸"
+                    } else {
+                        "人脸识别未接入"
+                    })
+                    .size(9.0)
+                    .color(theme::faint()),
+                );
             });
         });
         ui.add_space(8.0);
@@ -501,7 +517,11 @@ fn unlock_card(ctx: &mut SenseCtx, ui: &mut Ui) {
         setting_row(
             ui,
             "回到座位自动解锁",
-            "检测到已授权人脸 → 唤醒显示器并触发解锁提示",
+            if ctx.view.camera_live {
+                "检测到已授权人脸 → 唤醒显示器并触发解锁提示"
+            } else {
+                "摄像头未接入：当前仅保存配置，不会识别人脸"
+            },
             40.0,
             |ui| {
                 ui_kit::switch(ui, &mut ctx.cfg.auto_unlock);
@@ -550,20 +570,23 @@ fn unlock_card(ctx: &mut SenseCtx, ui: &mut Ui) {
             ui_kit::card_title(ui, "解锁前置条件");
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(
-                    RichText::new("全部满足才自动解锁")
-                        .size(9.0)
-                        .color(theme::faint()),
+                    RichText::new(if ctx.view.camera_live {
+                        "全部满足才自动解锁"
+                    } else {
+                        "接入后判定"
+                    })
+                    .size(9.0)
+                    .color(theme::faint()),
                 );
             });
         });
-        let pin_needed = ctx.cfg.require_pin;
-        let items: [(&str, bool); 6] = [
-            ("人脸相似度 ≥ 90%", true),
-            ("Windows Hello 可用", true),
-            ("无锁定策略冲突", true),
-            ("账户在授权名单", true),
-            ("非他人会话", !pin_needed),
-            ("离开时长 ≥ 5s", !pin_needed),
+        let items: [(&str, Option<bool>); 6] = [
+            ("人脸相似度 ≥ 90%", None),
+            ("Windows Hello 可用", None),
+            ("无锁定策略冲突", None),
+            ("账户在授权名单", None),
+            ("非他人会话", None),
+            ("离开时长 ≥ 5s", None),
         ];
         // 行优先铺：读起来是「左、右、左、右」，而不是先读完整列。
         let rows = (items.len() + 1) / 2;
@@ -578,12 +601,22 @@ fn unlock_card(ctx: &mut SenseCtx, ui: &mut Ui) {
                         let Some((text, ok)) = items.get(idx) else {
                             continue;
                         };
-                        let color = if *ok { theme::mint() } else { theme::faint() };
-                        super::check_item(ui, *ok, text, color);
+                        match ok {
+                            Some(true) => super::check_item(ui, true, text, theme::mint()),
+                            Some(false) => super::check_item(ui, false, text, theme::danger()),
+                            None => super::pending_item(ui, text),
+                        }
                     }
                 });
             }
         });
+        ui.label(
+            RichText::new(
+                "摄像头采集与本地特征库尚未接入（里程碑 M2 / M3）；以上条件均标记为「—」，接入后才有真实结果。",
+            )
+            .size(9.0)
+            .color(theme::faint()),
+        );
 
         ui.add_space(8.0);
         ui.horizontal(|ui| {
@@ -617,11 +650,31 @@ fn fallback_card(ctx: &mut SenseCtx, ui: &mut Ui) {
         let gap = 10.0;
         let w = ui.available_width();
         let cell_w = (w - gap * (cols as f32 - 1.0)) / cols as f32;
-        let items: [(&str, &str, &str); 4] = [
-            ("policy.fb_pin", "识别失败 3 次", "自动退回 PIN / 密码"),
-            ("policy.fb_cam", "摄像头不可用", "自动停用感知并提示"),
-            ("policy.fb_stranger", "陌生人脸", "立即锁定 · 不自动解锁"),
-            ("policy.fb_mislock", "连续误锁 3 次", "自动暂停感知 1 小时"),
+        let items: [(&str, &str, &str, &str); 4] = [
+            (
+                "policy.fb_pin",
+                "识别失败 3 次",
+                "自动退回 PIN / 密码",
+                "未接入",
+            ),
+            (
+                "policy.fb_cam",
+                "摄像头不可用",
+                "保留锁屏与空闲检测",
+                "已生效",
+            ),
+            (
+                "policy.fb_stranger",
+                "陌生人脸",
+                "需人脸识别接入后生效",
+                "未接入",
+            ),
+            (
+                "policy.fb_mislock",
+                "连续误锁 3 次",
+                "自动暂停感知 1 小时",
+                "未接入",
+            ),
         ];
         for row in 0..(items.len() + cols - 1) / cols {
             ui.horizontal_top(|ui| {
@@ -631,7 +684,7 @@ fn fallback_card(ctx: &mut SenseCtx, ui: &mut Ui) {
                     if i >= items.len() {
                         continue;
                     }
-                    let (key, title, desc) = items[i];
+                    let (key, title, desc, state) = items[i];
                     ui.allocate_ui_with_layout(
                         Vec2::new(cell_w, 0.0),
                         Layout::top_down(Align::Min),
@@ -644,12 +697,25 @@ fn fallback_card(ctx: &mut SenseCtx, ui: &mut Ui) {
                                             .strong()
                                             .color(theme::text()),
                                     );
+                                    let _ = key;
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        mem_switch(ui, key, true);
+                                        ui_kit::badge(
+                                            ui,
+                                            state,
+                                            if state == "已生效" {
+                                                theme::mint_soft()
+                                            } else {
+                                                theme::extreme()
+                                            },
+                                            if state == "已生效" {
+                                                theme::mint()
+                                            } else {
+                                                theme::faint()
+                                            },
+                                        );
                                     });
                                 });
                                 ui.label(RichText::new(desc).size(9.3).color(theme::faint()));
-                                ui.label(RichText::new("本地偏好").size(8.5).color(theme::faint()));
                             });
                         },
                     );
@@ -659,7 +725,7 @@ fn fallback_card(ctx: &mut SenseCtx, ui: &mut Ui) {
         ui.add_space(4.0);
         ui.label(
             RichText::new(
-                "陌生人脸只记录时间与置信度，不保存画面；关闭「严格模式」后陌生人脸不触发锁定。",
+                "摄像头不可用时，程序继续用键鼠空闲检测锁屏；陌生人相关规则需人脸识别接入后生效。",
             )
             .size(9.0)
             .color(theme::faint()),
@@ -676,7 +742,7 @@ fn faces_card(ctx: &mut SenseCtx, ui: &mut Ui) {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(
                     RichText::new(format!(
-                        "{} 人 · 本地加密特征库",
+                        "{} 人 · 仅名单占位（特征库未接入）",
                         ctx.cfg.authorized_faces.len()
                     ))
                     .size(9.0)
@@ -696,7 +762,7 @@ fn faces_card(ctx: &mut SenseCtx, ui: &mut Ui) {
             ) {}
             ui.add_space(4.0);
             ui.label(
-                RichText::new("信任边界：DPAPI 加密存在本机；识别在本地完成，不上传云端。")
+                RichText::new("当前只保存姓名列表，不采集、不存储任何生物特征。")
                     .size(9.0)
                     .color(theme::faint()),
             );
@@ -744,19 +810,13 @@ fn faces_card(ctx: &mut SenseCtx, ui: &mut Ui) {
                                             .color(theme::text()),
                                     );
                                     ui.label(
-                                        RichText::new(if i == 0 {
-                                            "本人"
-                                        } else {
-                                            "家庭成员"
-                                        })
-                                        .size(9.0)
-                                        .color(theme::faint()),
+                                        RichText::new("名单占位").size(9.0).color(theme::faint()),
                                     );
                                     super::badge_centered(
                                         ui,
-                                        "+PIN",
-                                        theme::accent_soft(),
-                                        theme::accent_deep(),
+                                        "未注册特征",
+                                        theme::extreme(),
+                                        theme::faint(),
                                     );
                                 });
                             });
@@ -767,11 +827,9 @@ fn faces_card(ctx: &mut SenseCtx, ui: &mut Ui) {
         }
         ui.add_space(4.0);
         ui.label(
-            RichText::new(
-                "特征向量以 DPAPI 加密存于本机，登出账户后不可读取；删除即物理删除，无云端备份。",
-            )
-            .size(9.0)
-            .color(theme::faint()),
+            RichText::new("这些姓名只是配置占位；特征采集、加密存储与本地识别将在 M3 接入。")
+                .size(9.0)
+                .color(theme::faint()),
         );
     });
 }
@@ -831,6 +889,6 @@ fn recent_card(ctx: &mut SenseCtx, ui: &mut Ui) {
             });
         }
         ui.add_space(6.0);
-        ui_kit::kv_row(ui, "锁定瞬间保存截图", "关", theme::faint());
+        ui_kit::kv_row(ui, "锁定瞬间保存截图", "未接入（—）", theme::faint());
     });
 }

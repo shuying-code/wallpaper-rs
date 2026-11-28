@@ -4,13 +4,14 @@
 //! 能打开），本版未接入，所以详情里明说「未接入」而不是填 0。
 
 use super::HwCtx;
+use crate::pages::PageAction;
 use crate::{armoury::AuraDevice, theme, ui_kit};
 use eframe::egui;
 use egui::{Align, Layout, RichText, Sense, Vec2};
 
 pub fn ui(ctx: &mut HwCtx, ui: &mut egui::Ui) {
     ui.add_space(2.0);
-    let devices = ctx.view.devices();
+    let devices = ctx.view.devices().to_vec();
     let aura_n = devices.len();
     let leds = ctx.view.aura.led_count;
     ui_kit::page_title(
@@ -64,7 +65,7 @@ fn selected(ctx: &HwCtx, ui: &egui::Ui) -> usize {
 // ---- device list ------------------------------------------------------------
 
 fn list_card(ctx: &mut HwCtx, ui: &mut egui::Ui) {
-    let devices = ctx.view.devices();
+    let devices = ctx.view.devices().to_vec();
     let mut sel = selected(ctx, ui);
     let mut clicked: Option<usize> = None;
 
@@ -96,7 +97,7 @@ fn list_card(ctx: &mut HwCtx, ui: &mut egui::Ui) {
             return;
         }
         for (i, d) in devices.iter().enumerate() {
-            if device_row(ui, d, i == sel) {
+            if device_row(ctx, ui, d, i == sel) {
                 clicked = Some(i);
             }
             ui.add_space(6.0);
@@ -111,10 +112,18 @@ fn list_card(ctx: &mut HwCtx, ui: &mut egui::Ui) {
     });
 }
 
-fn device_row(ui: &mut egui::Ui, d: &AuraDevice, is_sel: bool) -> bool {
-    let h = 50.0;
+fn device_row(ctx: &mut HwCtx, ui: &mut egui::Ui, d: &AuraDevice, is_sel: bool) -> bool {
+    let h = 58.0;
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, h), Sense::click());
+    let key = d.key();
+    let switchable = ctx.view.aura.switchable_devices.contains(&key);
+    let mut on = ctx.cfg.lighting.device_enabled(&key);
+    let before = on;
+    let switch_rect = egui::Rect::from_min_size(
+        egui::Pos2::new(rect.right() - 43.0, rect.top() + 10.0),
+        Vec2::new(34.0, 19.0),
+    );
     let fill = if is_sel {
         theme::accent_soft()
     } else if resp.hovered() {
@@ -143,56 +152,64 @@ fn device_row(ui: &mut egui::Ui, d: &AuraDevice, is_sel: bool) -> bool {
 
     let name = d.display_name();
     p.text(
-        egui::Pos2::new(icon_rect.right() + 9.0, rect.top() + 13.0),
+        egui::Pos2::new(icon_rect.right() + 9.0, rect.top() + 12.0),
         egui::Align2::LEFT_TOP,
         name,
         egui::FontId::proportional(12.5),
         theme::text(),
     );
     let sub = if d.manufacture.is_empty() {
-        format!("{} · 序号 {}", d.kind, d.index)
+        format!("{} · {} 灯珠 · 序号 {}", d.kind, d.leds, d.index)
     } else {
-        format!("{} · {}", d.kind, d.manufacture)
+        format!("{} · {} 灯珠 · {}", d.kind, d.leds, d.manufacture)
     };
     p.text(
-        egui::Pos2::new(icon_rect.right() + 9.0, rect.top() + 30.0),
+        egui::Pos2::new(icon_rect.right() + 9.0, rect.top() + 32.0),
         egui::Align2::LEFT_TOP,
         sub,
         egui::FontId::proportional(9.5),
         theme::faint(),
     );
 
-    let badge_text = format!("{} 灯珠", d.leds);
-    let galley = p.layout_no_wrap(
-        badge_text.clone(),
-        egui::FontId::proportional(10.5),
-        theme::accent(),
-    );
-    let bw = galley.size().x + 14.0;
-    let brect = egui::Rect::from_min_size(
-        egui::Pos2::new(rect.right() - bw - 9.0, rect.top() + 15.0),
-        Vec2::new(bw, 20.0),
-    );
-    p.rect_filled(brect, egui::Rounding::same(6.0), theme::accent_soft());
-    p.text(
-        brect.center(),
-        egui::Align2::CENTER_CENTER,
-        badge_text,
-        egui::FontId::proportional(10.5),
-        theme::accent(),
-    );
+    if !switchable {
+        p.text(
+            egui::Pos2::new(rect.right() - 48.0, rect.top() + 34.0),
+            egui::Align2::RIGHT_TOP,
+            "不可独立控制",
+            egui::FontId::proportional(8.5),
+            theme::faint(),
+        );
+    }
+    let changed = ui_kit::switch_at(
+        ui,
+        switch_rect,
+        egui::Id::new(("hw_dev_switch", &key)),
+        &mut on,
+        switchable,
+    )
+    .changed()
+        && switchable;
+    if changed && before != on {
+        ctx.cfg.lighting.set_device_enabled(&key, on);
+        ctx.actions.push(PageAction::Save);
+        ctx.actions.push(PageAction::ApplyAura);
+    }
 
-    if resp.hovered() {
+    if resp.hovered()
+        && !switch_rect.contains(ui.input(|i| i.pointer.hover_pos()).unwrap_or_default())
+    {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     resp.clicked()
+        && !switch_rect.contains(ui.input(|i| i.pointer.interact_pos()).unwrap_or_default())
 }
 
 // ---- detail -----------------------------------------------------------------
 
 fn detail_card(ctx: &mut HwCtx, ui: &mut egui::Ui) {
-    let devices = ctx.view.devices();
+    let devices = ctx.view.devices().to_vec();
     let sel = selected(ctx, ui);
+    let mut toggle: Option<(String, bool)> = None;
     ui_kit::card(ui, |ui| {
         ui.set_min_width(ui.available_width());
         ui_kit::card_title(ui, "设备详情");
@@ -208,6 +225,9 @@ fn detail_card(ctx: &mut HwCtx, ui: &mut egui::Ui) {
             return;
         };
 
+        let key = d.key();
+        let switchable = ctx.view.aura.switchable_devices.contains(&key);
+        let mut on = ctx.cfg.lighting.device_enabled(&key);
         ui.horizontal(|ui| {
             let (r, _) = ui.allocate_exact_size(Vec2::splat(34.0), Sense::hover());
             ui.painter()
@@ -236,8 +256,21 @@ fn detail_card(ctx: &mut HwCtx, ui: &mut egui::Ui) {
                     .color(theme::faint()),
                 );
             });
+            if !switchable {
+                ui_kit::status_pill(ui, "不可独立控制", theme::subtext());
+            } else if on {
+                ui_kit::status_pill(ui, "灯光开启", theme::mint());
+            } else {
+                ui_kit::status_pill(ui, "灯光已熄灭", theme::amber());
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui_kit::status_pill(ui, "Aura 已同步", theme::mint());
+                if ui
+                    .add_enabled_ui(switchable, |ui| ui_kit::switch(ui, &mut on))
+                    .inner
+                    .changed()
+                {
+                    toggle = Some((key.clone(), on));
+                }
             });
         });
         ui.add_space(8.0);
@@ -272,7 +305,36 @@ fn detail_card(ctx: &mut HwCtx, ui: &mut egui::Ui) {
             };
             ui_kit::kv_row(ui, "矩阵", &matrix, theme::subtext());
             ui_kit::kv_row(ui, "序号", &format!("#{}", d.index), theme::subtext());
+            ui_kit::kv_row(
+                ui,
+                "灯光开关",
+                if switchable {
+                    if on {
+                        "开启"
+                    } else {
+                        "关闭（软件熄灭）"
+                    }
+                } else {
+                    "不可独立控制"
+                },
+                if switchable && !on {
+                    theme::amber()
+                } else {
+                    theme::subtext()
+                },
+            );
         });
+
+        if !switchable {
+            ui.add_space(8.0);
+            ui_kit::notice_card(
+                ui,
+                theme::amber(),
+                "该设备没有独立灯光通道",
+                "Aura 的 Group 同步状态里没有这台设备的 LED 节点，软件无法只熄灭它而不影响其他设备。开关保留为「不可独立控制」，不会伪造成功。",
+                None,
+            );
+        }
 
         ui.add_space(10.0);
         ui_kit::notice_card(
@@ -294,6 +356,11 @@ fn detail_card(ctx: &mut HwCtx, ui: &mut egui::Ui) {
         ui_kit::kv_row(ui, "Aura COM", "✓ 可用（免管理员）", theme::mint());
         ui_kit::kv_row(ui, "Asusgio3", "✗ 需管理员", theme::amber());
     });
+    if let Some((key, on)) = toggle {
+        ctx.cfg.lighting.set_device_enabled(&key, on);
+        ctx.actions.push(PageAction::Save);
+        ctx.actions.push(PageAction::ApplyAura);
+    }
 }
 
 // ---- fan channels -----------------------------------------------------------

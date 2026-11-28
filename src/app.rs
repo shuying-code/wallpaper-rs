@@ -32,7 +32,7 @@ const PAGE_IMAGES: usize = 48; // 常量 PAGE_IMAGES
 /// a 3000-image full-disk scan can't pin ~1.4 GB of textures.
 const TEX_CAP: usize = 300; // 常量 TEX_CAP
 
-/// 一级菜单。壁纸 / 音乐 / 视频 / 硬件 / 人脸识别并列，各自带二级页。
+/// 一级菜单。壁纸 / 音乐 / 视频 / 硬件 / 智能感知并列，各自带二级页。
 ///
 /// 以后要加「音乐」「视频」等分区，只需在这里加一个变体、在 [`Section::children`]
 /// 里列出子页，再补一个图标画法即可，外壳不用改。
@@ -53,18 +53,30 @@ impl Section {
             Section::Music => "音乐",
             Section::Video => "视频",
             Section::Hardware => "硬件",
-            Section::Sense => "人脸识别",
+            Section::Sense => "智能感知",
         }
     }
 
     /// 该一级菜单下的二级页，顺序即侧栏顺序。
     pub fn children(self) -> &'static [Tab] {
         match self {
-            Section::Wallpaper => &[Tab::Web4k, Tab::Library, Tab::Slideshow, Tab::Online],
-            Section::Music => &[Tab::Music],
-            Section::Video => &[Tab::Video],
-            Section::Hardware => &[Tab::Dashboard, Tab::Devices, Tab::Lighting, Tab::Fan],
-            Section::Sense => &[Tab::Sense, Tab::Policy],
+            Section::Wallpaper => &[
+                Tab::Web4k,
+                Tab::Library,
+                Tab::Slideshow,
+                Tab::Online,
+                Tab::WallpaperSettings,
+            ],
+            Section::Music => &[Tab::Music, Tab::MusicSettings],
+            Section::Video => &[Tab::Video, Tab::VideoSettings],
+            Section::Hardware => &[
+                Tab::Dashboard,
+                Tab::Devices,
+                Tab::Lighting,
+                Tab::Fan,
+                Tab::HardwareSettings,
+            ],
+            Section::Sense => &[Tab::Sense, Tab::Policy, Tab::SenseSettings],
         }
     }
 
@@ -98,23 +110,49 @@ pub enum Tab {
     Online,    // 语句
     Music,     // 本地音乐播放器
     Video,     // 本地视频播放器
-    Settings,  // 语句
-    About,     // 语句
+    WallpaperSettings,
+    MusicSettings,
+    VideoSettings,
+    HardwareSettings,
+    SenseSettings,
+    Settings, // 通用设置（全局工具页）
+    About,    // 语句
 } // 块结束
 
 impl Tab {
     /// 这个子页归属哪个一级菜单。
     pub fn section(self) -> Section {
         match self {
-            Tab::Web4k | Tab::Library | Tab::Slideshow | Tab::Online => Section::Wallpaper,
-            Tab::Music => Section::Music,
-            Tab::Video => Section::Video,
-            Tab::Dashboard | Tab::Devices | Tab::Lighting | Tab::Fan => Section::Hardware,
-            Tab::Sense | Tab::Policy => Section::Sense,
-            // 设置 / 关于是全局工具页，挂在「壁纸」下只为让面包屑有个落点；
+            Tab::Web4k | Tab::Library | Tab::Slideshow | Tab::Online | Tab::WallpaperSettings => {
+                Section::Wallpaper
+            }
+            Tab::Music | Tab::MusicSettings => Section::Music,
+            Tab::Video | Tab::VideoSettings => Section::Video,
+            Tab::Dashboard | Tab::Devices | Tab::Lighting | Tab::Fan | Tab::HardwareSettings => {
+                Section::Hardware
+            }
+            Tab::Sense | Tab::Policy | Tab::SenseSettings => Section::Sense,
+            // 通用设置 / 关于是全局工具页，挂在「壁纸」下只为让面包屑有落点；
             // 它们真正的入口固定在侧栏底部。
             Tab::Settings | Tab::About => Section::Wallpaper,
         }
+    }
+
+    /// 每个一级菜单的「设置」页（该分区的专属配置）。
+    pub fn is_section_settings(self) -> bool {
+        matches!(
+            self,
+            Tab::WallpaperSettings
+                | Tab::MusicSettings
+                | Tab::VideoSettings
+                | Tab::HardwareSettings
+                | Tab::SenseSettings
+        )
+    }
+
+    /// 全局工具页（通用设置 / 关于），不属于任何业务分区。
+    pub fn is_global(self) -> bool {
+        matches!(self, Tab::Settings | Tab::About)
     }
 
     /// 手机端全屏页标题栏文案。
@@ -132,7 +170,12 @@ impl Tab {
             Tab::Online => "每日壁纸",
             Tab::Music => "音乐播放器",
             Tab::Video => "视频播放器",
-            Tab::Settings => "设置",
+            Tab::WallpaperSettings => "壁纸设置",
+            Tab::MusicSettings => "音乐设置",
+            Tab::VideoSettings => "视频设置",
+            Tab::HardwareSettings => "硬件设置",
+            Tab::SenseSettings => "识别设置",
+            Tab::Settings => "通用设置",
             Tab::About => "关于",
         }
     }
@@ -141,7 +184,7 @@ impl Tab {
     fn is_hardware(self) -> bool {
         matches!(
             self,
-            Tab::Dashboard | Tab::Devices | Tab::Lighting | Tab::Fan
+            Tab::Dashboard | Tab::Devices | Tab::Lighting | Tab::Fan | Tab::HardwareSettings
         )
     }
 
@@ -160,7 +203,12 @@ impl Tab {
             Tab::Online => "每日壁纸",
             Tab::Music => "音乐播放器",
             Tab::Video => "视频播放器",
-            Tab::Settings => "设置",
+            Tab::WallpaperSettings => "壁纸设置",
+            Tab::MusicSettings => "音乐设置",
+            Tab::VideoSettings => "视频设置",
+            Tab::HardwareSettings => "硬件设置",
+            Tab::SenseSettings => "识别设置",
+            Tab::Settings => "通用设置",
             Tab::About => "关于",
         }
     }
@@ -639,6 +687,8 @@ pub struct App {
     armoury: Option<crate::armoury::ArmouryWorker>,
     /// 灯效下发中的接收端（Aura 提交约 10 秒）。
     aura_apply_rx: Option<Receiver<Result<(), String>>>,
+    /// 下发期间又有新改动：完成后自动用最新配置再下发一次。
+    aura_apply_pending: bool,
     /// 最近一次下发结果。
     aura_apply_msg: Option<(bool, String)>,
     /// 硬件页是否已激活过后台采样。
@@ -807,6 +857,7 @@ impl App {
             sense_blur_rx: None,
             armoury: None,
             aura_apply_rx: None,
+            aura_apply_pending: false,
             aura_apply_msg: None,
             armoury_active: false,
             media_lib: None,
@@ -893,8 +944,8 @@ impl App {
             }); // 语句
         } // 块结束
         app.scan(); // 语句
-                    // 智能感知：首版摄像头后端未编译，`start` 会立刻回报失败并退化到
-                    // 系统空闲检测（真通道）。UI 会如实标注「画面采集未接入」。
+                    // 智能感知：首版摄像头后端未编译，`start` 会直接返回失败并退化到
+                    // 系统空闲检测（真通道）。UI 会如实标注「摄像头采集尚未接入」。
         if app.cfg.sense.enable {
             match crate::sense::camera::CameraWorker::start(&app.cfg.sense) {
                 Ok(cam) => {
@@ -1645,6 +1696,9 @@ impl App {
         if let Some((tab, w, h, settle, pending)) = info {
             // 条件分支
             self.tab = tab_from_index(tab); // 语句
+                                            // 窄屏截取分区设置页时，模拟「从底部一级菜单进入该分区」的路径，
+                                            // 让真实二级页签出现在画面里，而不是只证明页面本身能画出来。
+            self.nav_from_mobile = self.tab.is_section_settings() && w < COMPACT_BREAK;
             if settle == 0 && !pending {
                 // 条件分支
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
@@ -2640,19 +2694,41 @@ impl App {
     fn sense_view(&self) -> SenseView {
         let now = Instant::now();
         let status = self.sense.status(now);
-        let camera = self
-            .sense_cam
-            .as_ref()
-            .map(|c| format!("{} · 采集后端未接入", c.device));
+        // 当前构建没有采集后端：`start` 直接返回 `Err`，所以这里没有 worker 可轮询，
+        // `camera_live` 恒为 `false`。只有未来真正拿到出帧后，才允许展示识别指标。
+        let camera_live = false;
+        let camera = self.sense_cam.as_ref().map(|c| c.device.clone());
+        let camera_error = self
+            .sense_events
+            .iter()
+            .find_map(|(_, text)| text.strip_prefix("摄像头不可用：").map(str::to_string))
+            .or_else(|| {
+                self.cfg
+                    .sense
+                    .enable
+                    .then(|| "摄像头采集尚未接入（里程碑 M2）".to_string())
+            });
+        let camera_status = if camera_live {
+            "采集后端出帧中".to_string()
+        } else if !self.cfg.sense.enable {
+            "感知总开关已关闭；摄像头采集尚未接入（里程碑 M2）".to_string()
+        } else if let Some(err) = camera_error.as_ref() {
+            err.clone()
+        } else {
+            "摄像头采集尚未接入（里程碑 M2）".to_string()
+        };
         SenseView {
             status,
             camera,
-            camera_live: self.sense_cam.as_ref().map(|_| false).unwrap_or(false),
+            camera_live,
+            camera_status,
+            camera_error,
             idle_secs: crate::sense::idle_seconds(),
             events: self.sense_events.clone(),
             locked_today: self.sense_stats.locked,
             unlock_hints_today: self.sense_stats.unlock_hints,
             strangers_today: self.sense_stats.strangers,
+            away_today: self.sense_stats.away_events,
             can_lock: cfg!(windows),
         }
     }
@@ -2794,16 +2870,21 @@ impl App {
                 }
                 self.sync_media_state();
             }
-            MediaAction::Volume(v) => {
-                self.cfg.media.volume = v;
-                if let Some(m) = self.media_mpv.as_mut() {
-                    let _ = m.set_volume(v);
+            MediaAction::Volume(kind, v) => {
+                self.cfg.media.set_volume_for(kind, v);
+                // 只把音量发给正在播放、且属于同一分区的播放器实例。
+                if self.media_kind == kind {
+                    if let Some(m) = self.media_mpv.as_mut() {
+                        let _ = m.set_volume(v);
+                    }
                 }
                 self.sync_media_state();
             }
-            MediaAction::Mute => {
-                if let Some(m) = self.media_mpv.as_mut() {
-                    let _ = m.toggle_mute();
+            MediaAction::Mute(kind) => {
+                if self.media_kind == kind {
+                    if let Some(m) = self.media_mpv.as_mut() {
+                        let _ = m.toggle_mute();
+                    }
                 }
                 self.sync_media_state();
             }
@@ -2912,7 +2993,7 @@ impl App {
         if self.media_mpv.is_none() || self.media_kind != kind {
             if self.media_start_rx.is_none() {
                 let (tx, rx) = std::sync::mpsc::channel();
-                let volume = self.cfg.media.volume;
+                let volume = self.cfg.media.volume_for(kind);
                 let video = kind == crate::media::Kind::Video;
                 std::thread::spawn(move || {
                     let mut result = crate::media::Mpv::start(video);
@@ -2953,7 +3034,9 @@ impl App {
         let cur = self
             .media_playing
             .and_then(|id| list.iter().position(|t| t.id == id));
-        if let Some(i) = crate::media::next_index(list.len(), cur, step, self.cfg.media.repeat) {
+        if let Some(i) =
+            crate::media::next_index(list.len(), cur, step, self.cfg.media.repeat_for(kind))
+        {
             self.media_play(ctx, kind, list[i].id);
         }
     }
@@ -3068,8 +3151,12 @@ impl App {
                     if self.aura_apply_rx.is_none() {
                         let cfg = self.cfg.armoury.clone();
                         self.aura_apply_rx = Some(crate::armoury::aura::apply_async(cfg));
+                        self.aura_apply_pending = false;
                         self.aura_apply_msg = None;
                         self.status = "正在下发灯效（Aura 提交约 10 秒）".to_string();
+                    } else {
+                        self.aura_apply_pending = true;
+                        self.status = "已有下发任务，完成后再按最新配置重发".to_string();
                     }
                 }
                 PageAction::RefreshHardware => {
@@ -3262,7 +3349,9 @@ impl App {
         });
         // 系统空闲：真实的退化通道。空闲达到阈值 → 视为离开（摄像头未接入时）。
         let idle = crate::sense::idle_seconds();
-        let camera_live = self.sense_cam.as_ref().map(|_| false).unwrap_or(false);
+        let camera_live = false;
+        // 全屏豁免：前台窗口整屏覆盖时暂停「离开」判定，避免看视频 / 玩游戏时锁屏。
+        let fullscreen = self.cfg.sense.exempt_fullscreen && crate::sense::foreground_fullscreen();
 
         let ev = if interacting {
             Some(crate::sense::SenseEvent::InputActivity)
@@ -3287,7 +3376,7 @@ impl App {
         }
 
         // 没有摄像头时，用「系统空闲 ≥ away_secs」驱动离开判定。
-        if !camera_live {
+        if !camera_live && !fullscreen {
             if let Some(idle) = idle {
                 let away = self.cfg.sense.away_secs.max(5) as u64;
                 let presence = self.sense.presence();
@@ -3360,16 +3449,26 @@ impl App {
             match rx.try_recv() {
                 Ok(Ok(())) => {
                     self.aura_apply_rx = None;
-                    self.aura_apply_msg = Some((true, "灯效已下发到全部设备".to_string()));
-                    self.status = "灯效已下发".to_string();
+                    if self.aura_apply_pending {
+                        self.aura_apply_pending = false;
+                        let cfg = self.cfg.armoury.clone();
+                        self.aura_apply_rx = Some(crate::armoury::aura::apply_async(cfg));
+                        self.aura_apply_msg = None;
+                        self.status = "灯效配置已更新，正在按最新开关重新下发".to_string();
+                    } else {
+                        self.aura_apply_msg = Some((true, "灯效已按设备开关下发完成".to_string()));
+                        self.status = "灯效已下发".to_string();
+                    }
                 }
                 Ok(Err(e)) => {
                     self.aura_apply_rx = None;
+                    self.aura_apply_pending = false;
                     self.aura_apply_msg = Some((false, e.clone()));
                     self.status = format!("灯效下发失败：{e}");
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.aura_apply_rx = None;
+                    self.aura_apply_pending = false;
                     self.aura_apply_msg = Some((false, "下发线程异常退出".to_string()));
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -4314,7 +4413,7 @@ impl App {
                             ui.spacing_mut().item_spacing.x = 5.0;
                             // 窄窗顶部空间紧张，只留页名；面包屑只在桌面上出现。
                             if !self.compact {
-                                let crumb = if self.tab == Tab::Settings || self.tab == Tab::About {
+                                let crumb = if self.tab.is_global() {
                                     "工具"
                                 } else {
                                     self.tab.section().label()
@@ -4676,7 +4775,7 @@ impl App {
 
     /// 左侧两级导航：72px 一级分区栏 + 152px 二级子页栏。
     ///
-    /// 一级只放「壁纸 / 硬件 / 人脸识别」这类大块，二级放该块下的具体页面。
+    /// 一级只放「壁纸 / 硬件 / 智能感知」这类大块，二级放该块下的具体页面。
     /// 一级栏底部固定「设置 / 关于 / 主题」，它们不属于任何业务分区。
     fn draw_sidebar(&mut self, ctx: &egui::Context) {
         if self.cfg.sidebar_hidden {
@@ -4684,7 +4783,7 @@ impl App {
         }
         let section = self.tab.section();
         // 设置 / 关于不属于任何业务分区，打开时一级栏不高亮任何分区。
-        let on_global = self.tab == Tab::Settings || self.tab == Tab::About;
+        let on_global = self.tab.is_global();
         let mut goto: Option<Tab> = None;
         let mut new_section: Option<Section> = None;
 
@@ -4808,7 +4907,7 @@ impl App {
             });
 
         if let Some(s) = new_section {
-            if s != section || self.tab == Tab::Settings || self.tab == Tab::About {
+            if s != section || self.tab.is_global() {
                 goto = Some(s.default_tab());
             }
         }
@@ -4864,7 +4963,7 @@ impl App {
                     // 语句
                     ui.spacing_mut().item_spacing.x = 0.0; // 语句
                                                            // 全局工具页打开时，一级菜单一个都不高亮。
-                    let cur_section = if self.tab == Tab::Settings || self.tab == Tab::About {
+                    let cur_section = if self.tab.is_global() {
                         None
                     } else {
                         Some(self.tab.section())
@@ -4885,7 +4984,7 @@ impl App {
                     if bottom_nav_button(
                         ui,
                         Tab::Settings,
-                        "设置",
+                        "通用设置",
                         self.tab == Tab::Settings,
                         tool_w,
                     ) {
@@ -4993,12 +5092,12 @@ impl App {
                     // 手机端功能页：底部已有留白，让最后一项不被贴边。
                     ui.add_space(4.0);
                 }
-                // 移动端：分区内多于一个子页时，内容区顶部给一条二级页签。
+                // 移动端：进入一级菜单后的功能页（非首页）在内容区顶部给一条
+                // 二级页签，否则侧栏收起后无法再切换分区内的其它页。
                 // 桌面端由左侧二级栏承担，这里不重复。
-                if self.compact {
+                if self.compact && self.nav_from_mobile && !self.tab.is_global() {
                     let sec = self.tab.section();
                     let kids = sec.children();
-                    // 设置 / 关于是全局页，不在任何分区的子页列表里，没有页签。
                     if kids.len() > 1 && kids.contains(&self.tab) {
                         if let Some(t) = mobile_subtabs(ui, kids, self.tab) {
                             self.tab = t;
@@ -5089,8 +5188,17 @@ impl App {
                                         Tab::Online => self.ui_online(ui), // 匹配分支
                                         Tab::Music | Tab::Video => {}      // 已在上方单独渲染
                                         Tab::Settings => self.ui_settings(ui, actions), // 匹配分支
-                                        Tab::About => self.ui_about(ui),   // 匹配分支
-                                        Tab::Web4k => {}                   // 已在上面单独渲染
+                                        Tab::WallpaperSettings => {
+                                            self.ui_wallpaper_settings(ui, actions)
+                                        }
+                                        Tab::MusicSettings => self.ui_music_settings(ui, actions),
+                                        Tab::VideoSettings => self.ui_video_settings(ui, actions),
+                                        Tab::HardwareSettings => {
+                                            self.ui_hardware_settings(ui, actions)
+                                        }
+                                        Tab::SenseSettings => self.ui_sense_settings(ui, actions),
+                                        Tab::About => self.ui_about(ui), // 匹配分支
+                                        Tab::Web4k => {}                 // 已在上面单独渲染
                                     } // 块结束
                                 }
                                 ui.add_space(24.0); // 底部留白，最后一项不被状态栏贴边
@@ -6651,63 +6759,8 @@ impl App {
 
     fn ui_settings(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         // 函数 ui_settings
-        page_title(ui, "设置", "个性化壁纸的显示与启动方式"); // 调用 page_title
+        page_title(ui, "通用设置", "外观 · 行为 · 托盘 · 上报");
         ui.add_space(14.0); // 语句
-
-        // v2：智能感知与硬件域的入口（完整配置在各自主页，这里只放总开关）。
-        egui::Frame::none()
-            .fill(theme::card())
-            .stroke(Stroke::new(1.0_f32, theme::border()))
-            .rounding(Rounding::same(14.0))
-            .shadow(egui::epaint::Shadow {
-                offset: egui::vec2(0.0, 3.0),
-                blur: 12.0,
-                spread: 0.0,
-                color: theme::shadow(),
-            })
-            .inner_margin(egui::Margin::symmetric(18.0, 16.0))
-            .show(ui, |ui| {
-                section_header(ui, "智能感知与硬件");
-                ui.add_space(10.0);
-                let compact = self.compact;
-                let _ = setting_row(
-                    ui,
-                    compact,
-                    "智能感知",
-                    "在场检测 · 人走自动锁屏 · 人回唤醒提示",
-                    |ui| {
-                        let mut on = self.cfg.sense.enable;
-                        if ui_kit::switch(ui, &mut on).changed() {
-                            self.cfg.sense.enable = on;
-                        }
-                    },
-                );
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(8.0);
-                let _ = setting_row(
-                    ui,
-                    compact,
-                    "华硕硬件控制",
-                    "Aura 灯效 / 设备 / 控制面板 / Fan Xpert（仅 Windows）",
-                    |ui| {
-                        let mut on = self.cfg.armoury.enabled;
-                        if ui_kit::switch(ui, &mut on).changed() {
-                            self.cfg.armoury.enabled = on;
-                        }
-                    },
-                );
-                ui.add_space(6.0);
-                ui.label(
-                    RichText::new(
-                        "提示：Fan Xpert 首版只读（曲线编辑仅写入本地配置）；Aura 下发约需 10 秒，\
-                         期间界面会显示「下发中」。",
-                    )
-                    .size(10.5)
-                    .color(theme::faint()),
-                );
-            });
-        ui.add_space(12.0);
 
         // Appearance & display ---------------------------------------------
         egui::Frame::none() // 调用 none
@@ -6724,46 +6777,9 @@ impl App {
             .inner_margin(egui::Margin::symmetric(18.0, 16.0)) // 语句
             .show(ui, |ui| {
                 // 语句
-                section_header(ui, "外观与显示"); // 调用 section_header
+                section_header(ui, "外观"); // 调用 section_header
                 ui.add_space(12.0); // 语句
                 let compact = self.compact; // 变量 compact
-                let _ = setting_row(
-                    ui,
-                    compact,
-                    "显示方式",
-                    "填充 / 适应 / 拉伸 / 居中 / 平铺",
-                    |ui| {
-                        // 调用 setting_row
-                        let before_fit = self.cfg.fit; // 变量 before_fit
-                        let fit_text = if compact {
-                            // 变量 fit_text
-                            self.cfg.fit.short() // 语句
-                        } else {
-                            // 语句
-                            self.cfg.fit.label() // 语句
-                        }; // 块结束
-                        egui::ComboBox::from_id_salt("fit_combo") // 调用 from_id_salt
-                            .selected_text(fit_text) // 语句
-                            .width(if compact { 116.0 } else { 200.0 }) // 语句
-                            .show_ui(ui, |ui| {
-                                // 语句
-                                for f in Fit::all() {
-                                    // 循环
-                                    let t = if compact { f.short() } else { f.label() }; // 变量 t
-                                    ui.selectable_value(&mut self.cfg.fit, f, t);
-                                    // 语句
-                                } // 块结束
-                            }); // 语句
-                        if self.cfg.fit != before_fit {
-                            // 条件分支
-                            // Apply immediately to the current wallpaper.
-                            actions.push(Action::ReapplyCurrent); // 语句
-                        } // 块结束
-                    },
-                ); // 语句
-                ui.add_space(8.0); // 语句
-                ui.separator(); // 语句
-                ui.add_space(8.0); // 语句
                 let _ = setting_row(
                     ui,
                     compact,
@@ -6799,30 +6815,13 @@ impl App {
             .inner_margin(egui::Margin::symmetric(18.0, 16.0)) // 语句
             .show(ui, |ui| {
                 // 语句
-                section_header(ui, "行为"); // 调用 section_header
+                section_header(ui, "启动与通用行为"); // 调用 section_header
                 ui.add_space(12.0); // 语句
                 let compact = self.compact; // 变量 compact
-                let _ = setting_row(
-                    ui,
-                    compact,
-                    "扫描包含子文件夹",
-                    "载入本地壁纸库时递归子目录",
-                    |ui| {
-                        // 调用 setting_row
-                        let mut rc = self.cfg.recursive; // 变量 rc
-                        if ui.checkbox(&mut rc, "").changed() {
-                            // 条件分支
-                            self.cfg.recursive = rc; // 语句
-                        } // 块结束
-                    },
-                ); // 语句
-                   // Windows/macOS/Linux use login items; Android uses a boot
-                   // receiver. iOS deliberately has no equivalent.
+                                            // Windows/macOS/Linux use login items; Android uses a boot
+                                            // receiver. iOS deliberately has no equivalent.
                 if crate::autostart::supported() {
                     // 条件分支
-                    ui.add_space(8.0); // 语句
-                    ui.separator(); // 语句
-                    ui.add_space(8.0); // 语句
                     let _ = setting_row(
                         ui,
                         compact,
@@ -6831,7 +6830,8 @@ impl App {
                         |ui| {
                             // 调用 setting_row
                             let mut auto = self.cfg.autostart; // 变量 auto
-                            if ui.checkbox(&mut auto, "").changed() {
+                            let changed = ui_kit::switch(ui, &mut auto).changed();
+                            if changed {
                                 // 条件分支
                                 match crate::autostart::set_enabled(auto) {
                                     // 分支匹配
@@ -6895,7 +6895,8 @@ impl App {
                     |ui| {
                         // 调用 setting_row
                         let mut en = self.cfg.report_enabled; // 变量 en
-                        if ui.checkbox(&mut en, "").changed() {
+                        let changed = ui_kit::switch(ui, &mut en).changed();
+                        if changed {
                             // 条件分支
                             self.cfg.report_enabled = en; // 语句
                             crate::report::set_enabled(en); // 调用 set_enabled
@@ -7014,7 +7015,8 @@ impl App {
                         |ui| {
                             // 调用 setting_row
                             let mut cb = self.cfg.close_to_background; // 变量 cb
-                            if ui.checkbox(&mut cb, "").changed() {
+                            let changed = ui_kit::switch(ui, &mut cb).changed();
+                            if changed {
                                 // 条件分支
                                 self.cfg.close_to_background = cb; // 语句
                             } // 块结束
@@ -7206,6 +7208,607 @@ impl App {
                 .color(theme::subtext()), // 语句
         ); // 块结束
     } // 块结束
+
+    fn ui_wallpaper_settings(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        page_title(ui, "壁纸设置", "显示方式 · 扫描 · 每日壁纸");
+        ui.add_space(14.0);
+
+        settings_card(ui, "显示方式", |ui| {
+            let compact = self.compact;
+            let _ = setting_row(
+                ui,
+                compact,
+                "显示方式",
+                "填充 / 适应 / 拉伸 / 居中 / 平铺",
+                |ui| {
+                    let before_fit = self.cfg.fit;
+                    let fit_text = if compact {
+                        self.cfg.fit.short()
+                    } else {
+                        self.cfg.fit.label()
+                    };
+                    egui::ComboBox::from_id_salt("fit_combo_wallpaper_settings")
+                        .selected_text(fit_text)
+                        .width(if compact { 116.0 } else { 200.0 })
+                        .show_ui(ui, |ui| {
+                            for f in Fit::all() {
+                                let t = if compact { f.short() } else { f.label() };
+                                ui.selectable_value(&mut self.cfg.fit, f, t);
+                            }
+                        });
+                    if self.cfg.fit != before_fit {
+                        actions.push(Action::ReapplyCurrent);
+                    }
+                },
+            );
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(format!(
+                    "检测到 {} 台显示器 · 主屏 {}×{}；壁纸会应用到所有显示器。",
+                    self.monitors, self.primary_res.0, self.primary_res.1
+                ))
+                .size(10.5)
+                .color(theme::faint()),
+            );
+        });
+        ui.add_space(12.0);
+
+        settings_card(ui, "扫描", |ui| {
+            let compact = self.compact;
+            let _ = setting_row(
+                ui,
+                compact,
+                "扫描包含子文件夹",
+                "载入本地壁纸库时递归子目录",
+                |ui| {
+                    let mut rc = self.cfg.recursive;
+                    let changed = ui_kit::switch(ui, &mut rc).changed();
+                    if changed {
+                        self.cfg.recursive = rc;
+                        actions.push(Action::Rescan);
+                    }
+                },
+            );
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(8.0);
+            let _ = setting_row(
+                ui,
+                compact,
+                "仅壁纸尺寸",
+                "过滤掉图标、小图、竖图（≥1280×720）",
+                |ui| {
+                    let mut wo = self.cfg.wallpaper_only;
+                    let changed = ui_kit::switch(ui, &mut wo).changed();
+                    if changed {
+                        self.cfg.wallpaper_only = wo;
+                        actions.push(Action::Rescan);
+                    }
+                },
+            );
+            ui.add_space(6.0);
+            ui.label(RichText::new("当前目录").size(10.0).color(theme::faint()));
+            ui.label(
+                RichText::new(
+                    self.cfg
+                        .folder
+                        .as_ref()
+                        .map(|p| ellipsis(&p.display().to_string(), if compact { 44 } else { 92 }))
+                        .unwrap_or_else(|| "（未选择文件夹）".to_string()),
+                )
+                .size(10.5)
+                .color(theme::subtext()),
+            );
+        });
+        ui.add_space(12.0);
+
+        settings_card(ui, "每日壁纸与锁屏", |ui| {
+            let compact = self.compact;
+            let _ = setting_row(
+                ui,
+                compact,
+                "自动每日换壁纸",
+                "每天获取必应每日图；首次开启会立即获取",
+                |ui| {
+                    let mut d = self.cfg.daily_online;
+                    let changed = ui_kit::switch(ui, &mut d).changed();
+                    if changed {
+                        self.cfg.daily_online = d;
+                        if d {
+                            self.online_boot_checked = true;
+                            if self.online_img.is_none() {
+                                self.start_online_fetch(0);
+                            }
+                        }
+                    }
+                },
+            );
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(8.0);
+            let _ = setting_row(
+                ui,
+                compact,
+                "获取后自动设为桌面",
+                "每日图下载完成后直接应用到桌面",
+                |ui| {
+                    let mut a = self.cfg.online_auto_set;
+                    let changed = ui_kit::switch(ui, &mut a).changed();
+                    if changed {
+                        self.cfg.online_auto_set = a;
+                    }
+                },
+            );
+            ui.add_space(10.0);
+            ui.label(
+                RichText::new(
+                    "把当前静态壁纸设为系统锁屏；Windows 首次会弹出管理员授权（UAC），\
+                     动态壁纸会先截取一帧再设为静态锁屏。",
+                )
+                .size(10.5)
+                .color(theme::subtext()),
+            );
+            ui.add_space(8.0);
+            if primary_button(ui, "将当前静态壁纸设为静态锁屏").clicked() {
+                self.set_lock_from_current();
+            }
+        });
+        ui.add_space(12.0);
+
+        settings_card(ui, "轮播", |ui| {
+            let compact = self.compact;
+            let _ = setting_row(
+                ui,
+                compact,
+                "随机顺序",
+                "自动轮播时按随机顺序切换",
+                |ui| {
+                    let mut sh = self.cfg.shuffle;
+                    let changed = ui_kit::switch(ui, &mut sh).changed();
+                    if changed {
+                        self.cfg.shuffle = sh;
+                    }
+                },
+            );
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(format!(
+                    "轮播间隔 {} 秒 · 清单 {} 项；详细控制见「轮播」页。",
+                    self.cfg.interval_secs,
+                    self.cfg.slideshow.len()
+                ))
+                .size(10.5)
+                .color(theme::faint()),
+            );
+        });
+    }
+
+    fn ui_music_settings(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        page_title(ui, "音乐设置", "音乐目录 · 音乐音量 · 音乐循环");
+        ui.add_space(14.0);
+        self.ui_media_settings(ui, actions, crate::media::Kind::Audio);
+    }
+
+    fn ui_video_settings(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        page_title(ui, "视频设置", "视频目录 · 视频音量 · 视频循环");
+        ui.add_space(14.0);
+        self.ui_media_settings(ui, actions, crate::media::Kind::Video);
+    }
+
+    fn ui_media_settings(
+        &mut self,
+        ui: &mut egui::Ui,
+        actions: &mut Vec<Action>,
+        kind: crate::media::Kind,
+    ) {
+        let compact = self.compact;
+        let dirs = media_dirs_mut(&mut self.cfg.media, kind).clone();
+        settings_card(ui, "媒体文件夹", |ui| {
+            ui.label(
+                RichText::new(match kind {
+                    crate::media::Kind::Audio => "音乐库会递归扫描这些目录中的常见音频格式。",
+                    crate::media::Kind::Video => "视频库会递归扫描这些目录中的常见视频格式。",
+                })
+                .size(10.5)
+                .color(theme::subtext()),
+            );
+            ui.add_space(10.0);
+            ui.horizontal_wrapped(|ui| {
+                if ghost_button(ui, "＋ 添加文件夹").clicked() {
+                    actions.push(Action::Media(crate::pages::media::MediaAction::PickFolder(
+                        kind,
+                    )));
+                }
+                if ghost_button(ui, "重新扫描").clicked() {
+                    actions.push(Action::Media(crate::pages::media::MediaAction::Rescan(
+                        kind,
+                    )));
+                }
+            });
+            ui.add_space(8.0);
+            if dirs.is_empty() {
+                ui.label(
+                    RichText::new("还没有选择目录。")
+                        .size(10.5)
+                        .color(theme::faint()),
+                );
+            } else {
+                let mut remove = None;
+                for (i, d) in dirs.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(d.display().to_string())
+                                .size(10.5)
+                                .color(theme::subtext()),
+                        );
+                        if ghost_button(ui, "移除").clicked() {
+                            remove = Some(i);
+                        }
+                    });
+                }
+                if let Some(i) = remove {
+                    actions.push(Action::Media(
+                        crate::pages::media::MediaAction::RemoveFolder(kind, i),
+                    ));
+                }
+            }
+        });
+        ui.add_space(12.0);
+
+        settings_card(ui, "播放", |ui| {
+            let _ = setting_row(
+                ui,
+                compact,
+                match kind {
+                    crate::media::Kind::Audio => "音乐音量",
+                    crate::media::Kind::Video => "视频音量",
+                },
+                "0–130%，只影响本分区；播放中调整立即生效",
+                |ui| {
+                    let mut vol = self.cfg.media.volume_for(kind) as f32;
+                    if ui
+                        .add_sized(
+                            egui::vec2(if compact { 160.0 } else { 220.0 }, 18.0),
+                            egui::Slider::new(&mut vol, 0.0..=130.0).show_value(false),
+                        )
+                        .changed()
+                    {
+                        actions.push(Action::Media(crate::pages::media::MediaAction::Volume(
+                            kind, vol as f64,
+                        )));
+                    }
+                    ui.label(
+                        RichText::new(format!("{:.0}%", self.cfg.media.volume_for(kind)))
+                            .size(10.5)
+                            .color(theme::subtext()),
+                    );
+                },
+            );
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(8.0);
+            let _ = setting_row(
+                ui,
+                compact,
+                match kind {
+                    crate::media::Kind::Audio => "音乐列表循环",
+                    crate::media::Kind::Video => "视频列表循环",
+                },
+                "播完最后一项后回到第一项（仅本分区）",
+                |ui| {
+                    let mut repeat = self.cfg.media.repeat_for(kind);
+                    let changed = ui_kit::switch(ui, &mut repeat).changed();
+                    if changed {
+                        self.cfg.media.set_repeat_for(kind, repeat);
+                        actions.push(Action::Media(crate::pages::media::MediaAction::Save));
+                    }
+                },
+            );
+        });
+    }
+
+    fn ui_hardware_settings(&mut self, ui: &mut egui::Ui, _actions: &mut Vec<Action>) {
+        page_title(ui, "硬件设置", "Aura 灯效 · 采样 · 风扇");
+        ui.add_space(14.0);
+        let compact = self.compact;
+
+        settings_card(ui, "服务", |ui| {
+            let _ = setting_row(
+                ui,
+                compact,
+                "华硕硬件控制",
+                "Aura 灯效 / 设备 / 控制面板 / Fan Xpert（仅 Windows）",
+                |ui| {
+                    let mut on = self.cfg.armoury.enabled;
+                    if ui_kit::switch(ui, &mut on).changed() {
+                        self.cfg.armoury.enabled = on;
+                    }
+                },
+            );
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(8.0);
+            let _ = setting_row(
+                ui,
+                compact,
+                "采样间隔",
+                "后台读取 Aura / 风扇状态的频率（毫秒）",
+                |ui| {
+                    let mut ms = self.cfg.armoury.poll_ms as f32;
+                    if ui
+                        .add_sized(
+                            egui::vec2(if compact { 150.0 } else { 200.0 }, 18.0),
+                            egui::Slider::new(&mut ms, 300.0..=5000.0)
+                                .show_value(false)
+                                .step_by(100.0),
+                        )
+                        .changed()
+                    {
+                        self.cfg.armoury.poll_ms = ms.round() as u64;
+                    }
+                    ui.label(
+                        RichText::new(format!("{} ms", self.cfg.armoury.poll_ms))
+                            .size(10.5)
+                            .color(theme::subtext()),
+                    );
+                },
+            );
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(
+                    "Fan Xpert 首版只读（曲线编辑仅写入本地配置）；Aura 下发约需 10 秒，\
+                     期间界面会显示「下发中」。",
+                )
+                .size(10.5)
+                .color(theme::faint()),
+            );
+        });
+        ui.add_space(12.0);
+
+        settings_card(ui, "灯效", |ui| {
+            let _ = setting_row(
+                ui,
+                compact,
+                "写入前解除独占",
+                "关闭时直接覆盖，可能让 Armoury Crate 失联",
+                |ui| {
+                    let mut ex = self.cfg.armoury.lighting.exclusive_on_write;
+                    if ui_kit::switch(ui, &mut ex).changed() {
+                        self.cfg.armoury.lighting.exclusive_on_write = ex;
+                    }
+                },
+            );
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(8.0);
+            let _ = setting_row(
+                ui,
+                compact,
+                "跟随壁纸取色",
+                "从当前壁纸提取强调色（后续里程碑）",
+                |ui| {
+                    let mut sync = self.cfg.armoury.lighting.sync_with_wallpaper;
+                    if ui_kit::switch(ui, &mut sync).changed() {
+                        self.cfg.armoury.lighting.sync_with_wallpaper = sync;
+                    }
+                },
+            );
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(format!(
+                    "当前模式 key {} · 颜色 {} · 亮度 {}% · 速度 {}%",
+                    self.cfg.armoury.lighting.mode,
+                    self.cfg.armoury.lighting.color,
+                    self.cfg.armoury.lighting.brightness,
+                    self.cfg.armoury.lighting.speed
+                ))
+                .size(10.5)
+                .color(theme::faint()),
+            );
+        });
+        ui.add_space(12.0);
+
+        settings_card(ui, "风扇", |ui| {
+            let _ = setting_row(
+                ui,
+                compact,
+                "接管控制",
+                "需要管理员权限；普通会话只保存配置",
+                |ui| {
+                    let mut on = self.cfg.armoury.fans.takeover;
+                    if ui_kit::switch(ui, &mut on).changed() {
+                        self.cfg.armoury.fans.takeover = on;
+                    }
+                },
+            );
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(8.0);
+            let _ = setting_row(
+                ui,
+                compact,
+                "滞回温度",
+                "曲线拐点之间的温度缓冲，避免转速频繁抖动",
+                |ui| {
+                    let mut h = self.cfg.armoury.fans.hysteresis_c as f32;
+                    if ui
+                        .add_sized(
+                            egui::vec2(if compact { 140.0 } else { 180.0 }, 18.0),
+                            egui::Slider::new(&mut h, 0.0..=10.0).show_value(false),
+                        )
+                        .changed()
+                    {
+                        self.cfg.armoury.fans.hysteresis_c = h.round() as u8;
+                    }
+                    ui.label(
+                        RichText::new(format!("{} °C", self.cfg.armoury.fans.hysteresis_c))
+                            .size(10.5)
+                            .color(theme::subtext()),
+                    );
+                },
+            );
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(format!(
+                    "当前预设 {} · 曲线 {} 个点；逐点编辑见「散热 Fan Xpert」。",
+                    self.cfg.armoury.fans.preset,
+                    self.cfg.armoury.fans.curve.len()
+                ))
+                .size(10.5)
+                .color(theme::faint()),
+            );
+        });
+    }
+
+    fn ui_sense_settings(&mut self, ui: &mut egui::Ui, _actions: &mut Vec<Action>) {
+        page_title(ui, "识别设置", "键鼠空闲检测可用 · 摄像头待接入");
+        ui.add_space(14.0);
+        let compact = self.compact;
+
+        settings_card(ui, "总开关", |ui| {
+            let _ = setting_row(
+                ui,
+                compact,
+                "智能感知",
+                "在场检测 · 人走自动锁屏 · 人回唤醒提示",
+                |ui| {
+                    let mut on = self.cfg.sense.enable;
+                    if ui_kit::switch(ui, &mut on).changed() {
+                        self.cfg.sense.enable = on;
+                    }
+                },
+            );
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(8.0);
+            let _ = setting_row(
+                ui,
+                compact,
+                "摄像头",
+                "采集后端尚未接入（M2）；此处设备名仅保存配置",
+                |ui| {
+                    egui::Frame::none()
+                        .fill(theme::extreme())
+                        .stroke(Stroke::new(1.0_f32, theme::border()))
+                        .rounding(Rounding::same(8.0))
+                        .inner_margin(egui::Margin::symmetric(9.0, 4.0))
+                        .show(ui, |ui| {
+                            ui.add_sized(
+                                egui::vec2(if compact { 180.0 } else { 240.0 }, 20.0),
+                                egui::TextEdit::singleline(&mut self.cfg.sense.camera_id)
+                                    .frame(false),
+                            );
+                        });
+                },
+            );
+        });
+        ui.add_space(12.0);
+
+        settings_card(ui, "隐私与稳定性", |ui| {
+            let auto = self.cfg.sense.auto_unlock;
+            let _ = setting_row(
+                ui,
+                compact,
+                "人回自动唤醒",
+                if auto {
+                    "普通用户态只能「唤醒屏幕 + 提示」，不能绕过系统锁屏"
+                } else {
+                    "关闭后回到座位不会自动唤醒"
+                },
+                |ui| {
+                    let mut on = self.cfg.sense.auto_unlock;
+                    if ui_kit::switch(ui, &mut on).changed() {
+                        self.cfg.sense.auto_unlock = on;
+                    }
+                },
+            );
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(8.0);
+            let _ = setting_row(
+                ui,
+                compact,
+                "预览打码",
+                "在实时画面上遮挡人脸，避免旁观者看到细节",
+                |ui| {
+                    let mut on = self.cfg.sense.privacy_mask;
+                    if ui_kit::switch(ui, &mut on).changed() {
+                        self.cfg.sense.privacy_mask = on;
+                    }
+                },
+            );
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(8.0);
+            let _ = setting_row(
+                ui,
+                compact,
+                "全屏时豁免",
+                "视频 / 游戏 / 演示期间不判定离开",
+                |ui| {
+                    let mut on = self.cfg.sense.exempt_fullscreen;
+                    if ui_kit::switch(ui, &mut on).changed() {
+                        self.cfg.sense.exempt_fullscreen = on;
+                    }
+                },
+            );
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(8.0);
+            let _ = setting_row(
+                ui,
+                compact,
+                "陌生人快照",
+                "检测到未授权人脸时保存一帧（隐私敏感，默认关）",
+                |ui| {
+                    let mut on = self.cfg.sense.stranger_snapshot;
+                    if ui_kit::switch(ui, &mut on).changed() {
+                        self.cfg.sense.stranger_snapshot = on;
+                    }
+                },
+            );
+        });
+        ui.add_space(12.0);
+
+        settings_card(ui, "判定", |ui| {
+            ui.label(
+                RichText::new(format!(
+                    "离开判定 {}s · 二次确认 {} · 陌生人锁定 {} · 授权人脸 {} 位",
+                    self.cfg.sense.away_secs,
+                    if self.cfg.sense.confirm_second_pass {
+                        "开"
+                    } else {
+                        "关"
+                    },
+                    if self.cfg.sense.stranger_lock {
+                        "开"
+                    } else {
+                        "关"
+                    },
+                    self.cfg.sense.authorized_faces.len()
+                ))
+                .size(10.5)
+                .color(theme::subtext()),
+            );
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new("细化规则（离开时长、锁定动作、解锁兜底）请在「锁屏策略」页调整。")
+                    .size(10.5)
+                    .color(theme::faint()),
+            );
+            ui.add_space(10.0);
+            ui.horizontal_wrapped(|ui| {
+                if ghost_button(ui, "打开锁屏策略").clicked() {
+                    self.tab = Tab::Policy;
+                    self.nav_from_mobile = true;
+                }
+                if ghost_button(ui, "打开实时感知").clicked() {
+                    self.tab = Tab::Sense;
+                    self.nav_from_mobile = true;
+                }
+            });
+        });
+    }
 
     fn ui_about(&mut self, ui: &mut egui::Ui) {
         // 函数 ui_about
@@ -8287,7 +8890,12 @@ fn tab_from_index(i: usize) -> Tab {
         12 => Tab::Video,    // 匹配分支
         13 => Tab::Online,   // 匹配分支
         14 => Tab::Web4k,    // 匹配分支
-        _ => Tab::Web4k,     // 匹配分支
+        15 => Tab::WallpaperSettings,
+        16 => Tab::MusicSettings,
+        17 => Tab::VideoSettings,
+        18 => Tab::HardwareSettings,
+        19 => Tab::SenseSettings,
+        _ => Tab::Web4k, // 匹配分支
     } // 块结束
 } // 块结束
 
@@ -8324,6 +8932,27 @@ fn section_header(ui: &mut egui::Ui, text: &str) {
         ui.label(RichText::new(text).size(14.0).strong().color(theme::text())); // 语句
     }); // 语句
 } // 块结束
+
+/// 设置页统一卡片：圆角 + 细描边 + 轻阴影。
+fn settings_card(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::none()
+        .fill(theme::card())
+        .stroke(Stroke::new(1.0_f32, theme::border()))
+        .rounding(Rounding::same(14.0))
+        .shadow(egui::epaint::Shadow {
+            offset: egui::vec2(0.0, 3.0),
+            blur: 12.0,
+            spread: 0.0,
+            color: theme::shadow(),
+        })
+        .inner_margin(egui::Margin::symmetric(18.0, 16.0))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            section_header(ui, title);
+            ui.add_space(12.0);
+            body(ui);
+        });
+}
 
 fn setting_label(ui: &mut egui::Ui, title: &str, desc: &str) {
     // 函数 setting_label
@@ -8381,7 +9010,12 @@ fn tab_subtitle(tab: Tab) -> &'static str {
         Tab::Online => "每日一图 · 自动更换",
         Tab::Music => "本地音乐库 · 后台播放",
         Tab::Video => "本地视频库 · 独立播放窗口",
-        Tab::Settings => "个性化壁纸的显示与启动方式",
+        Tab::WallpaperSettings => "显示方式 · 扫描 · 每日壁纸",
+        Tab::MusicSettings => "音乐目录 · 音乐音量 · 音乐循环",
+        Tab::VideoSettings => "视频目录 · 视频音量 · 视频循环",
+        Tab::HardwareSettings => "服务 · 灯效 · 风扇",
+        Tab::SenseSettings => "感知开关 · 摄像头 · 隐私",
+        Tab::Settings => "外观 · 行为 · 托盘 · 上报",
         Tab::About => "版本 · 平台能力 · 反馈",
     }
 }
@@ -8615,7 +9249,12 @@ fn paint_tab_icon(p: &egui::Painter, rect: egui::Rect, tab: Tab, color: Color32)
             }
         }
         // 齿轮：设置。
-        Tab::Settings => {
+        Tab::Settings
+        | Tab::WallpaperSettings
+        | Tab::MusicSettings
+        | Tab::VideoSettings
+        | Tab::HardwareSettings
+        | Tab::SenseSettings => {
             p.circle_stroke(c, r * 0.42, s);
             p.circle_stroke(c, r * 0.78, Stroke::new(1.3_f32, color));
             for i in 0..8 {
@@ -8882,61 +9521,57 @@ fn section_hint(s: Section) -> &'static str {
     }
 }
 
-/// 移动端内容区顶部的二级页签：可横向滚动的一排胶囊。
+/// 移动端内容区顶部的二级页签：自动换行的胶囊。
+///
+/// 壁纸分区有 5 个页签，390px 宽放不下一行。之前用隐藏滚动条的横向
+/// `ScrollArea`，第 5 个只露出半个圆角、也没有任何可横滑的提示，等于
+/// 入口不可点。这里改用 `horizontal_wrapped`：一行放不下就换行，
+/// 保证每个页签都完整可见、可点，不依赖手势。
 fn mobile_subtabs(ui: &mut egui::Ui, kids: &'static [Tab], current: Tab) -> Option<Tab> {
     let mut hit = None;
-    // `scroll_bar_visibility(AlwaysHidden)` + 明确的滚动条占位：窄屏上 4 个
-    // 中文页签放不下，靠横滑而不是挤压字距（之前字会贴到一起）。
-    egui::ScrollArea::horizontal()
-        .id_salt("mobile_subtabs")
-        .auto_shrink([false, true])
-        .scroll_bar_visibility(egui::containers::scroll_area::ScrollBarVisibility::AlwaysHidden)
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                for t in kids {
-                    let selected = *t == current;
-                    let text = t.short_page();
-                    let galley = ui.painter().layout_no_wrap(
-                        text.to_string(),
-                        egui::FontId::proportional(11.5),
-                        if selected {
-                            theme::accent()
-                        } else {
-                            theme::subtext()
-                        },
-                    );
-                    let w = galley.size().x + 26.0;
-                    let (rect, resp) =
-                        ui.allocate_exact_size(Vec2::new(w, 28.0), egui::Sense::click());
-                    if selected {
-                        ui.painter()
-                            .rect_filled(rect, Rounding::same(14.0), theme::accent_soft());
-                    } else if resp.hovered() {
-                        ui.painter()
-                            .rect_filled(rect, Rounding::same(14.0), theme::extreme());
-                    }
-                    ui.painter().galley(
-                        egui::pos2(
-                            rect.center().x - galley.size().x * 0.5,
-                            rect.center().y - galley.size().y * 0.5,
-                        ),
-                        galley,
-                        if selected {
-                            theme::accent()
-                        } else {
-                            theme::subtext()
-                        },
-                    );
-                    if resp.hovered() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                    }
-                    if resp.clicked() {
-                        hit = Some(*t);
-                    }
-                }
-            });
-        });
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(8.0, 6.0);
+        for t in kids {
+            let selected = *t == current;
+            let text = t.short_page();
+            let galley = ui.painter().layout_no_wrap(
+                text.to_string(),
+                egui::FontId::proportional(11.5),
+                if selected {
+                    theme::accent()
+                } else {
+                    theme::subtext()
+                },
+            );
+            let w = galley.size().x + 26.0;
+            let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 28.0), egui::Sense::click());
+            if selected {
+                ui.painter()
+                    .rect_filled(rect, Rounding::same(14.0), theme::accent_soft());
+            } else if resp.hovered() {
+                ui.painter()
+                    .rect_filled(rect, Rounding::same(14.0), theme::extreme());
+            }
+            ui.painter().galley(
+                egui::pos2(
+                    rect.center().x - galley.size().x * 0.5,
+                    rect.center().y - galley.size().y * 0.5,
+                ),
+                galley,
+                if selected {
+                    theme::accent()
+                } else {
+                    theme::subtext()
+                },
+            );
+            if resp.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            if resp.clicked() {
+                hit = Some(*t);
+            }
+        }
+    });
     hit
 }
 

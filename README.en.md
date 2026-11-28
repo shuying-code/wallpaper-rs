@@ -63,8 +63,9 @@ You can also click the download links in the in-app **About** page.
 - **Global hotkey**: `Ctrl+Alt+W` toggles show/hide of the window (auto-fallback to `Ctrl+Alt+Shift+W` / `Ctrl+Alt+F9` if taken).
 - **Display aware**: detects monitor count and primary resolution; HiDPI handled by the OS; applies to all monitors.
 - **Redesigned, responsive UI**: a cool-neutral look with indigo accents (porcelain / near-black surfaces, colour reserved for status); on narrow windows (phone / tablet, width < 820pt) it collapses the sidebar into a bottom bar of the five primary sections, wraps controls, uses fluid 2–3 column cards and larger touch targets. Adapts across desktop, iOS and Android.
+- **Presence sensing (camera capture not implemented yet)**: a presence state machine drives **away countdown, grace window, fullscreen exemption, second-pass confirmation and lock actions**; the **keyboard/mouse idle detector is real and can lock when you walk away**. **Camera capture is not implemented yet (milestone M2)**, so face-related switches only save configuration and metrics show “—” / “shown after integration”; authorized faces are a name-only placeholder (feature store M3), and return-to-seat unlock is limited to wake + hint.
 - **Paged lazy loading for large libraries**: an album with many images renders one page (48) at a time with a "Load more" button, on top of on-demand thumbnail decoding — thousands of images stay smooth and stay off your VRAM.
-- **Multi-size adaptation screenshots (`--shots`)**: one command renders the UI at **phone / tablet / laptop / desktop** sizes for **each page (Library / Online / Slideshow / Settings / About)** and saves PNGs, for quick responsive review.
+- **Multi-size adaptation screenshots (`--shots`)**: one command renders the UI at **phone / tablet / laptop / desktop** sizes for **each page (Library / Online / Slideshow / General settings / About plus the five section settings pages)** and saves PNGs, for quick responsive review.
 - **Online daily wallpaper**: fetch the Bing daily image (`cn.bing.com`, reachable in China) with "Learn about this picture", like / dislike, previous / next, set as desktop / lock screen, and daily auto-rotate.
 - **Lock screen**: also set the current wallpaper as the system lock screen (Windows writes `PersonalizationCSP`, raising the UAC elevation prompt automatically — click Yes to finish, no need to run as administrator manually; Ubuntu/GNOME `gsettings` lock-screen `picture-uri`; macOS lock screen follows the system wallpaper).
 - **Cross-platform global hotkey**: Windows `RegisterHotKey`; macOS / Linux(X11) via `global-hotkey`; toggle show/hide.
@@ -79,7 +80,7 @@ You can also click the download links in the in-app **About** page.
 
 ## Screens
 
-Cool-neutral look with indigo accents. Desktop uses a two-level sidebar — five sections (**Wallpaper / Music / Video / Hardware / Face**) plus their pages (Wallpaper: Online library / Library / Slideshow / Daily; Music: player; Video: player; Hardware: Dashboard / Devices / Lighting & Aura Sync / Fan Xpert; Face: Monitor / Lock policy) — with Settings and About pinned at the bottom. It opens on the **Online library** by default (toggle with `☰`); narrow/mobile widths switch to a bottom bar of the five sections plus Settings.
+Cool-neutral look with indigo accents. Desktop uses a two-level sidebar — five sections (**Wallpaper / Music / Video / Hardware / Face**) plus their pages (Wallpaper: Online library / Library / Slideshow / Daily / Settings; Music: player / Settings; Video: player / Settings; Hardware: Dashboard / Devices / Lighting & Aura Sync / Fan Xpert / Settings; Face: Monitor / Lock policy / Settings) — with General settings and About pinned at the bottom. **Each section owns a separate settings page** for its own options — music and video even keep separate volume and repeat values — while General settings keeps theme, autostart, tray and hotkey, issue reporting and the config file. It opens on the **Online library** by default (toggle with `☰`); narrow/mobile widths switch to a bottom bar of the five sections plus General settings, and page tabs wrap onto a second line when they do not fit.
 
 | Library | Slideshow |
 |---|---|
@@ -93,9 +94,13 @@ Cool-neutral look with indigo accents. Desktop uses a two-level sidebar — five
 |---|---|
 | ![Face sensing](assets/screenshot-sense.png) | ![Lighting](assets/screenshot-lighting.png) |
 
-| Settings |
+| General settings |
 |---|
 | ![Settings](assets/screenshot-settings.png) |
+
+| Wallpaper settings (each section has its own settings page) |
+|---|
+| ![Wallpaper settings](assets/screenshot-settings-wallpaper.png) |
 
 Mobile compact layout (five-section bottom bar):
 
@@ -149,7 +154,7 @@ cargo run -- --version       # print version
 ```bash
 cargo run --release -- --shots ./shots
 # Renders phone(390×844) / tablet(834×1112) / laptop(1366×768, 1536×864) / desktop(1440×900)
-# for each page (Library / Online / Slideshow / Settings / About) and saves <size>-<page>.png.
+# for each page (Library / Online / Slideshow / General settings / About + 5 section settings pages).
 ```
 
 ## Quick start

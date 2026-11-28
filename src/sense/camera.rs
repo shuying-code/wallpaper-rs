@@ -8,7 +8,6 @@
 //! - UI 必须把这两者的差别写清楚，不能让用户以为人脸识别已经在跑。
 
 use crate::config::SenseCfg;
-use std::sync::mpsc::{channel, Receiver};
 
 /// 一帧识别结果。
 #[derive(Clone, Debug, PartialEq)]
@@ -31,34 +30,41 @@ pub enum CamMsg {
     Failed(String),
 }
 
-/// 摄像头线程。
+/// 采集线程句柄。当前构建不会创建实例，保留类型以便后续 M2 接入。
 pub struct CameraWorker {
     pub device: String,
-    rx: Receiver<CamMsg>,
-    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl CameraWorker {
-    /// 首版恒定失败：没有采集后端。失败原因直接展示到 UI。
+    /// 首版没有采集后端：启动直接返回真实原因，绝不把“没有后端”包装成成功。
+    /// 调用方（`App`）据此保留 `sense_cam = None`，退化到键鼠空闲检测。
     pub fn start(_cfg: &SenseCfg) -> Result<Self, String> {
-        let (tx, rx) = channel::<CamMsg>();
-        // 立刻回报一次失败，让 UI 的第一帧就有真实状态。
-        let _ = tx.send(CamMsg::Failed(
-            "本版未编译摄像头采集后端（需 Media Foundation + ONNX），已退化到系统空闲检测"
+        Err(
+            "摄像头采集尚未接入（里程碑 M2）；当前使用键鼠空闲检测，人脸相关开关仅保存配置"
                 .to_string(),
-        ));
-        Ok(Self {
-            device: "CAM 01".to_string(),
-            rx,
-            stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        })
+        )
     }
 
+    /// 当前构建没有采集线程，因此永远没有帧可轮询。
     pub fn poll(&self) -> Option<CamMsg> {
-        self.rx.try_recv().ok()
+        None
     }
 
-    pub fn stop(&self) {
-        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    pub fn stop(&self) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn start_reports_missing_backend_instead_of_success() {
+        match CameraWorker::start(&SenseCfg::default()) {
+            Ok(_) => panic!("missing camera backend must not start successfully"),
+            Err(e) => {
+                assert!(e.contains("尚未接入"), "{e}");
+                assert!(e.contains("键鼠空闲检测"), "{e}");
+            }
+        }
     }
 }

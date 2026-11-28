@@ -11,14 +11,22 @@ use egui::{Align, Color32, Id, Layout, RichText, Rounding, Sense, Stroke, Ui, Ve
 pub fn ui(ctx: &mut SenseCtx, ui: &mut egui::Ui) {
     let presence = ctx.view.status.presence;
     ui.horizontal(|ui| {
-        ui_kit::page_title(ui, "智能感知", "在场检测 · 自动锁屏 / 解锁");
+        ui_kit::page_title(
+            ui,
+            "智能感知",
+            if ctx.view.camera_live {
+                "人脸在场 · 自动锁屏 / 唤醒提示"
+            } else {
+                "键鼠空闲检测 · 自动锁屏（人脸待接入）"
+            },
+        );
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let (text, color) = match presence {
                 Presence::Present => ("保护中 · 在场", theme::mint()),
                 Presence::Countdown => ("即将锁定", theme::amber()),
                 Presence::Locked => ("已锁定", theme::subtext()),
                 Presence::Stranger => ("陌生人已锁定", theme::danger()),
-                Presence::Unknown => ("等待首帧", theme::faint()),
+                Presence::Unknown => ("等待检测", theme::faint()),
             };
             ui_kit::status_pill(ui, text, color);
         });
@@ -79,7 +87,7 @@ fn camera_card(ctx: &mut SenseCtx, ui: &mut Ui) {
                 label: if cam_live {
                     "CAM 01 · 1920×1080 · 30 FPS".into()
                 } else {
-                    "CAM 01 · 未接入".into()
+                    "摄像头未接入 · 空闲检测模式".into()
                 },
                 present,
                 masked: ctx.cfg.privacy_mask,
@@ -89,28 +97,13 @@ fn camera_card(ctx: &mut SenseCtx, ui: &mut Ui) {
         ui.add_space(8.0);
         let w = ui.available_width();
         let cw = (w - 30.0) / 4.0;
-        let na = "n/a";
+        let na = "—";
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
             for (label, value, unit, color) in [
-                (
-                    "帧率",
-                    if cam_live { "30" } else { na },
-                    "fps",
-                    theme::text(),
-                ),
-                (
-                    "推理延迟",
-                    if cam_live { "42" } else { na },
-                    "ms",
-                    theme::text(),
-                ),
-                (
-                    "检测模型",
-                    if cam_live { "v3.2" } else { na },
-                    "",
-                    theme::accent(),
-                ),
+                ("帧率", na, "fps", theme::text()),
+                ("推理延迟", na, "ms", theme::text()),
+                ("检测模型", na, "", theme::accent()),
                 ("红外", na, "", theme::faint()),
             ] {
                 ui.allocate_ui_with_layout(
@@ -124,41 +117,81 @@ fn camera_card(ctx: &mut SenseCtx, ui: &mut Ui) {
             }
         });
         ui.add_space(6.0);
-        ui.label(
-            RichText::new(
-                "画面采集未接入（里程碑 M2）；当前用系统空闲检测驱动离开判定，真实可用。",
-            )
-            .size(9.5)
-            .color(theme::faint()),
-        );
+        for line in camera_status_lines(ctx) {
+            ui.label(RichText::new(line).size(9.5).color(theme::faint()));
+        }
     });
 }
 
+/// 无采集后端时，把真实原因、退化通道与「开关只保存配置」写清楚。
+fn camera_status_lines(ctx: &SenseCtx) -> Vec<String> {
+    if ctx.view.camera_live {
+        let mut lines = vec!["采集后端出帧中。".to_string()];
+        if let Some(cam) = &ctx.view.camera {
+            lines.push(format!("设备：{cam}"));
+        }
+        return lines;
+    }
+    if !ctx.cfg.enable {
+        return vec![
+            "智能感知已关闭；摄像头采集尚未接入（里程碑 M2）。".to_string(),
+            "键鼠空闲检测与人脸相关开关当前都不会运行。".to_string(),
+        ];
+    }
+    let mut lines = vec![
+        "摄像头采集尚未接入（里程碑 M2），当前使用键鼠空闲检测；人脸相关开关仅保存配置。"
+            .to_string(),
+    ];
+    if let Some(err) = &ctx.view.camera_error {
+        if !err.contains("尚未接入") {
+            lines.push(format!("采集失败：{err}"));
+        }
+    } else if !ctx.view.camera_status.is_empty() {
+        lines.push(format!("采集状态：{}", ctx.view.camera_status));
+    }
+    lines
+}
+
 // ---- 在场时间线 -------------------------------------------------------------
+
+/// 时间线目前只有「本次连续在场」这一条真实状态，没有 60 分钟历史采样。
+fn timeline_notes(ctx: &SenseCtx) -> Vec<String> {
+    let mut notes = vec![
+        "时间线仅示意本次连续检测状态，未保存 60 分钟历史采样。".to_string(),
+        "响应时间与误锁统计尚未接入真实采集，使用「—」占位。".to_string(),
+    ];
+    if !ctx.view.camera_live {
+        notes.push("当前由键鼠空闲检测驱动，不是人脸在场识别。".to_string());
+    }
+    notes
+}
 
 fn timeline_card(ctx: &mut SenseCtx, ui: &mut Ui) {
     let st = &ctx.view.status;
     let hold = st.present_for.as_secs() as f32;
     let away = st.away_for.as_secs() as f32;
-    let ratio = if hold + away > 0.5 {
+    let has_presence_history = hold + away > 0.5;
+    let ratio = if has_presence_history {
         (hold / (hold + away)).clamp(0.02, 0.98)
     } else {
-        0.72
+        0.0
     };
     let presence = st.presence;
-    let leave_count = ctx
-        .view
-        .events
-        .iter()
-        .filter(|(_, t)| t.contains("离开"))
-        .count();
+    // 今日统计是持久化的真实计数；事件流只保留本次启动的最近 40 条，
+    // 不能拿它冒充「今日离开次数」。
+    let leave_count = ctx.view.away_today;
+    let timeline_title = if ctx.view.camera_live {
+        "近 60 分钟 · 绿=在场 · 灰=离开"
+    } else {
+        "本次状态示意 · 未保存历史采样"
+    };
 
     ui_kit::card(ui, |ui| {
         ui.horizontal(|ui| {
             ui_kit::card_title(ui, "在场时间线");
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(
-                    RichText::new("近 60 分钟 · 绿=在场 · 灰=离开")
+                    RichText::new(timeline_title)
                         .size(9.0)
                         .color(theme::faint()),
                 );
@@ -175,12 +208,12 @@ fn timeline_card(ctx: &mut SenseCtx, ui: &mut Ui) {
             let painter = ui.painter();
             for i in 0..bars {
                 let f = i as f32 / (bars as f32 - 1.0);
-                let mut here = f < ratio;
-                // 少量丢帧缺口：让时间线读起来像真实采样，而不是一整条实心。
-                if here && i % 11 == 4 && presence == Presence::Present {
-                    here = false;
-                }
-                let mut color = if here { theme::mint() } else { theme::border() };
+                // 没有真实历史时整条灰掉；不要用固定占比伪装成 60 分钟采样。
+                let mut color = if has_presence_history && f < ratio {
+                    theme::mint()
+                } else {
+                    theme::border()
+                };
                 if presence == Presence::Countdown && i + 5 >= bars {
                     color = theme::amber();
                 }
@@ -196,10 +229,26 @@ fn timeline_card(ctx: &mut SenseCtx, ui: &mut Ui) {
         });
         ui.add_space(5.0);
         ui.horizontal(|ui| {
-            ui.label(RichText::new("60 分钟前").size(8.5).color(theme::faint()));
+            ui.label(
+                RichText::new(if ctx.view.camera_live {
+                    "60 分钟前"
+                } else {
+                    "示意起点"
+                })
+                .size(8.5)
+                .color(theme::faint()),
+            );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(RichText::new("现在").size(8.5).color(theme::faint()));
-                ui.label(RichText::new("30 分钟前").size(8.5).color(theme::faint()));
+                ui.label(
+                    RichText::new(if ctx.view.camera_live {
+                        "30 分钟前"
+                    } else {
+                        "示意"
+                    })
+                    .size(8.5)
+                    .color(theme::faint()),
+                );
             });
         });
         ui.add_space(10.0);
@@ -208,16 +257,26 @@ fn timeline_card(ctx: &mut SenseCtx, ui: &mut Ui) {
         let cw = (w - 30.0) / 4.0;
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
+            let present_text = if has_presence_history {
+                fmt_minutes(st.present_for)
+            } else {
+                "—".to_string()
+            };
             ui.allocate_ui_with_layout(Vec2::new(cw, 0.0), Layout::top_down(Align::Min), |ui| {
                 ui.set_width(cw);
                 ui_kit::metric(
                     ui,
                     "在场时长",
-                    &fmt_minutes(st.present_for),
-                    "min",
+                    &present_text,
+                    if has_presence_history { "min" } else { "" },
                     theme::mint(),
                 );
-                ui_kit::bar(ui, ratio, theme::mint(), 4.0);
+                ui_kit::bar(
+                    ui,
+                    if has_presence_history { ratio } else { 0.0 },
+                    theme::mint(),
+                    4.0,
+                );
             });
             ui.allocate_ui_with_layout(Vec2::new(cw, 0.0), Layout::top_down(Align::Min), |ui| {
                 ui.set_width(cw);
@@ -236,17 +295,21 @@ fn timeline_card(ctx: &mut SenseCtx, ui: &mut Ui) {
             });
             ui.allocate_ui_with_layout(Vec2::new(cw, 0.0), Layout::top_down(Align::Min), |ui| {
                 ui.set_width(cw);
-                ui_kit::metric(ui, "平均响应", "1.2", "s · 示意", theme::accent());
-                ui_kit::bar(ui, 0.62, theme::accent(), 4.0);
+                ui_kit::metric(ui, "平均响应", "—", "接入后显示", theme::subtext());
+                ui_kit::bar(ui, 0.0, theme::border2(), 4.0);
             });
             ui.allocate_ui_with_layout(Vec2::new(cw, 0.0), Layout::top_down(Align::Min), |ui| {
                 ui.set_width(cw);
-                ui_kit::metric(ui, "误锁屏", "0", "次", theme::subtext());
-                ui_kit::bar(ui, 0.03, theme::border2(), 4.0);
+                ui_kit::metric(ui, "误锁屏", "—", "接入后显示", theme::subtext());
+                ui_kit::bar(ui, 0.0, theme::border2(), 4.0);
             });
         });
 
         ui.add_space(12.0);
+        for note in timeline_notes(ctx) {
+            ui.label(RichText::new(note).size(9.0).color(theme::faint()));
+        }
+        ui.add_space(8.0);
         ui.horizontal(|ui| {
             ui_kit::card_title(ui, "最近事件");
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -313,7 +376,11 @@ fn status_card(ctx: &mut SenseCtx, ui: &mut Ui) {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(
                     RichText::new(if ctx.cfg.enable {
-                        "自动保护已开启"
+                        if ctx.view.camera_live {
+                            "自动保护已开启"
+                        } else {
+                            "键鼠空闲保护已开启"
+                        }
                     } else {
                         "保护已停用"
                     })
@@ -358,19 +425,16 @@ fn status_card(ctx: &mut SenseCtx, ui: &mut Ui) {
                     }
                 });
                 // 未接入采集时 `face` 只是「用空闲检测顶上的占位人脸」，
-                // 显示相似度 / 人脸框数会变成编造数据，这里只报「本机用户」。
+                // 显示相似度 / 人脸框数会变成编造数据，这里只报空闲检测判定。
                 let detail = if !ctx.view.camera_live {
                     if let Some(idle) = ctx.view.idle_secs {
                         format!(
-                            "本机用户 · 连续在场 {} · 系统空闲 {}s · 空闲检测驱动",
+                            "空闲检测判定在场 · 连续 {} · 系统空闲 {}s",
                             fmt_clock(st.present_for),
                             idle
                         )
                     } else {
-                        format!(
-                            "本机用户 · 连续在场 {} · 空闲检测驱动",
-                            fmt_clock(st.present_for)
-                        )
+                        format!("空闲检测判定在场 · 连续 {}", fmt_clock(st.present_for))
                     }
                 } else if let Some(face) = &st.face {
                     format!(
@@ -397,7 +461,9 @@ fn status_card(ctx: &mut SenseCtx, ui: &mut Ui) {
         // 窄栏时三格并排会让值折行，改为竖排三个 soft_block。
         let cols = if w < 330.0 { 1 } else { 3 };
         let cw = (w - 10.0 * (cols as f32 - 1.0)) / cols as f32;
-        let unlock = if ctx.cfg.require_pin {
+        let unlock = if !ctx.view.camera_live {
+            "唤醒提示"
+        } else if ctx.cfg.require_pin {
             "需 PIN"
         } else {
             "自动"
@@ -467,9 +533,13 @@ fn auto_lock_card(ctx: &mut SenseCtx, ui: &mut Ui) {
             ui.label(RichText::new("秒后锁定").size(11.0).color(theme::subtext()));
         });
         ui.label(
-            RichText::new("检测不到人脸开始计时，可随时打断")
-                .size(9.5)
-                .color(theme::faint()),
+            RichText::new(if ctx.view.camera_live {
+                "检测不到人脸开始计时，可随时打断"
+            } else {
+                "摄像头未接入：连续无键鼠输入开始计时，可随时打断"
+            })
+            .size(9.5)
+            .color(theme::faint()),
         );
         ui.add_space(8.0);
 
@@ -590,7 +660,7 @@ fn privacy_card(ctx: &mut SenseCtx, ui: &mut Ui) {
             if ctx.view.camera_live {
                 "已接入 · 独占中"
             } else {
-                "未接入 · 退化到空闲检测"
+                "未接入 · 使用键鼠空闲检测"
             },
             if ctx.view.camera_live {
                 theme::mint()
@@ -609,17 +679,17 @@ fn privacy_card(ctx: &mut SenseCtx, ui: &mut Ui) {
         );
         ui.add_space(4.0);
         let bw = ui.available_width();
-        if super::wide_ghost(ui, "管理授权人脸", bw).clicked() {
+        if super::wide_ghost(ui, "授权人脸（待接入）", bw).clicked() {
             ctx.actions.push(PageAction::ManageFaces);
         }
         ui.label(
-            RichText::new("本程序用 Windows Hello 兼容摄像头，识别在本地完成。")
+            RichText::new("摄像头采集尚未接入（里程碑 M2）；人脸开关当前只保存配置。")
                 .size(9.0)
                 .color(theme::faint()),
         );
         ui.add_space(4.0);
         ui.label(
-            RichText::new("识别质量：过去 24h 命中 99.2%，误识别 1 次。")
+            RichText::new("识别质量：—（接入后显示真实指标，不使用示意数据）")
                 .size(9.0)
                 .color(theme::faint()),
         );

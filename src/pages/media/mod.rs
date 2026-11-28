@@ -24,8 +24,8 @@ pub enum MediaAction {
     Next,
     Prev,
     Seek(f64),
-    Volume(f64),
-    Mute,
+    Volume(Kind, f64),
+    Mute(Kind),
     Stop,
     Save,
     OpenMedia(Kind, u64),
@@ -244,7 +244,7 @@ pub fn player(ctx: &mut MediaCtx, ui: &mut egui::Ui) {
             ui.horizontal(|ui| {
                 if ui_kit::small_button(ui, if st.muted { "静音中" } else { "静音" }).clicked()
                 {
-                    ctx.actions.push(MediaAction::Mute);
+                    ctx.actions.push(MediaAction::Mute(ctx.kind));
                 }
                 let mut vol = st.volume as f32;
                 let slider_w = (ui.available_width() - 44.0).max(60.0);
@@ -257,7 +257,7 @@ pub fn player(ctx: &mut MediaCtx, ui: &mut egui::Ui) {
                     )
                     .changed()
                 {
-                    ctx.actions.push(MediaAction::Volume(vol as f64));
+                    ctx.actions.push(MediaAction::Volume(ctx.kind, vol as f64));
                 }
                 ui.label(
                     RichText::new(format!("{:.0}%", st.volume))
@@ -283,11 +283,11 @@ pub fn player(ctx: &mut MediaCtx, ui: &mut egui::Ui) {
                         )
                         .changed()
                     {
-                        ctx.actions.push(MediaAction::Volume(vol as f64));
+                        ctx.actions.push(MediaAction::Volume(ctx.kind, vol as f64));
                     }
                     if ui_kit::small_button(ui, if st.muted { "静音中" } else { "静音" }).clicked()
                     {
-                        ctx.actions.push(MediaAction::Mute);
+                        ctx.actions.push(MediaAction::Mute(ctx.kind));
                     }
                 });
             });
@@ -310,9 +310,9 @@ pub fn player(ctx: &mut MediaCtx, ui: &mut egui::Ui) {
                     ctx.actions.push(MediaAction::Next);
                 }
             });
-            let mut repeat = ctx.cfg.repeat;
+            let mut repeat = ctx.cfg.repeat_for(ctx.kind);
             if ui.checkbox(&mut repeat, "列表循环").changed() {
-                ctx.cfg.repeat = repeat;
+                ctx.cfg.set_repeat_for(ctx.kind, repeat);
                 ctx.actions.push(MediaAction::Save);
             }
         } else {
@@ -327,9 +327,9 @@ pub fn player(ctx: &mut MediaCtx, ui: &mut egui::Ui) {
                     ctx.actions.push(MediaAction::Next);
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let mut repeat = ctx.cfg.repeat;
+                    let mut repeat = ctx.cfg.repeat_for(ctx.kind);
                     if ui.checkbox(&mut repeat, "列表循环").changed() {
-                        ctx.cfg.repeat = repeat;
+                        ctx.cfg.set_repeat_for(ctx.kind, repeat);
                         ctx.actions.push(MediaAction::Save);
                     }
                 });

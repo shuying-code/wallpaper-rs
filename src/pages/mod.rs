@@ -37,10 +37,14 @@ pub enum PageAction {
 #[derive(Clone, Debug, Default)]
 pub struct SenseView {
     pub status: SenseStatus,
-    /// 摄像头是否可用（首版为 `None`：采集未接入）。
+    /// 摄像头链路说明。当前版本恒为「采集后端未接入」，不把它当成可用设备。
     pub camera: Option<String>,
-    /// 采集后端是否真的在出帧（首版恒 `false`，UI 据此显示 `n/a` 而非编造指标）。
+    /// 采集后端是否真的在出帧；只有它为 `true` 才能展示识别指标。
     pub camera_live: bool,
+    /// 摄像头链路的真实状态说明（未接入 / 启动失败 / 出帧中）。
+    pub camera_status: String,
+    /// 采集失败的原因（来自摄像头启动错误），成功时为 `None`。
+    pub camera_error: Option<String>,
     /// 系统空闲秒数（真实的退化通道）。
     pub idle_secs: Option<u64>,
     /// 最近事件（倒序）。
@@ -49,6 +53,7 @@ pub struct SenseView {
     pub locked_today: u32,
     pub unlock_hints_today: u32,
     pub strangers_today: u32,
+    pub away_today: u32,
     /// 本机是否能真正锁屏。
     pub can_lock: bool,
 }

@@ -46,6 +46,8 @@ pub fn ui(ctx: &mut HwCtx, ui: &mut egui::Ui) {
     ui.add_enabled_ui(ready, |ui| {
         preview_card(ctx, ui);
         ui.add_space(12.0);
+        devices_card(ctx, ui);
+        ui.add_space(12.0);
 
         if ctx.compact {
             modes_card(ctx, ui);
@@ -94,6 +96,102 @@ pub fn ui(ctx: &mut HwCtx, ui: &mut egui::Ui) {
         .size(9.5)
         .color(theme::faint()),
     );
+}
+
+// ---- per-device switches ----------------------------------------------------
+
+fn devices_card(ctx: &mut HwCtx, ui: &mut egui::Ui) {
+    let devices = ctx.view.devices().to_vec();
+    let mut toggle: Option<(String, bool)> = None;
+    ui_kit::card(ui, |ui| {
+        ui.set_min_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui_kit::card_title(ui, "逐设备灯光");
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let off = devices
+                    .iter()
+                    .filter(|d| {
+                        ctx.view.aura.switchable_devices.contains(&d.key())
+                            && !ctx.cfg.lighting.device_enabled(&d.key())
+                    })
+                    .count();
+                let badge_text = if off == 0 {
+                    "全部开启".to_string()
+                } else {
+                    format!("{off} 台熄灭")
+                };
+                ui_kit::badge(
+                    ui,
+                    &badge_text,
+                    if off == 0 {
+                        theme::mint_soft()
+                    } else {
+                        theme::amber_soft()
+                    },
+                    if off == 0 {
+                        theme::mint()
+                    } else {
+                        theme::amber()
+                    },
+                );
+            });
+        });
+        ui.add_space(6.0);
+        if devices.is_empty() {
+            ui_kit::notice_card(
+                ui,
+                theme::subtext(),
+                "没有可控制的设备",
+                "Aura 服务尚未返回设备清单。",
+                None,
+            );
+            return;
+        }
+        for d in devices.iter() {
+            let key = d.key();
+            let switchable = ctx.view.aura.switchable_devices.contains(&key);
+            let mut on = ctx.cfg.lighting.device_enabled(&key);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(d.display_name()).size(11.0).color(if on {
+                    theme::text()
+                } else {
+                    theme::faint()
+                }));
+                ui_kit::badge(
+                    ui,
+                    &format!("{} 灯珠", d.leds),
+                    theme::extreme(),
+                    theme::subtext(),
+                );
+                if !switchable {
+                    ui_kit::badge(ui, "不可独立控制", theme::amber_soft(), theme::amber());
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui
+                        .add_enabled_ui(switchable, |ui| ui_kit::switch(ui, &mut on))
+                        .inner
+                        .changed()
+                    {
+                        toggle = Some((key.clone(), on));
+                    }
+                });
+            });
+            ui.add_space(4.0);
+        }
+        ui.label(
+            RichText::new(
+                "开关按设备映射到 Aura Group S0 的 LED 节点；关闭即软件熄灭该设备，其他设备保持当前效果。\
+                 没有 LED 节点的设备会标为「不可独立控制」，不会假装已断电。",
+            )
+            .size(9.3)
+            .color(theme::faint()),
+        );
+    });
+    if let Some((key, on)) = toggle {
+        ctx.cfg.lighting.set_device_enabled(&key, on);
+        ctx.actions.push(PageAction::Save);
+        ctx.actions.push(PageAction::ApplyAura);
+    }
 }
 
 // ---- preview ----------------------------------------------------------------

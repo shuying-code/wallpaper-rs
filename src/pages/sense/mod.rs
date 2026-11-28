@@ -180,6 +180,15 @@ pub fn check_item(ui: &mut Ui, done: bool, text: &str, color: Color32) {
     });
 }
 
+/// 尚未接入 / 无法判定的前置条件：画「—」而不是空心圆，避免被读成「未通过」。
+pub fn pending_item(ui: &mut Ui, text: &str) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 7.0;
+        ui.label(RichText::new("—").size(10.0).color(theme::faint()));
+        ui.label(RichText::new(text).size(10.0).color(theme::faint()));
+    });
+}
+
 /// 分段组宽度（用于手动右对齐，保持选项从左到右的阅读顺序）。
 pub fn segments_width(ui: &Ui, options: &[&str]) -> f32 {
     let cells: f32 = options

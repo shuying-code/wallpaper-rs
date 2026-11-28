@@ -17,6 +17,21 @@ struct Rect {
     bottom: i32, // 字段 bottom
 } // 块结束
 
+/// `user32!GetWindowRect` 的只读包装：供全屏判定与窗口摆放共用，
+/// 避免在多个模块里重复声明同名 Win32 函数（签名不一致会触发编译警告）。
+#[cfg(windows)]
+pub fn window_rect(hwnd: isize) -> Option<(i32, i32, i32, i32)> {
+    let mut r = Rect::default();
+    let ok = unsafe { GetWindowRect(hwnd as *mut c_void, &mut r) };
+    (ok != 0).then_some((r.left, r.top, r.right, r.bottom))
+}
+
+/// 当前前台窗口句柄；没有前台窗口时返回 0。
+#[cfg(windows)]
+pub fn foreground_window() -> isize {
+    unsafe { GetForegroundWindow() as isize }
+}
+
 /// The window's on-screen placement, remembered so we can put it back exactly
 /// where the user had it.
 #[derive(Clone, Copy, Default)] // 语句

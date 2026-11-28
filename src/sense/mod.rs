@@ -114,6 +114,8 @@ pub struct SenseEngine {
     miss_since: Option<Instant>,
     countdown_deadline: Option<Instant>,
     countdown_total: u32,
+    /// 倒计时到点后进入的「二次确认」宽限截止时间。
+    confirm_deadline: Option<Instant>,
     face: Option<FaceHit>,
     stranger_latched: bool,
     last_event: String,
@@ -134,6 +136,7 @@ impl SenseEngine {
             miss_since: None,
             countdown_deadline: None,
             countdown_total: 0,
+            confirm_deadline: None,
             face: None,
             stranger_latched: false,
             last_event: "等待首帧".to_string(),
@@ -155,6 +158,7 @@ impl SenseEngine {
                 if self.presence == Presence::Countdown {
                     self.presence = Presence::Present;
                     self.countdown_deadline = None;
+                    self.confirm_deadline = None;
                     self.present_since = Some(now);
                     self.miss_since = None;
                     out.push(SenseEffect::CancelCountdown);
@@ -168,6 +172,7 @@ impl SenseEngine {
                         self.presence = Presence::Stranger;
                         self.stranger_latched = true;
                         self.countdown_deadline = None;
+                        self.confirm_deadline = None;
                         out.push(SenseEffect::Lock);
                         out.push(SenseEffect::Log(format!(
                             "检测到陌生人脸（{}），已立即锁定",
@@ -192,6 +197,8 @@ impl SenseEngine {
                 self.presence = Presence::Present;
                 self.miss_since = None;
                 self.countdown_deadline = None;
+                self.confirm_deadline = None;
+                self.countdown_total = 0;
                 if self.present_since.is_none() {
                     self.present_since = Some(now);
                 }
@@ -209,6 +216,7 @@ impl SenseEngine {
                             self.countdown_total = cfg.away_secs;
                             self.countdown_deadline =
                                 Some(now + Duration::from_secs(cfg.away_secs as u64));
+                            self.confirm_deadline = None;
                             out.push(SenseEffect::EnterCountdown(cfg.away_secs));
                             out.push(SenseEffect::Log(format!(
                                 "离线 {} 秒，开始离开倒计时",
@@ -225,12 +233,30 @@ impl SenseEngine {
             }
             SenseEvent::Tick => {
                 if self.presence == Presence::Countdown {
-                    if let Some(deadline) = self.countdown_deadline {
+                    if let Some(deadline) = self.confirm_deadline {
+                        // 二次确认窗口：仍然无人脸才真正锁屏。
                         if now >= deadline {
                             self.presence = Presence::Locked;
                             self.countdown_deadline = None;
+                            self.confirm_deadline = None;
                             out.push(SenseEffect::Lock);
-                            out.push(SenseEffect::Log("离开超时，执行锁定".into()));
+                            out.push(SenseEffect::Log("二次确认仍无人，执行锁定".into()));
+                        }
+                    } else if let Some(deadline) = self.countdown_deadline {
+                        if now >= deadline {
+                            if cfg.confirm_second_pass {
+                                let grace = Duration::from_secs(cfg.grace_secs.max(1) as u64);
+                                self.confirm_deadline = Some(now + grace);
+                                out.push(SenseEffect::Log(format!(
+                                    "倒计时结束，再确认 {} 秒",
+                                    grace.as_secs()
+                                )));
+                            } else {
+                                self.presence = Presence::Locked;
+                                self.countdown_deadline = None;
+                                out.push(SenseEffect::Lock);
+                                out.push(SenseEffect::Log("离开超时，执行锁定".into()));
+                            }
                         }
                     }
                 }
@@ -245,6 +271,7 @@ impl SenseEngine {
             SenseEvent::ManualLock => {
                 self.presence = Presence::Locked;
                 self.countdown_deadline = None;
+                self.confirm_deadline = None;
                 self.stranger_latched = false;
                 out.push(SenseEffect::Lock);
                 out.push(SenseEffect::Log("手动锁定".into()));
@@ -254,6 +281,8 @@ impl SenseEngine {
                 self.present_since = Some(now);
                 self.miss_since = None;
                 self.countdown_deadline = None;
+                self.confirm_deadline = None;
+                self.countdown_total = 0;
                 out.push(SenseEffect::CancelCountdown);
                 out.push(SenseEffect::Log("我还在：重置离开计时".into()));
             }
@@ -278,7 +307,8 @@ impl SenseEngine {
             face: self.face.clone(),
             countdown_total: self.countdown_total,
             countdown_left: self
-                .countdown_deadline
+                .confirm_deadline
+                .or(self.countdown_deadline)
                 .map(|d| d.saturating_duration_since(now))
                 .unwrap_or_default(),
             last_event: self.last_event.clone(),
@@ -290,6 +320,81 @@ impl SenseEngine {
 /// 系统空闲秒数（键鼠无输入）。摄像头不可用时的真实退化通道。
 pub fn idle_seconds() -> Option<u64> {
     platform_idle_seconds()
+}
+
+/// 前台窗口是否覆盖整块显示器（视频 / 游戏 / 演示）。仅 Windows 有可靠实现；
+/// 其它平台返回 `false`，避免误判成「一直在全屏」而永久跳过判定。
+pub fn foreground_fullscreen() -> bool {
+    platform_foreground_fullscreen()
+}
+
+#[cfg(windows)]
+fn platform_foreground_fullscreen() -> bool {
+    #[repr(C)]
+    struct MonitorInfo {
+        cb_size: u32,
+        rc_monitor: MonitorRect,
+        rc_work: MonitorRect,
+        flags: u32,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct MonitorRect {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+    #[link(name = "user32")]
+    extern "system" {
+        fn MonitorFromWindow(hwnd: isize, flags: u32) -> isize;
+        fn GetMonitorInfoW(monitor: isize, info: *mut MonitorInfo) -> i32;
+        fn GetClassNameW(hwnd: isize, buf: *mut u16, max: i32) -> i32;
+        fn IsWindowVisible(hwnd: isize) -> i32;
+    }
+    const MONITOR_DEFAULTTONEAREST: u32 = 2;
+
+    let hwnd = crate::winhide::foreground_window();
+    if hwnd == 0 || unsafe { IsWindowVisible(hwnd) } == 0 {
+        return false;
+    }
+    // 桌面 / 任务栏本身不算全屏内容。
+    let mut class_buf = [0u16; 64];
+    let n = unsafe { GetClassNameW(hwnd, class_buf.as_mut_ptr(), class_buf.len() as i32) };
+    if n > 0 {
+        let class = String::from_utf16_lossy(&class_buf[..n as usize]);
+        if matches!(
+            class.as_str(),
+            "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd"
+        ) {
+            return false;
+        }
+    }
+
+    let Some((left, top, right, bottom)) = crate::winhide::window_rect(hwnd) else {
+        return false;
+    };
+    let mon = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    if mon == 0 {
+        return false;
+    }
+    let mut mi = MonitorInfo {
+        cb_size: std::mem::size_of::<MonitorInfo>() as u32,
+        rc_monitor: MonitorRect::default(),
+        rc_work: MonitorRect::default(),
+        flags: 0,
+    };
+    if unsafe { GetMonitorInfoW(mon, &mut mi) } == 0 {
+        return false;
+    }
+    let tol = 2;
+    let m = &mi.rc_monitor;
+    left <= m.left + tol && top <= m.top + tol && right >= m.right - tol && bottom >= m.bottom - tol
+}
+
+#[cfg(not(windows))]
+fn platform_foreground_fullscreen() -> bool {
+    false
 }
 
 #[cfg(windows)]
@@ -448,7 +553,9 @@ mod tests {
     #[test]
     fn face_present_then_away_enters_countdown_and_locks() {
         let mut e = SenseEngine::new(Instant::now());
-        let c = cfg(10);
+        // 本用例覆盖「倒计时到点即锁」的基线路径；二次确认另有专门用例。
+        let mut c = cfg(10);
+        c.confirm_second_pass = false;
         let t0 = Instant::now();
         e.step(t0, &SenseEvent::Face(hit(true)), &c);
         assert_eq!(e.presence(), Presence::Present);
@@ -546,5 +653,68 @@ mod tests {
         assert_eq!(e.presence(), Presence::Countdown);
         let out = e.step(t0 + Duration::from_secs(10), &SenseEvent::InputActivity, &c);
         assert!(out.contains(&SenseEffect::CancelCountdown));
+    }
+
+    /// 二次确认：倒计时到点先不锁，宽限期结束后仍无人脸才锁；
+    /// 宽限期内人脸回来则取消。
+    #[test]
+    fn second_pass_delays_lock_until_grace_expires() {
+        let mut e = SenseEngine::new(Instant::now());
+        let mut c = cfg(5);
+        c.grace_secs = 2;
+        c.confirm_second_pass = true;
+        let t0 = Instant::now();
+        e.step(t0, &SenseEvent::Face(hit(true)), &c);
+        e.step(t0 + Duration::from_secs(1), &SenseEvent::NoFace, &c);
+        e.step(t0 + Duration::from_secs(9), &SenseEvent::NoFace, &c);
+        assert_eq!(e.presence(), Presence::Countdown);
+
+        // 倒计时到点：进入二次确认，不立即锁。
+        let out = e.step(t0 + Duration::from_secs(15), &SenseEvent::Tick, &c);
+        assert_eq!(e.presence(), Presence::Countdown);
+        assert!(!out.contains(&SenseEffect::Lock));
+
+        // 宽限期内回来：取消，不锁。
+        let out = e.step(
+            t0 + Duration::from_secs(16),
+            &SenseEvent::Face(hit(true)),
+            &c,
+        );
+        assert_eq!(e.presence(), Presence::Present);
+        assert!(!out.contains(&SenseEffect::Lock));
+    }
+
+    /// 二次确认宽限结束仍无人：锁定。
+    #[test]
+    fn second_pass_locks_after_grace_when_still_away() {
+        let mut e = SenseEngine::new(Instant::now());
+        let mut c = cfg(5);
+        c.grace_secs = 2;
+        c.confirm_second_pass = true;
+        let t0 = Instant::now();
+        e.step(t0, &SenseEvent::Face(hit(true)), &c);
+        e.step(t0 + Duration::from_secs(1), &SenseEvent::NoFace, &c);
+        e.step(t0 + Duration::from_secs(9), &SenseEvent::NoFace, &c);
+        assert_eq!(e.presence(), Presence::Countdown);
+        e.step(t0 + Duration::from_secs(15), &SenseEvent::Tick, &c);
+        assert_eq!(e.presence(), Presence::Countdown);
+        let out = e.step(t0 + Duration::from_secs(18), &SenseEvent::Tick, &c);
+        assert_eq!(e.presence(), Presence::Locked);
+        assert!(out.contains(&SenseEffect::Lock));
+    }
+
+    /// 关闭二次确认时，倒计时到点立即锁。
+    #[test]
+    fn no_second_pass_locks_at_deadline() {
+        let mut e = SenseEngine::new(Instant::now());
+        let mut c = cfg(5);
+        c.confirm_second_pass = false;
+        let t0 = Instant::now();
+        e.step(t0, &SenseEvent::Face(hit(true)), &c);
+        e.step(t0 + Duration::from_secs(1), &SenseEvent::NoFace, &c);
+        e.step(t0 + Duration::from_secs(9), &SenseEvent::NoFace, &c);
+        let out = e.step(t0 + Duration::from_secs(15), &SenseEvent::Tick, &c);
+        assert_eq!(e.presence(), Presence::Locked);
+        assert!(out.contains(&SenseEffect::Lock));
     }
 }
