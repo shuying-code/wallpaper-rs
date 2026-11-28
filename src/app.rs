@@ -68,7 +68,7 @@ impl Section {
                 Tab::WallpaperSettings,
             ],
             Section::Music => &[Tab::Music, Tab::MusicSettings],
-            Section::Video => &[Tab::Video, Tab::VideoSettings],
+            Section::Video => &[Tab::Video, Tab::Live, Tab::VideoSettings],
             Section::Hardware => &[
                 Tab::Dashboard,
                 Tab::Devices,
@@ -110,6 +110,7 @@ pub enum Tab {
     Online,    // 语句
     Music,     // 本地音乐播放器
     Video,     // 本地视频播放器
+    Live,      // 央视 / 卫视直播
     WallpaperSettings,
     MusicSettings,
     VideoSettings,
@@ -127,7 +128,7 @@ impl Tab {
                 Section::Wallpaper
             }
             Tab::Music | Tab::MusicSettings => Section::Music,
-            Tab::Video | Tab::VideoSettings => Section::Video,
+            Tab::Video | Tab::Live | Tab::VideoSettings => Section::Video,
             Tab::Dashboard | Tab::Devices | Tab::Lighting | Tab::Fan | Tab::HardwareSettings => {
                 Section::Hardware
             }
@@ -170,6 +171,7 @@ impl Tab {
             Tab::Online => "每日壁纸",
             Tab::Music => "音乐播放器",
             Tab::Video => "视频播放器",
+            Tab::Live => "电视直播",
             Tab::WallpaperSettings => "壁纸设置",
             Tab::MusicSettings => "音乐设置",
             Tab::VideoSettings => "视频设置",
@@ -203,6 +205,7 @@ impl Tab {
             Tab::Online => "每日壁纸",
             Tab::Music => "音乐播放器",
             Tab::Video => "视频播放器",
+            Tab::Live => "电视直播",
             Tab::WallpaperSettings => "壁纸设置",
             Tab::MusicSettings => "音乐设置",
             Tab::VideoSettings => "视频设置",
@@ -303,6 +306,8 @@ enum Action {
     ToggleTheme,      // 语句
     /// 媒体页请求：打开目录选择 / 重新扫描 / 播放控制。
     Media(crate::pages::media::MediaAction),
+    /// 电视直播页请求：开始 / 停止 / 窗口控制。
+    Live(crate::pages::live::LiveAction),
     ExpandAllAlbums,    // 语句
     CollapseAllAlbums,  // 语句
     RetryPermissions,   // 语句
@@ -715,6 +720,11 @@ pub struct App {
     media_error: Option<String>,
     /// 播放器状态快照（每帧从 mpv 拉取，供页面无锁读取）。
     media_state: crate::media::State,
+    // ---- 视频分区：电视直播 ----
+    /// 隐藏 WebView2 鉴权宿主 + 原生 mpv / 官方播放器状态机。
+    live: crate::live::LiveController,
+    /// 直播页的筛选、搜索与选中频道（不持久化）。
+    live_ui: crate::pages::live::LiveUiState,
 } // 块结束
 
 impl App {
@@ -872,6 +882,8 @@ impl App {
             media_selected: crate::media::Selection::default(),
             media_error: None,
             media_state: crate::media::State::default(),
+            live: crate::live::LiveController::new(),
+            live_ui: crate::pages::live::LiveUiState::default(),
         }; // 块结束
            // Optional deep-link to a tab, e.g. `wallpaper-rs --tab settings`.
         if let Some(pos) = std::env::args().position(|a| a == "--tab") {
@@ -891,6 +903,7 @@ impl App {
                     "online" => Tab::Online,                   // 匹配分支
                     "music" | "audio" => Tab::Music,           // 音乐
                     "video" | "videos" => Tab::Video,          // 视频
+                    "live" | "tv" | "television" => Tab::Live, // 电视直播
                     "settings" => Tab::Settings,               // 匹配分支
                     "about" => Tab::About,                     // 匹配分支
                     _ => Tab::Library,                         // 匹配分支
@@ -1495,6 +1508,7 @@ impl App {
                     self.cfg.theme = if self.cfg.theme == 1 { 0 } else { 1 }; // 语句
                 } // 块结束
                 Action::Media(a) => self.run_media_action(ctx, a),
+                Action::Live(a) => self.run_live_action(a),
                 Action::ToggleMode => {
                     if self.cfg.mode == Mode::Slideshow {
                         self.cfg.mode = Mode::Fixed;
@@ -2818,6 +2832,59 @@ impl App {
         }
     }
 
+    fn ui_live(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let snapshot = self.live.snapshot();
+        let mut page_actions = Vec::new();
+        crate::pages::live::ui(
+            ui,
+            &snapshot,
+            self.live.channels(),
+            &mut self.live_ui,
+            &mut page_actions,
+            self.compact,
+        );
+        actions.extend(page_actions.into_iter().map(Action::Live));
+    }
+
+    fn run_live_action(&mut self, action: crate::pages::live::LiveAction) {
+        use crate::pages::live::LiveAction;
+        match action {
+            LiveAction::Play(pid) => {
+                // 电视直播与本地媒体都使用独立 mpv 窗口；开始新的直播前
+                // 收掉本地媒体，避免两路声音同时播放。
+                self.media_mpv = None;
+                self.media_start_rx = None;
+                self.media_pending = None;
+                self.media_playing = None;
+                self.media_state = crate::media::State::default();
+                self.live_ui.selected_pid = Some(pid.clone());
+                self.live.play(&pid);
+                let name = self
+                    .live
+                    .channel(&pid)
+                    .map(|channel| channel.name.as_str())
+                    .unwrap_or("频道");
+                self.status = format!("正在连接「{name}」官方直播…");
+            }
+            LiveAction::Stop => {
+                self.live.stop();
+                self.status = "电视直播已停止".to_string();
+            }
+            LiveAction::Fullscreen => self.live.set_fullscreen(true),
+            LiveAction::Windowed => self.live.set_fullscreen(false),
+            LiveAction::Volume(volume) => self.live.set_volume(volume as f64),
+            LiveAction::ToggleMute => self.live.toggle_mute(),
+        }
+    }
+
+    /// 本地媒体开始播放 / 恢复时结束直播，避免两路声音重叠。
+    fn stop_live_for_local_media(&mut self) {
+        if self.live.snapshot().active() {
+            self.live.stop();
+            self.status = "已停止电视直播，切换为本地媒体".to_string();
+        }
+    }
+
     fn run_media_action(&mut self, ctx: &egui::Context, action: crate::pages::media::MediaAction) {
         use crate::pages::media::MediaAction;
         match action {
@@ -2849,8 +2916,12 @@ impl App {
                 self.media_scanned = true;
                 self.scan_media(kind);
             }
-            MediaAction::Play(kind, id) => self.media_play(ctx, kind, id),
+            MediaAction::Play(kind, id) => {
+                self.stop_live_for_local_media();
+                self.media_play(ctx, kind, id);
+            }
             MediaAction::Toggle => {
+                self.stop_live_for_local_media();
                 if let Some(m) = self.media_mpv.as_mut() {
                     if let Err(e) = m.toggle_pause() {
                         self.media_error = Some(e);
@@ -2931,6 +3002,7 @@ impl App {
                 }
             }
             MediaAction::Fullscreen => {
+                self.stop_live_for_local_media();
                 if self.media_kind == crate::media::Kind::Video {
                     if let Some(m) = self.media_mpv.as_mut() {
                         let _ = m.toggle_fullscreen();
@@ -3133,6 +3205,43 @@ impl App {
             self.media_mpv = None;
             self.media_playing = None;
             self.media_state = crate::media::State::default();
+        }
+    }
+
+    fn tick_live(&mut self, ctx: &egui::Context) {
+        let before = self.live.snapshot();
+        self.live.tick();
+        let after = self.live.snapshot();
+        if before.phase != after.phase {
+            let name = after
+                .channel
+                .as_ref()
+                .map(|channel| channel.name.as_str())
+                .unwrap_or("频道");
+            match after.phase {
+                crate::live::LivePhase::StartingPlayer => {
+                    self.status = format!("「{name}」鉴权完成，正在启动 mpv…");
+                }
+                crate::live::LivePhase::Playing => {
+                    self.status = format!("正在播放「{name}」（独立 mpv 窗口）");
+                }
+                crate::live::LivePhase::Official => {
+                    self.status = format!("「{name}」正在官方播放器中播放");
+                }
+                crate::live::LivePhase::Stopped => {
+                    self.status = "电视直播已结束".to_string();
+                }
+                crate::live::LivePhase::Failed => {
+                    self.status = format!(
+                        "电视直播失败：{}",
+                        after.error.as_deref().unwrap_or("未知错误")
+                    );
+                }
+                _ => {}
+            }
+        }
+        if after.active() {
+            ctx.request_repaint_after(Duration::from_millis(150));
         }
     }
 
@@ -5150,6 +5259,12 @@ impl App {
                             ui.add_space(24.0);
                         });
                     }
+                    Tab::Live => {
+                        vscroll().show(ui, |ui| {
+                            self.ui_live(ui, actions);
+                            ui.add_space(24.0);
+                        });
+                    }
                     // 移动端 / 窄窗：硬件四页不在移动端实现（没有 Aura COM 与设备
                     // 通道）。这里给一张说明卡，而不是灰掉假装存在。
                     Tab::Dashboard | Tab::Devices | Tab::Lighting | Tab::Fan
@@ -5186,7 +5301,7 @@ impl App {
                                         Tab::Library => self.ui_library(ui, actions), // 匹配分支
                                         Tab::Slideshow => self.ui_slideshow(ui, actions), // 匹配分支
                                         Tab::Online => self.ui_online(ui), // 匹配分支
-                                        Tab::Music | Tab::Video => {}      // 已在上方单独渲染
+                                        Tab::Music | Tab::Video | Tab::Live => {} // 已在上方单独渲染
                                         Tab::Settings => self.ui_settings(ui, actions), // 匹配分支
                                         Tab::WallpaperSettings => {
                                             self.ui_wallpaper_settings(ui, actions)
@@ -8763,6 +8878,7 @@ impl eframe::App for App {
         self.tick_sense(ctx);
         self.tick_hardware();
         self.tick_media(ctx);
+        self.tick_live(ctx);
         self.draw_header(ctx, &mut actions); // 语句
         if self.compact {
             // 条件分支
@@ -8780,6 +8896,11 @@ impl eframe::App for App {
         self.draw_status_bar(ctx); // 语句
         self.draw_center(ctx, &mut actions); // 语句
         self.apply(ctx, actions); // 语句
+        if self.live.snapshot().active() {
+            // 页面动作在绘制后执行；补一次定时重绘，确保刚启动的宿主 /
+            // mpv 状态在下一帧继续推进。
+            ctx.request_repaint_after(Duration::from_millis(150));
+        }
 
         self.sync_playlist();
         let snap2 = Snapshot::of(&self.cfg); // 变量 snap2
@@ -8798,6 +8919,7 @@ impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         // 函数 on_exit
         self.cfg.save(); // 语句
+        self.live.stop();
         self.media_mpv = None;
     } // 块结束
 } // 块结束
@@ -8895,6 +9017,7 @@ fn tab_from_index(i: usize) -> Tab {
         17 => Tab::VideoSettings,
         18 => Tab::HardwareSettings,
         19 => Tab::SenseSettings,
+        20 => Tab::Live,
         _ => Tab::Web4k, // 匹配分支
     } // 块结束
 } // 块结束
@@ -9010,6 +9133,7 @@ fn tab_subtitle(tab: Tab) -> &'static str {
         Tab::Online => "每日一图 · 自动更换",
         Tab::Music => "本地音乐库 · 后台播放",
         Tab::Video => "本地视频库 · 独立播放窗口",
+        Tab::Live => "央视 / 卫视 · 官方鉴权 · 独立播放窗口",
         Tab::WallpaperSettings => "显示方式 · 扫描 · 每日壁纸",
         Tab::MusicSettings => "音乐目录 · 音乐音量 · 音乐循环",
         Tab::VideoSettings => "视频目录 · 视频音量 · 视频循环",
@@ -9195,7 +9319,7 @@ fn paint_tab_icon(p: &egui::Painter, rect: egui::Rect, tab: Tab, color: Color32)
             );
         }
         // 胶片 + 播放三角：视频播放器。
-        Tab::Video => {
+        Tab::Video | Tab::Live => {
             let frame = egui::Rect::from_center_size(c, Vec2::new(r * 1.75, r * 1.3));
             p.rect_stroke(frame, Rounding::same(2.5), s);
             for i in 0..3 {
@@ -9515,7 +9639,7 @@ fn section_hint(s: Section) -> &'static str {
     match s {
         Section::Wallpaper => "图库 · 轮播 · 每日一图",
         Section::Music => "本地音乐 · 后台播放",
-        Section::Video => "本地视频 · 独立窗口",
+        Section::Video => "本地视频 · 电视直播",
         Section::Hardware => "Aura 灯效 · 风扇 · 整机",
         Section::Sense => "人走锁屏 · 人回提示",
     }

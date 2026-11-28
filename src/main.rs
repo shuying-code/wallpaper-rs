@@ -12,9 +12,14 @@ use wallpaper_rs::{app, config, wallpaper}; // 引入依赖
 fn main() -> eframe::Result<()> {
     // 函数 main
     let args: Vec<String> = std::env::args().collect(); // 变量 args
-                                                        // Elevated helper: this copy was launched through the UAC prompt by
-                                                        // `elevate::run_elevated`. Do the privileged work, exit with a status code,
-                                                        // and never open a window.
+                                                        // Internal WebView2 helper: must run before the single-instance lock and
+                                                        // before eframe starts its own event loop.
+    if let Some(code) = wallpaper_rs::live::handle_internal_args(&args) {
+        std::process::exit(code);
+    }
+    // Elevated helper: this copy was launched through the UAC prompt by
+    // `elevate::run_elevated`. Do the privileged work, exit with a status code,
+    // and never open a window.
     if let Some((action, rest)) = wallpaper_rs::elevate::pending_helper_call(&args) {
         // 条件分支
         std::process::exit(wallpaper_rs::elevate::run_helper_action(&action, &rest));

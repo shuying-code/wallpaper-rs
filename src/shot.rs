@@ -50,9 +50,9 @@ impl Shooter {
             ("desktop", 1440.0, 900.0),
         ];
         // 顺序与 `app::tab_from_index` 一致：0 感知 1 策略 2 面板 3 设备 4 灯效
-        // 5 散热 6 本地库 7 轮播 8 每日 9 设置 10 关于 11 音乐 12 视频，
-        // 默认（超出范围）为网上壁纸库。
-        let tabs: [(&str, usize); 18] = [
+        // 5 散热 6 本地库 7 轮播 13 在线壁纸 14 Web4K 11 音乐 12 视频
+        // 20 电视直播，默认（超出范围）为网上壁纸库。
+        let tabs: [(&str, usize); 19] = [
             ("sense", 0),
             ("policy", 1),
             ("dashboard", 2),
@@ -71,6 +71,7 @@ impl Shooter {
             ("settings-video", 17),
             ("settings-hardware", 18),
             ("settings-sense", 19),
+            ("live", 20),
         ];
         let mut items = Vec::new();
         // 可选过滤：`WP_SHOT_SIZES=desktop,laptop` 只截这些尺寸，便于单独核对

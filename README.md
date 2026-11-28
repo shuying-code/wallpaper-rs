@@ -3,12 +3,12 @@
 <p align="center">🌐 <b>Language</b>：<a href="README.md">简体中文</a> · <a href="README.en.md">English</a> · <a href="README.zh-TW.md">繁體中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a> · <a href="README.ru.md">Русский</a> · <a href="README.es.md">Español</a> · <a href="README.fr.md">Français</a> · <a href="README.de.md">Deutsch</a> · <a href="README.pt-BR.md">Português</a></p>
 
 用 **Rust + egui/eframe** 编写的**跨平台桌面壁纸软件**（Windows / macOS / Linux），
-一套界面即可完成 **固定壁纸**、**定时轮播** 与 **动态壁纸**（视频）。
-默认进入 **「网上壁纸库」**；**无登录、无订阅、无遥测。**
+一套界面即可完成 **固定壁纸**、**定时轮播**、**动态壁纸**（视频）与 **央视 / 卫视电视直播**。
+默认进入 **「网上壁纸库」**；应用本身**无账号系统、无订阅、无遥测**。电视直播由官方页面提供，可能要求官方账号登录。
 
 <p>
   <img alt="build" src="https://github.com/shuying-code/wallpaper-rs/actions/workflows/build.yml/badge.svg">
-  <img alt="Rust" src="https://img.shields.io/badge/rust-1.75%2B-orange">
+  <img alt="Rust" src="https://img.shields.io/badge/rust-1.85%2B-orange">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-2f6fed">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
   <img alt="Release" src="https://img.shields.io/github/v/release/shuying-code/wallpaper-rs?color=blue">
@@ -38,7 +38,7 @@
 | Android | — | [.apk](https://github.com/shuying-code/wallpaper-rs/releases/latest/download/wallpaper-rs-android-universal.apk) |
 | 全部版本 |  | [Releases 页面](https://github.com/shuying-code/wallpaper-rs/releases/latest) |
 
-> Windows 的**单文件 exe**（`wallpaper-rs-windows-x64.exe`，约 5 MB）**不再内嵌 mpv**：安装包体积大幅减小。首次使用动态壁纸 / 锁屏时，程序会**检测本机是否已有 mpv**，没有的话再从上游官方发行版**并发测速、选最快的镜像按需下载**便携版 mpv 到用户缓存目录（`%LOCALAPPDATA%\wallpaper-rs\mpv-runtime`）。mpv 为第三方 GPL 组件，见随包 `THIRD-PARTY-NOTICES.md`。
+> Windows 的**单文件 exe**（`wallpaper-rs-windows-x64.exe`）**不内嵌 mpv 或 WebView2 Runtime**。首次使用动态壁纸 / 视频 / 电视直播时，程序会**检测本机是否已有 mpv**，没有的话再从上游官方发行版**并发测速、选最快的镜像按需下载**便携版 mpv 到用户缓存目录（`%LOCALAPPDATA%\wallpaper-rs\mpv-runtime`）。mpv 为第三方 GPL 组件；电视直播还需要系统 WebView2 Runtime。见随包 `THIRD-PARTY-NOTICES.md`。
 
 在应用内「关于」页也可直接点击下载。
 
@@ -52,6 +52,7 @@
 - **五个一级菜单**：界面从单一壁纸工具升级为**壁纸 / 音乐 / 视频 / 硬件 / 人脸识别**并列的多域工作台，各带独立二级页；桌面端是左栏「一级菜单 + 二级页」双层导航，窄屏自动折成底部一级菜单栏。
 - **音乐播放器**：选择本地音乐文件夹后后台枚举音频（mp3 / flac / wav / m4a / aac / ogg / opus / wma / aiff / ape / wv / mka，单次上限 4000 首），支持列表点播、上一首 / 下一首、进度拖动、音量与静音、循环；播放复用 mpv 的 JSON IPC，切换页面不打断播放，状态栏持续显示当前曲目。
 - **视频播放器**：独立的本地视频库（mp4 / webm / mkv / mov / m4v / avi / wmv / flv / ts / mpg / mpeg / ogv / 3gp），支持列表点播、进度 / 音量控制，以及**独立窗口全屏播放**。
+- **电视直播（Windows）**：视频分区新增「电视直播」二级页，内置 64 路频道目录并只展示 51 路免费频道，可按全部 / 央视 / 卫视筛选和搜索。隐藏 WebView2 加载央视频官方页面完成鉴权，可原生解码的清晰流交给独立 mpv 窗口；加密、非 HTTPS 或 mpv 不可用时自动回退官方播放器。关闭播放器窗口即结束直播；不提供内容源、不绕过会员 / DRM，需联网并可能要求官方登录。Windows 需要 Microsoft Edge WebView2 Runtime（Windows 11 通常已内置）。
 - **硬件域（Windows）**：通过华硕官方 Aura COM 服务（`AsRogAuraService.ServiceMediator.1`）读取灯效设备、灯珠数量与可用模式，可分区开关、调色 / 亮度 / 速度并下发灯效；「控制面板 / 设备清单 / 灯效 & Aura Sync / 散热 Fan Xpert」四页分别展示整机状态、风扇通道与温度曲线。设备清单、设备详情卡与灯效页还为每台 Aura 设备提供**独立灯光开关**：关闭时只把该设备在 Group S0 的 LED 软件熄灭，其他设备保持当前效果；没有独立 LED 节点的设备明确标为「不可独立控制」。Fan Xpert 本版**只读**（标定表与曲线可看可编辑并保存到本地，但普通权限无法下发），因为 `AsusFanControlService` 对普通会话返回 `E_ACCESSDENIED`，程序不会假装已经写入。非 Windows 或未安装 Aura 服务时页面显示明确的空状态说明，不会阻塞界面。
 - **智能感知（人脸识别域）**：三态状态机（等待检测 / 在场 / 正在离开 → 已锁定），支持离开倒计时、宽限时间、全屏豁免、二次确认与锁定动作。「实时感知 / 锁屏策略」两页可配置离开多久锁、允许的锁定动作（锁屏 / 虚化壁纸等），并记录今日统计与事件流。首版**摄像头采集尚未接入**（里程碑 M2，需 Media Foundation + ONNX），当前使用**键鼠空闲检测**——人走锁屏真实可用，界面标注「未接入 · 使用键鼠空闲检测」；**人脸相关开关仅保存配置**，无真实识别指标时统一显示「— / 接入后显示」。授权人脸当前只是名单占位（特征库 M3），「人回自动解锁」受系统安全桌面限制，只做唤醒提示，不假装成功。
 - **侧栏显隐**：点击标题栏左上角 `☰` 可一键隐藏 / 显示左侧导航栏，专注看图；状态自动记忆。
@@ -80,11 +81,11 @@
   现场自动写入本地日志 `%APPDATA%\wallpaper-rs\logs\report.log`，并自动上报到 GitHub Issues——
   **上报 Token 已内置在程序中**（混淆存储、界面不可修改），无需任何配置即可静默建 issue；如需覆盖
   可设环境变量 `WALLPAPER_REPORT_TOKEN`。可随时开关，也可一键手动上报。
-- **单文件、纯 Rust**：无需 WebView 或运行时，双击即用；内嵌中文字体，无缺字方框。
+- **轻量原生界面**：主界面由 Rust + egui 绘制，内嵌中文字体，无缺字方框。电视直播在 Windows 上按需使用系统 WebView2 Runtime 与 mpv；不使用 Electron，也不会为其它分区启动浏览器内核。
 
 ## 图形界面（GUI）
 
-界面采用 v2 视觉语言「冷调中性 + 靛蓝强调」：瓷白 / 近黑中性底色不与壁纸抢视觉，彩色只留给状态（薄荷绿 = 在场 / 成功，琥珀 = 陌生人 / 警告，朱红 = 危险 / 失败）；卡片、分段组、开关、环形指标与折线图由 `ui_kit` 自绘，壁纸 / 感知 / 硬件页共用。桌面端为左侧**双层导航**——一级菜单（**壁纸 / 音乐 / 视频 / 硬件 / 人脸识别**）+ 该菜单下的二级页（壁纸：网上壁纸库 / 本地壁纸库 / 轮播 / 每日壁纸 / 壁纸设置；音乐：音乐播放器 / 音乐设置；视频：视频播放器 / 视频设置；硬件：控制面板 / 设备清单 / 灯效 & Aura Sync / 散热 Fan Xpert / 硬件设置；人脸识别：实时感知 / 锁屏策略 / 识别设置），底部固定「通用设置 / 关于」工具页。**每个一级菜单的设置彼此独立**，只显示该分区相关项（音乐与视频的音量 / 循环也是分开存的两套值）；「通用设置」保留主题、开机自启、托盘快捷键、问题上报与配置文件。**默认进入「网上壁纸库」**，可用标题栏 `☰` 隐藏侧栏；壁纸库按文件夹相册分组并可展开 / 折叠，底部状态栏显示载入数量、当前曲目与操作结果。
+界面采用 v2 视觉语言「冷调中性 + 靛蓝强调」：瓷白 / 近黑中性底色不与壁纸抢视觉，彩色只留给状态（薄荷绿 = 在场 / 成功，琥珀 = 陌生人 / 警告，朱红 = 危险 / 失败）；卡片、分段组、开关、环形指标与折线图由 `ui_kit` 自绘，壁纸 / 感知 / 硬件页共用。桌面端为左侧**双层导航**——一级菜单（**壁纸 / 音乐 / 视频 / 硬件 / 人脸识别**）+ 该菜单下的二级页（壁纸：网上壁纸库 / 本地壁纸库 / 轮播 / 每日壁纸 / 壁纸设置；音乐：音乐播放器 / 音乐设置；视频：视频播放器 / 电视直播 / 视频设置；硬件：控制面板 / 设备清单 / 灯效 & Aura Sync / 散热 Fan Xpert / 硬件设置；人脸识别：实时感知 / 锁屏策略 / 识别设置），底部固定「通用设置 / 关于」工具页。**每个一级菜单的设置彼此独立**，只显示该分区相关项（音乐与视频的音量 / 循环也是分开存的两套值）；「通用设置」保留主题、开机自启、托盘快捷键、问题上报与配置文件。**默认进入「网上壁纸库」**，可用标题栏 `☰` 隐藏侧栏；壁纸库按文件夹相册分组并可展开 / 折叠，底部状态栏显示载入数量、当前曲目与操作结果。
 
 **响应式 / 移动端**：窗口变窄（手机 / 平板，宽度 < 820pt）时自动切换为紧凑单栏布局——左侧导航收起为底部标签栏（**壁纸 / 音乐 / 视频 / 硬件 / 人脸识别** 五个一级菜单 + 最右「通用设置」），进入一级菜单后再用顶部标签切换二级页；页签一行放不下时自动换行，不依赖横向滑动；按钮换行、搜索与计数分行、卡片按 2–3 列自适应、触控目标加大，主题切换移到标题栏。
 
@@ -138,7 +139,7 @@
 
 ## 构建
 
-需要 Rust 1.75+（推荐 stable）。
+需要 Rust 1.85+（推荐 stable；Windows 电视直播依赖的 `wry` / `tao` 要求 1.85+）。
 
 ```bash
 cargo build --release
@@ -164,7 +165,7 @@ cargo run -- --version       # 打印版本
 ```bash
 cargo run --release -- --shots ./shots
 # 自动在 手机(390×844) / 平板(834×1112) / 笔记本(1366×768、1536×864) / 桌面(1440×900)
-# 下逐页（壁纸库 / 网上壁纸库 / 轮播 / 通用设置 / 关于 + 5 个分区设置页）截图
+# 下逐页（壁纸库 / 网上壁纸库 / 轮播 / 音乐 / 视频 / 电视直播 / 通用设置 / 关于 + 设置页）截图
 ```
 
 ## 使用速览
@@ -200,6 +201,7 @@ wallpaper-rs/
 │  ├─ armoury/       # 华硕硬件域：Aura 灯效（官方 COM）、Fan Xpert（只读 XML）、设备清单
 │  ├─ sense/         # 感知状态机、键鼠空闲检测、离开虚化、每日统计（摄像头 M2 未接入）
 │  ├─ media.rs       # 音乐 / 视频媒体库扫描与 mpv JSON IPC 播放控制
+│  ├─ live/          # 电视直播：频道目录、WebView2 鉴权宿主、mpv / 官方播放器回退
 │  ├─ ui_kit.rs      # 跨页共享控件（卡片、分段选择、滑块、空状态等）
 │  ├─ theme.rs       # 配色、样式、系统 CJK 字体加载
 │  ├─ config.rs      # 配置结构、跨平台配置目录

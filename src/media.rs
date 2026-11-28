@@ -344,24 +344,70 @@ impl Mpv {
     /// 启动一个无窗口 mpv 实例并连接 IPC。`video_window` 为 `Some` 时视频会
     /// 渲染进宿主窗口（桌面播放器则传 `None`，由 mpv 自己创建窗口）。
     pub fn start(video: bool) -> Result<Self, String> {
+        Self::start_impl(video, None, 80.0, false)
+    }
+
+    /// 启动专用直播 mpv：直接以 HLS 地址开窗（`idle=no`），因此用户关闭
+    /// mpv 窗口或流结束时进程会退出，会话层能可靠收尾。不会把地址写进
+    /// 状态或错误文本。
+    pub fn start_live(
+        stream_url: &str,
+        title: &str,
+        volume: f64,
+        muted: bool,
+    ) -> Result<Self, String> {
+        if !safe_live_url(stream_url) {
+            return Err("直播地址不是安全的 HTTPS HLS".to_string());
+        }
+        Self::start_impl(true, Some((stream_url, title)), volume, muted)
+    }
+
+    fn start_impl(
+        video: bool,
+        live: Option<(&str, &str)>,
+        initial_volume: f64,
+        initial_muted: bool,
+    ) -> Result<Self, String> {
         let exe = crate::livewall::ensure_mpv()?;
         let pipe = ipc_name();
+        let initial_volume = initial_volume.clamp(0.0, 130.0);
+        let is_live = live.is_some();
         let mut cmd = Command::new(&exe);
         cmd.arg("--no-config")
             .arg("--no-terminal")
-            .arg("--idle=yes")
             .arg("--keep-open=no")
             .arg(format!("--input-ipc-server={pipe}"))
-            .arg("--volume=80")
+            .arg(format!("--volume={initial_volume:.0}"))
             .arg("--hwdec=auto-safe")
-            .arg("--title=Wallpaper Studio · 媒体播放器")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        if initial_muted {
+            cmd.arg("--mute=yes");
+        }
+        if let Some((_, title)) = live {
+            cmd.arg("--idle=no")
+                .arg("--cache=yes")
+                .arg("--demuxer-max-bytes=128MiB")
+                .arg("--network-timeout=15")
+                .arg(format!("--title={title}"))
+                .arg(
+                    "--http-header-fields=Referer: https://yangshipin.cn/\r\n\
+                     User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
+                     AppleWebKit/537.36 (KHTML, like Gecko) \
+                     Chrome/131.0.0.0 Safari/537.36",
+                );
+        } else {
+            cmd.arg("--idle=yes")
+                .arg("--title=Wallpaper Studio · 媒体播放器");
+        }
         if !video {
             cmd.arg("--force-window=no").arg("--audio-display=no");
         } else {
             cmd.arg("--force-window=yes");
+        }
+        if let Some((stream_url, _)) = live {
+            cmd.arg(stream_url);
         }
         #[cfg(windows)]
         {
@@ -403,10 +449,16 @@ impl Mpv {
             next_id: 1,
             state: State {
                 active: true,
-                volume: 80.0,
+                title: live.map(|(_, title)| title.to_string()).unwrap_or_default(),
+                volume: initial_volume,
+                muted: initial_muted,
                 ..State::default()
             },
-            volume_before_mute: 80.0,
+            volume_before_mute: if initial_volume > 0.0 {
+                initial_volume
+            } else {
+                80.0
+            },
             clock: PollClock::default(),
         };
         // 先启动读线程，再发命令：mpv 启动时会先写一批事件，读端必须已在消费。
@@ -435,7 +487,7 @@ impl Mpv {
         });
         mpv.events = Some(events);
         let _ = mpv.command(&["set_property", "pause", "no"]);
-        let _ = mpv.observe();
+        let _ = mpv.observe(!is_live);
         Ok(mpv)
     }
 
@@ -494,6 +546,10 @@ impl Mpv {
 
     pub fn toggle_mute(&mut self) -> Result<(), String> {
         let muted = !self.state.muted;
+        self.set_muted(muted)
+    }
+
+    pub fn set_muted(&mut self, muted: bool) -> Result<(), String> {
         self.command(&["set_property", "mute", if muted { "yes" } else { "no" }])?;
         self.state.muted = muted;
         Ok(())
@@ -512,6 +568,15 @@ impl Mpv {
     /// 视频窗口的放大 / 全屏由 mpv 自己处理，UI 只发命令。
     pub fn toggle_fullscreen(&mut self) -> Result<(), String> {
         self.command(&["cycle", "fullscreen"])?;
+        Ok(())
+    }
+
+    pub fn set_fullscreen(&mut self, fullscreen: bool) -> Result<(), String> {
+        self.command(&[
+            "set_property",
+            "fullscreen",
+            if fullscreen { "yes" } else { "no" },
+        ])?;
         Ok(())
     }
 
@@ -634,20 +699,20 @@ impl Mpv {
         Ok(())
     }
 
-    fn observe(&mut self) -> Result<(), String> {
-        for (index, prop) in [
+    fn observe(&mut self, include_path: bool) -> Result<(), String> {
+        let mut properties = vec![
             "time-pos",
             "duration",
             "pause",
             "volume",
             "mute",
             "media-title",
-            "path",
             "idle-active",
-        ]
-        .into_iter()
-        .enumerate()
-        {
+        ];
+        if include_path {
+            properties.insert(properties.len() - 1, "path");
+        }
+        for (index, prop) in properties.into_iter().enumerate() {
             self.command_json(&[
                 serde_json::Value::String("observe_property".to_string()),
                 serde_json::Value::from(index as i64 + 1),
@@ -683,7 +748,13 @@ fn apply_event(state: &mut State, name: &str, v: &serde_json::Value) {
     }
     if name == "end-file" {
         state.active = false;
-        state.ended = true;
+        let reason = obj
+            .get("reason")
+            .and_then(|r| r.as_str())
+            .unwrap_or_default();
+        // 用户关闭播放器窗口或主动停止时会收到 `quit` / `stop`；只有流真正
+        // 结束或解码失败才应触发“已结束 / 切下一首 / 官方回退”逻辑。
+        state.ended = matches!(reason, "eof" | "error" | "redirect");
     }
     if name == "idle" {
         state.active = false;
@@ -925,6 +996,18 @@ pub fn available() -> bool {
     crate::livewall::mpv_available()
 }
 
+/// 直播只接受 HTTPS 的 HLS 清单。上游桥允许 HTTP 以便兼容旧接口，但真正
+/// 交给 mpv 前必须再收紧一次；这里只返回布尔值，不把地址带进错误文本。
+fn safe_live_url(url: &str) -> bool {
+    let without_fragment = url.split('#').next().unwrap_or_default();
+    let path = without_fragment
+        .split('?')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    url.starts_with("https://") && path.ends_with(".m3u8")
+}
+
 /// 媒体进度更新的节流器：避免每帧都向 mpv 发查询。
 pub struct PollClock {
     last: Instant,
@@ -983,6 +1066,41 @@ mod tests {
         assert_eq!(kind_of(Path::new("a.MP4")), Some(Kind::Video));
         assert_eq!(kind_of(Path::new("a.mkv")), Some(Kind::Video));
         assert_eq!(kind_of(Path::new("a.txt")), None);
+    }
+
+    #[test]
+    fn live_stream_requires_https_hls() {
+        assert!(safe_live_url(
+            "https://live.example.cctv.cn/path/channel.m3u8?token=secret"
+        ));
+        assert!(safe_live_url(
+            "https://live.example.cctv.cn/path/channel.M3U8"
+        ));
+        assert!(!safe_live_url(
+            "http://live.example.cctv.cn/path/channel.m3u8"
+        ));
+        assert!(!safe_live_url(
+            "https://live.example.cctv.cn/path/channel.mp4"
+        ));
+        assert!(!safe_live_url("file:///tmp/channel.m3u8"));
+    }
+
+    #[test]
+    fn closing_player_is_not_treated_as_stream_end() {
+        let mut state = State::default();
+        let event = serde_json::json!({"event": "end-file", "reason": "quit"});
+        apply_event(&mut state, "end-file", &event);
+        assert!(!state.active);
+        assert!(!state.ended);
+    }
+
+    #[test]
+    fn natural_eof_still_counts_as_stream_end() {
+        let mut state = State::default();
+        let event = serde_json::json!({"event": "end-file", "reason": "eof"});
+        apply_event(&mut state, "end-file", &event);
+        assert!(!state.active);
+        assert!(state.ended);
     }
 
     #[test]

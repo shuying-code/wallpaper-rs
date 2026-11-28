@@ -4,6 +4,7 @@
 //! 截图模式在没有 Aura 服务的机器上跑，也只会显示说明卡而不会阻塞。
 
 pub mod hardware;
+pub mod live;
 pub mod media;
 pub mod sense;
 

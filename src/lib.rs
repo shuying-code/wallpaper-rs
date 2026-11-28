@@ -14,6 +14,7 @@ pub mod diskscan; // 模块 diskscan
 pub mod elevate; // 模块 elevate
 pub mod hotkey; // 模块 hotkey
 pub mod instances; // 模块 instances
+pub mod live; // 视频分区：央视 / 卫视直播（隐藏 WebView2 + mpv）
 pub mod livewall; // 模块 livewall
 pub mod media; // 音乐 / 视频媒体库与 mpv 播放控制
 pub mod moewalls; // 模块 moewalls

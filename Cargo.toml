@@ -28,6 +28,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 semver = "1"
 rand = "0.8"
+thiserror = "2"
+url = "2"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "bmp", "gif", "tiff"] }
 # `cookies`：在同一个 agent 内持久化站点下发的 Cookie。彼岸图网（pic.netbian.com）
 # 位于百度 WAF 之后，会下发 abymg_id 等令牌；缺少 Cookie 时后续请求会被拦截，
@@ -44,6 +46,9 @@ tray-icon = "0.26"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
+# 电视直播：隐藏的 WebView2 鉴权宿主运行在独立进程，避免阻塞 eframe 主循环。
+wry = "0.57.3"
+tao = "0.37.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # macOS 动态壁纸宿主用 Cocoa 建桌面层无边框窗口（objc 提供 msg_send! 宏）。
