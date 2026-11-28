@@ -62,7 +62,7 @@ You can also click the download links in the in-app **About** page.
 - **Close to system tray (icon kept visible)**: the top-right "X" hides the window to the system tray (Windows notification area / macOS menu bar / Linux status area) instead of quitting; the taskbar button disappears and rotation keeps running. On Windows the app tries to pin its tray icon as always-visible (`IsPromoted` in `NotifyIconSettings`) so Win11 doesn't tuck it into the hidden-icons overflow; Settings also has an "Open tray settings" button to pin it manually. Single-click the tray icon to restore the window centered; the tray menu's Quit is a real exit — it ends this process and also closes every other running wallpaper-rs instance on the machine.
 - **Global hotkey**: `Ctrl+Alt+W` toggles show/hide of the window (auto-fallback to `Ctrl+Alt+Shift+W` / `Ctrl+Alt+F9` if taken).
 - **Display aware**: detects monitor count and primary resolution; HiDPI handled by the OS; applies to all monitors.
-- **Redesigned, responsive UI**: a warm editorial look (paper-cream + terracotta + deep teal); on narrow windows (phone / tablet, width < 820pt) it collapses the sidebar into a bottom tab bar, wraps controls, uses fluid 2–3 column cards and larger touch targets. Adapts across desktop, iOS and Android.
+- **Redesigned, responsive UI**: a cool-neutral look with indigo accents (porcelain / near-black surfaces, colour reserved for status); on narrow windows (phone / tablet, width < 820pt) it collapses the sidebar into a bottom bar of the five primary sections, wraps controls, uses fluid 2–3 column cards and larger touch targets. Adapts across desktop, iOS and Android.
 - **Paged lazy loading for large libraries**: an album with many images renders one page (48) at a time with a "Load more" button, on top of on-demand thumbnail decoding — thousands of images stay smooth and stay off your VRAM.
 - **Multi-size adaptation screenshots (`--shots`)**: one command renders the UI at **phone / tablet / laptop / desktop** sizes for **each page (Library / Online / Slideshow / Settings / About)** and saves PNGs, for quick responsive review.
 - **Online daily wallpaper**: fetch the Bing daily image (`cn.bing.com`, reachable in China) with "Learn about this picture", like / dislike, previous / next, set as desktop / lock screen, and daily auto-rotate.
@@ -79,25 +79,29 @@ You can also click the download links in the in-app **About** page.
 
 ## Screens
 
-Warm redesigned look. Desktop uses the left sidebar (**Online library / Library / Slideshow / Daily / Settings / About**) and opens on the **Online library** by default (toggle with `☰`); narrow/mobile widths switch to a bottom tab bar (Online / Library / Slideshow / Daily / Settings / About).
+Cool-neutral look with indigo accents. Desktop uses a two-level sidebar — five sections (**Wallpaper / Music / Video / Hardware / Face**) plus their pages (Wallpaper: Online library / Library / Slideshow / Daily; Music: player; Video: player; Hardware: Dashboard / Devices / Lighting & Aura Sync / Fan Xpert; Face: Monitor / Lock policy) — with Settings and About pinned at the bottom. It opens on the **Online library** by default (toggle with `☰`); narrow/mobile widths switch to a bottom bar of the five sections plus Settings.
 
 | Library | Slideshow |
 |---|---|
 | ![Library](assets/screenshot-library.png) | ![Slideshow](assets/screenshot-slideshow.png) |
 
-| Settings | About |
+| Music player | Video player |
 |---|---|
-| ![Settings](assets/screenshot-settings.png) | ![About](assets/screenshot-about.png) |
+| ![Music](assets/screenshot-music.png) | ![Video](assets/screenshot-video.png) |
 
-Dark theme:
-
-![Dark theme](assets/screenshot-library-dark.png)
-
-Mobile compact layout (bottom tab bar):
-
-| Library | Settings |
+| Face sensing | Lighting & Aura Sync |
 |---|---|
-| ![Mobile library](assets/screenshot-mobile-library.png) | ![Mobile settings](assets/screenshot-mobile-settings.png) |
+| ![Face sensing](assets/screenshot-sense.png) | ![Lighting](assets/screenshot-lighting.png) |
+
+| Settings |
+|---|
+| ![Settings](assets/screenshot-settings.png) |
+
+Mobile compact layout (five-section bottom bar):
+
+| Library | Music |
+|---|---|
+| ![Mobile library](assets/screenshot-mobile-library.png) | ![Mobile music](assets/screenshot-mobile-music.png) |
 
 ## Platforms
 

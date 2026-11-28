@@ -69,7 +69,7 @@
 - **关闭到系统托盘（图标常显）**：点击右上角「×」不退出，而是隐藏到系统托盘（Windows 右下角通知区域 / macOS 菜单栏 / Linux 状态区），任务栏图标消失、程序与轮播继续在后台运行。程序会在 Windows 上尽量把自身托盘图标固定为「始终显示」（写入 `NotifyIconSettings` 的 `IsPromoted`），避免被 Win11 收进「显示隐藏的图标」；设置页也提供「打开托盘设置」一键手动固定。单击托盘图标即可唤回并居中显示；右键菜单「退出 wallpaper-rs」为真正的退出——不仅结束后台进程，还会一并结束本机所有其它 wallpaper-rs 实例。
 - **全局快捷键**：`Ctrl+Alt+W` 一键显示 / 隐藏窗口（被占用时自动回退到 `Ctrl+Alt+Shift+W` / `Ctrl+Alt+F9`）。
 - **显示适配**：检测显示器数量与主屏分辨率，高 DPI 自动适配，壁纸应用到所有显示器。
-- **全新界面 + 响应式适配**：重新设计的暖色现代 UI；窗口变窄自动切换底部标签栏的紧凑布局，兼容手机 / 平板 / 桌面（iOS / Android 界面自适应）。
+- **全新界面 + 响应式适配**：重新设计的「冷调中性 + 靛蓝强调」UI；窗口变窄自动切换底部标签栏的紧凑布局，兼容手机 / 平板 / 桌面（iOS / Android 界面自适应）。
 - **大图库分页懒加载**：单个相册图片很多时先按页渲染（每页 48 张）+「加载更多」，配合缩略图按需解码，几千张也不卡顿、不爆显存。
 - **多尺寸适配截图（`--shots`）**：一条命令自动把界面在**手机 / 平板 / 笔记本 / 桌面**多种尺寸下**逐页**（壁纸库 / 网上壁纸库 / 轮播 / 设置 / 关于）截图，便于核对响应式效果。
 - **在线每日壁纸**：联网获取 Bing 每日壁纸（`cn.bing.com`，国内可直接访问），支持「了解有关此图片信息」、点赞 / 踩、上一张 / 下一张、设为桌面 / 锁屏，以及每日自动更换。
@@ -92,19 +92,23 @@
 |---|---|
 | ![壁纸库](assets/screenshot-library.png) | ![轮播](assets/screenshot-slideshow.png) |
 
+| 音乐播放器 | 视频播放器 |
+|---|---|
+| ![音乐](assets/screenshot-music.png) | ![视频](assets/screenshot-video.png) |
+
+| 智能感知 | 灯效 & Aura Sync |
+|---|---|
+| ![智能感知](assets/screenshot-sense.png) | ![灯效](assets/screenshot-lighting.png) |
+
 | 设置 | 关于 |
 |---|---|
-| ![设置](assets/screenshot-settings.png) | ![关于](assets/screenshot-about.png) |
+| ![设置](assets/screenshot-settings.png) | 入口在侧栏底部「关于」，展示版本、平台能力与反馈渠道 |
 
-深色主题：
+移动端紧凑布局（底部一级菜单栏）：
 
-![深色主题](assets/screenshot-library-dark.png)
-
-移动端紧凑布局（底部标签栏）：
-
-| 图库 | 设置 |
+| 图库 | 音乐 |
 |---|---|
-| ![移动图库](assets/screenshot-mobile-library.png) | ![移动设置](assets/screenshot-mobile-settings.png) |
+| ![移动图库](assets/screenshot-mobile-library.png) | ![移动音乐](assets/screenshot-mobile-music.png) |
 
 ## 支持的平台
 
