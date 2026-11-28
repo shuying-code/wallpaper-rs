@@ -1,8 +1,10 @@
 //! The egui application: library grid, slideshow controls, settings, about.
 
 use crate::config::{config_dir, Config, Mode}; // 引入依赖
+use crate::pages::{HardwareView, PageAction, SenseView}; // v2 页面层
 use crate::theme; // 引入依赖
 use crate::thumbs::Thumbnailer; // 引入依赖
+use crate::ui_kit; // v2 共享控件
 use crate::wallpaper::{self, Fit}; // 引入依赖
 use eframe::egui; // 引入依赖
 use egui::{Color32, ColorImage, RichText, Rounding, Stroke, TextureHandle, Vec2}; // 引入依赖
@@ -30,25 +32,134 @@ const PAGE_IMAGES: usize = 48; // 常量 PAGE_IMAGES
 /// a 3000-image full-disk scan can't pin ~1.4 GB of textures.
 const TEX_CAP: usize = 300; // 常量 TEX_CAP
 
+/// 一级菜单。壁纸 / 音乐 / 视频 / 硬件 / 人脸识别并列，各自带二级页。
+///
+/// 以后要加「音乐」「视频」等分区，只需在这里加一个变体、在 [`Section::children`]
+/// 里列出子页，再补一个图标画法即可，外壳不用改。
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum Section {
+    Wallpaper,
+    Music,
+    Video,
+    Hardware,
+    Sense,
+}
+
+impl Section {
+    /// 一级菜单的显示名（侧栏 / 移动端底部导航 / 顶栏面包屑共用）。
+    pub fn label(self) -> &'static str {
+        match self {
+            Section::Wallpaper => "壁纸",
+            Section::Music => "音乐",
+            Section::Video => "视频",
+            Section::Hardware => "硬件",
+            Section::Sense => "人脸识别",
+        }
+    }
+
+    /// 该一级菜单下的二级页，顺序即侧栏顺序。
+    pub fn children(self) -> &'static [Tab] {
+        match self {
+            Section::Wallpaper => &[Tab::Web4k, Tab::Library, Tab::Slideshow, Tab::Online],
+            Section::Music => &[Tab::Music],
+            Section::Video => &[Tab::Video],
+            Section::Hardware => &[Tab::Dashboard, Tab::Devices, Tab::Lighting, Tab::Fan],
+            Section::Sense => &[Tab::Sense, Tab::Policy],
+        }
+    }
+
+    /// 从别的分区切进来时先落在哪一页。
+    pub fn default_tab(self) -> Tab {
+        self.children()[0]
+    }
+
+    /// 依次排列，侧栏按这个顺序画。
+    pub const ALL: [Section; 5] = [
+        Section::Wallpaper,
+        Section::Music,
+        Section::Video,
+        Section::Hardware,
+        Section::Sense,
+    ];
+}
+
 #[derive(PartialEq, Eq, Clone, Copy)] // 语句
-enum Tab {
+pub enum Tab {
     // 枚举 Tab
+    Sense,     // 智能感知（默认首屏）
+    Policy,    // 锁屏策略
+    Dashboard, // 控制面板
+    Devices,   // 设备
+    Lighting,  // 灯效 & Aura Sync
+    Fan,       // 散热 Fan Xpert
     Web4k,     // 语句
     Library,   // 语句
     Slideshow, // 语句
     Online,    // 语句
+    Music,     // 本地音乐播放器
+    Video,     // 本地视频播放器
     Settings,  // 语句
     About,     // 语句
 } // 块结束
 
 impl Tab {
+    /// 这个子页归属哪个一级菜单。
+    pub fn section(self) -> Section {
+        match self {
+            Tab::Web4k | Tab::Library | Tab::Slideshow | Tab::Online => Section::Wallpaper,
+            Tab::Music => Section::Music,
+            Tab::Video => Section::Video,
+            Tab::Dashboard | Tab::Devices | Tab::Lighting | Tab::Fan => Section::Hardware,
+            Tab::Sense | Tab::Policy => Section::Sense,
+            // 设置 / 关于是全局工具页，挂在「壁纸」下只为让面包屑有个落点；
+            // 它们真正的入口固定在侧栏底部。
+            Tab::Settings | Tab::About => Section::Wallpaper,
+        }
+    }
+
     /// 手机端全屏页标题栏文案。
     fn mobile_title(self) -> &'static str {
         match self {
+            Tab::Sense => "智能感知",
+            Tab::Policy => "锁屏策略",
+            Tab::Dashboard => "控制面板",
+            Tab::Devices => "设备",
+            Tab::Lighting => "灯效 & Aura Sync",
+            Tab::Fan => "散热 Fan Xpert",
             Tab::Web4k => "网上壁纸库",
             Tab::Library => "本地壁纸库",
             Tab::Slideshow => "轮播",
             Tab::Online => "每日壁纸",
+            Tab::Music => "音乐播放器",
+            Tab::Video => "视频播放器",
+            Tab::Settings => "设置",
+            Tab::About => "关于",
+        }
+    }
+
+    /// 是否属于华硕硬件域（决定后台采样是否挂起）。
+    fn is_hardware(self) -> bool {
+        matches!(
+            self,
+            Tab::Dashboard | Tab::Devices | Tab::Lighting | Tab::Fan
+        )
+    }
+
+    /// 二级栏用的完整页面名（比 `short()` 长一点，栏宽够）。
+    fn short_page(self) -> &'static str {
+        match self {
+            Tab::Sense => "实时感知",
+            Tab::Policy => "锁屏策略",
+            Tab::Dashboard => "控制面板",
+            Tab::Devices => "设备清单",
+            Tab::Lighting => "灯效 & Aura",
+            Tab::Fan => "散热 Fan Xpert",
+            Tab::Web4k => "在线壁纸库",
+            Tab::Library => "本地壁纸库",
+            Tab::Slideshow => "轮播播放",
+            Tab::Online => "每日壁纸",
+            Tab::Music => "音乐播放器",
+            Tab::Video => "视频播放器",
             Tab::Settings => "设置",
             Tab::About => "关于",
         }
@@ -129,19 +240,21 @@ enum WallDone {
 
 enum Action {
     // 枚举 Action
-    SetPath(PathBuf),   // 调用 SetPath
-    Next,               // 语句
-    Prev,               // 语句
-    Random,             // 语句
-    Rescan,             // 语句
-    PickFolder,         // 语句
-    OpenFolder,         // 语句
-    OpenConfig,         // 语句
-    Save,               // 语句
-    ScanAllDisks,       // 语句
-    HideToTray,         // 语句
-    ToggleSidebar,      // 语句
-    ToggleTheme,        // 语句
+    SetPath(PathBuf), // 调用 SetPath
+    Next,             // 语句
+    Prev,             // 语句
+    Random,           // 语句
+    Rescan,           // 语句
+    PickFolder,       // 语句
+    OpenFolder,       // 语句
+    OpenConfig,       // 语句
+    Save,             // 语句
+    ScanAllDisks,     // 语句
+    HideToTray,       // 语句
+    ToggleSidebar,    // 语句
+    ToggleTheme,      // 语句
+    /// 媒体页请求：打开目录选择 / 重新扫描 / 播放控制。
+    Media(crate::pages::media::MediaAction),
     ExpandAllAlbums,    // 语句
     CollapseAllAlbums,  // 语句
     RetryPermissions,   // 语句
@@ -183,6 +296,9 @@ struct Snapshot {
     slideshow: Vec<PathBuf>,             // 字段 slideshow
     report_enabled: bool,                // 字段 report_enabled
     report_token: String,                // 字段 report_token
+    sense: crate::config::SenseCfg,      // 人脸感知配置
+    armoury: crate::config::ArmouryCfg,  // 华硕硬件配置
+    media: crate::config::MediaCfg,      // 音乐 / 视频播放器配置
 } // 块结束
 
 impl Snapshot {
@@ -214,6 +330,9 @@ impl Snapshot {
             slideshow: c.slideshow.clone(),                 // 字段 slideshow
             report_enabled: c.report_enabled,               // 字段 report_enabled
             report_token: c.report_token.clone(),           // 字段 report_token
+            sense: c.sense.clone(),                         // 字段 sense
+            armoury: c.armoury.clone(),                     // 字段 armoury
+            media: c.media.clone(),                         // 字段 media
         } // 块结束
     } // 块结束
 } // 块结束
@@ -496,6 +615,56 @@ pub struct App {
     nav_from_mobile: bool,
     /// 由开机自启项启动：恢复上次壁纸后隐藏主窗口，避免抢焦点。
     autostart_launch: bool,
+    // ---- v2：智能感知 ----
+    /// 三态状态机（在场 / 倒计时 / 锁定 / 陌生人）。
+    sense: crate::sense::SenseEngine,
+    /// 摄像头采集线程；首版为 `None`（采集未接入），退化到系统空闲检测。
+    sense_cam: Option<crate::sense::camera::CameraWorker>,
+    /// 感知事件日志（倒序，最多 40 条）。
+    sense_events: Vec<(String, String)>,
+    /// 今日统计。
+    sense_stats: crate::sense::DailyStats,
+    /// 上一次锁定动作的结果，用于 UI 如实反馈。
+    sense_lock_result: Option<String>,
+    /// 上一次解锁提示的副作用（务实路线：只唤醒 + 提示）。
+    sense_unlock_hint: bool,
+    /// 壁纸是否因离开被虚化。
+    sense_blurred: bool,
+    /// 虚化前使用的壁纸（用于还原）。
+    sense_blur_restore: Option<PathBuf>,
+    /// 后台虚化 / 还原任务。
+    sense_blur_rx: Option<Receiver<Result<PathBuf, String>>>,
+    // ---- v2：华硕硬件 ----
+    /// 后台采样线程（Aura / 风扇 / 系统概览）。
+    armoury: Option<crate::armoury::ArmouryWorker>,
+    /// 灯效下发中的接收端（Aura 提交约 10 秒）。
+    aura_apply_rx: Option<Receiver<Result<(), String>>>,
+    /// 最近一次下发结果。
+    aura_apply_msg: Option<(bool, String)>,
+    /// 硬件页是否已激活过后台采样。
+    armoury_active: bool,
+    // ---- 媒体：音乐 / 视频 ----
+    /// 后台扫描结果；`None` 表示还没有发起扫描。
+    media_lib: Option<crate::media::Library>,
+    media_scan_rx: Option<Receiver<crate::media::Library>>,
+    /// 已经发起过一次自动扫描（之后即使库为空也不重复扫描）。
+    media_scanned: bool,
+    /// 正在后台准备 mpv（首次可能需要下载），避免阻塞 egui 主线程。
+    media_start_rx: Option<Receiver<Result<crate::media::Mpv, String>>>,
+    /// 等 mpv 就绪后要播放的媒体。
+    media_pending: Option<(crate::media::Kind, u64)>,
+    /// 播放器刚就绪时是否直接进入全屏（视频页「全屏播放」且尚未开播）。
+    media_start_fullscreen: bool,
+    /// 当前音乐 / 视频播放器实例。两者共用一套控制，但只保留最近打开的那个。
+    media_mpv: Option<crate::media::Mpv>,
+    /// 播放器实例对应的媒体种类（决定切歌时从哪里取列表）。
+    media_kind: crate::media::Kind,
+    /// 当前正在播放的媒体 id / 选中项（跨页保持）。
+    media_playing: Option<u64>,
+    media_selected: crate::media::Selection,
+    media_error: Option<String>,
+    /// 播放器状态快照（每帧从 mpv 拉取，供页面无锁读取）。
+    media_state: crate::media::State,
 } // 块结束
 
 impl App {
@@ -627,6 +796,31 @@ impl App {
             detail_path: None,
             nav_from_mobile: false,
             autostart_launch: crate::autostart::started_from_autostart(),
+            sense: crate::sense::SenseEngine::default(),
+            sense_cam: None,
+            sense_events: Vec::new(),
+            sense_stats: crate::sense::stats::DailyStats::load(),
+            sense_lock_result: None,
+            sense_unlock_hint: false,
+            sense_blurred: false,
+            sense_blur_restore: None,
+            sense_blur_rx: None,
+            armoury: None,
+            aura_apply_rx: None,
+            aura_apply_msg: None,
+            armoury_active: false,
+            media_lib: None,
+            media_scan_rx: None,
+            media_scanned: false,
+            media_start_rx: None,
+            media_pending: None,
+            media_start_fullscreen: false,
+            media_mpv: None,
+            media_kind: crate::media::Kind::Audio,
+            media_playing: None,
+            media_selected: crate::media::Selection::default(),
+            media_error: None,
+            media_state: crate::media::State::default(),
         }; // 块结束
            // Optional deep-link to a tab, e.g. `wallpaper-rs --tab settings`.
         if let Some(pos) = std::env::args().position(|a| a == "--tab") {
@@ -635,9 +829,17 @@ impl App {
                 // 条件分支
                 app.tab = match name.to_ascii_lowercase().as_str() {
                     // 语句
+                    "sense" => Tab::Sense,                     // 智能感知
+                    "policy" => Tab::Policy,                   // 锁屏策略
+                    "dashboard" => Tab::Dashboard,             // 控制面板
+                    "devices" => Tab::Devices,                 // 设备
+                    "lighting" | "aura" => Tab::Lighting,      // 灯效
+                    "fan" | "fanxpert" => Tab::Fan,            // 风扇
                     "web" | "netbian" | "web4k" => Tab::Web4k, // 匹配分支
                     "slideshow" => Tab::Slideshow,             // 匹配分支
                     "online" => Tab::Online,                   // 匹配分支
+                    "music" | "audio" => Tab::Music,           // 音乐
+                    "video" | "videos" => Tab::Video,          // 视频
                     "settings" => Tab::Settings,               // 匹配分支
                     "about" => Tab::About,                     // 匹配分支
                     _ => Tab::Library,                         // 匹配分支
@@ -691,6 +893,18 @@ impl App {
             }); // 语句
         } // 块结束
         app.scan(); // 语句
+                    // 智能感知：首版摄像头后端未编译，`start` 会立刻回报失败并退化到
+                    // 系统空闲检测（真通道）。UI 会如实标注「画面采集未接入」。
+        if app.cfg.sense.enable {
+            match crate::sense::camera::CameraWorker::start(&app.cfg.sense) {
+                Ok(cam) => {
+                    app.sense_cam = Some(cam);
+                }
+                Err(e) => {
+                    app.push_sense_event(format!("摄像头不可用：{e}"));
+                }
+            }
+        }
         #[cfg(target_os = "android")]
         if let Err(error) = crate::android_jni::request_media_permissions() {
             app.status = format!("请求媒体权限失败：{error}");
@@ -1229,6 +1443,7 @@ impl App {
                     // 匹配分支
                     self.cfg.theme = if self.cfg.theme == 1 { 0 } else { 1 }; // 语句
                 } // 块结束
+                Action::Media(a) => self.run_media_action(ctx, a),
                 Action::ToggleMode => {
                     if self.cfg.mode == Mode::Slideshow {
                         self.cfg.mode = Mode::Fixed;
@@ -1369,7 +1584,8 @@ impl App {
         self.cfg.save(); // 语句
                          // 停掉动态壁纸宿主：结束 mpv 子进程并销毁桌面层窗口，避免残留。
         let _ = crate::livewall::stop(); // 变量 _
-                                         // Dropping the tray icon sends Shell_NotifyIcon(NIM_DELETE).
+        self.media_mpv = None;
+        // Dropping the tray icon sends Shell_NotifyIcon(NIM_DELETE).
         self.tray = None; // 语句
                           // "退出" means the whole app: take down every other wallpaper-rs copy
                           // (autostart + manual start, double-clicked exe, stale instances, ...)
@@ -2420,6 +2636,747 @@ impl App {
         } // 块结束
     } // 块结束
 
+    /// 组装感知页所需的只读快照。
+    fn sense_view(&self) -> SenseView {
+        let now = Instant::now();
+        let status = self.sense.status(now);
+        let camera = self
+            .sense_cam
+            .as_ref()
+            .map(|c| format!("{} · 采集后端未接入", c.device));
+        SenseView {
+            status,
+            camera,
+            camera_live: self.sense_cam.as_ref().map(|_| false).unwrap_or(false),
+            idle_secs: crate::sense::idle_seconds(),
+            events: self.sense_events.clone(),
+            locked_today: self.sense_stats.locked,
+            unlock_hints_today: self.sense_stats.unlock_hints,
+            strangers_today: self.sense_stats.strangers,
+            can_lock: cfg!(windows),
+        }
+    }
+
+    /// 组装硬件页所需的只读快照。
+    fn hardware_view(&self) -> HardwareView {
+        match self.armoury.as_ref() {
+            Some(w) => HardwareView {
+                aura: w.snap_aura.clone(),
+                fans: w.snap_fans.clone(),
+                system: w.snap_system.clone(),
+            },
+            None => HardwareView::default(),
+        }
+    }
+
+    fn ui_sense(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let view = self.sense_view();
+        let mut page_actions = Vec::new();
+        {
+            let mut ctx = crate::pages::sense::SenseCtx {
+                view: &view,
+                cfg: &mut self.cfg.sense,
+                actions: &mut page_actions,
+                compact: self.compact,
+            };
+            match self.tab {
+                Tab::Policy => crate::pages::sense::policy::ui(&mut ctx, ui),
+                _ => crate::pages::sense::monitor::ui(&mut ctx, ui),
+            }
+        }
+        self.run_page_actions(page_actions, actions);
+    }
+
+    fn ui_hardware(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let view = self.hardware_view();
+        let mut page_actions = Vec::new();
+        let applying = self.aura_apply_rx.is_some();
+        {
+            let mut ctx = crate::pages::hardware::HwCtx {
+                view: &view,
+                cfg: &mut self.cfg.armoury,
+                actions: &mut page_actions,
+                compact: self.compact,
+                applying,
+                apply_msg: self.aura_apply_msg.clone(),
+            };
+            match self.tab {
+                Tab::Dashboard => crate::pages::hardware::dashboard::ui(&mut ctx, ui),
+                Tab::Devices => crate::pages::hardware::devices::ui(&mut ctx, ui),
+                Tab::Lighting => crate::pages::hardware::lighting::ui(&mut ctx, ui),
+                Tab::Fan => crate::pages::hardware::fan::ui(&mut ctx, ui),
+                _ => {}
+            }
+        }
+        self.run_page_actions(page_actions, actions);
+    }
+
+    fn ui_media(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>, kind: crate::media::Kind) {
+        let lib = self.media_lib.clone().unwrap_or_default();
+        let mut page_actions = Vec::new();
+        {
+            let mut ctx = crate::pages::media::MediaCtx {
+                kind,
+                cfg: &mut self.cfg.media,
+                lib: &lib,
+                state: &self.media_state,
+                selected: self.media_selected.get(kind),
+                playing_id: if self.media_kind == kind {
+                    self.media_playing
+                } else {
+                    None
+                },
+                actions: &mut page_actions,
+                compact: self.compact,
+                scanning: self.media_scan_rx.is_some(),
+                mpv_ready: crate::media::available(),
+                error: self.media_error.clone(),
+            };
+            match kind {
+                crate::media::Kind::Audio => crate::pages::media::music::ui(&mut ctx, ui),
+                crate::media::Kind::Video => crate::pages::media::video::ui(&mut ctx, ui),
+            }
+        }
+        for a in page_actions {
+            actions.push(Action::Media(a));
+        }
+    }
+
+    fn run_media_action(&mut self, ctx: &egui::Context, action: crate::pages::media::MediaAction) {
+        use crate::pages::media::MediaAction;
+        match action {
+            MediaAction::PickFolder(kind) => {
+                #[cfg(not(target_os = "android"))]
+                if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                    let list = media_dirs_mut(&mut self.cfg.media, kind);
+                    if !list.contains(&dir) {
+                        list.push(dir);
+                    }
+                    self.media_scanned = false;
+                    self.scan_media(kind);
+                    self.cfg.save();
+                }
+                if cfg!(target_os = "android") {
+                    self.media_error = Some("移动端请使用系统文件选择器打开媒体".to_string());
+                }
+            }
+            MediaAction::RemoveFolder(kind, idx) => {
+                let list = media_dirs_mut(&mut self.cfg.media, kind);
+                if idx < list.len() {
+                    list.remove(idx);
+                }
+                self.media_scanned = false;
+                self.scan_media(kind);
+                self.cfg.save();
+            }
+            MediaAction::Rescan(kind) => {
+                self.media_scanned = true;
+                self.scan_media(kind);
+            }
+            MediaAction::Play(kind, id) => self.media_play(ctx, kind, id),
+            MediaAction::Toggle => {
+                if let Some(m) = self.media_mpv.as_mut() {
+                    if let Err(e) = m.toggle_pause() {
+                        self.media_error = Some(e);
+                    }
+                } else if let Some(id) = self.media_selected.get(self.media_kind) {
+                    self.media_play(ctx, self.media_kind, id);
+                }
+                self.sync_media_state();
+            }
+            MediaAction::Next => self.media_step(ctx, 1),
+            MediaAction::Prev => self.media_step(ctx, -1),
+            MediaAction::Seek(t) => {
+                if let Some(m) = self.media_mpv.as_mut() {
+                    if let Err(e) = m.seek(t) {
+                        self.media_error = Some(e);
+                    }
+                }
+                self.sync_media_state();
+            }
+            MediaAction::Volume(v) => {
+                self.cfg.media.volume = v;
+                if let Some(m) = self.media_mpv.as_mut() {
+                    let _ = m.set_volume(v);
+                }
+                self.sync_media_state();
+            }
+            MediaAction::Mute => {
+                if let Some(m) = self.media_mpv.as_mut() {
+                    let _ = m.toggle_mute();
+                }
+                self.sync_media_state();
+            }
+            MediaAction::Stop => {
+                if let Some(m) = self.media_mpv.as_mut() {
+                    let _ = m.stop();
+                }
+                // 停止即回收 mpv，避免空闲进程驻留、下次视频窗口延迟弹出。
+                self.media_mpv = None;
+                self.media_start_rx = None;
+                self.media_pending = None;
+                self.media_start_fullscreen = false;
+                self.media_playing = None;
+                self.media_state = crate::media::State::default();
+                self.sync_media_state();
+            }
+            MediaAction::Save => self.cfg.save(),
+            MediaAction::OpenMedia(kind, id) => {
+                if let Some(t) = self.media_track(kind, id) {
+                    open_path(&t.path);
+                }
+            }
+            MediaAction::Reveal(kind, id) => {
+                if let Some(t) = self.media_track(kind, id) {
+                    #[cfg(windows)]
+                    {
+                        let _ = std::process::Command::new("explorer")
+                            .arg(format!("/select,{}", t.path.display()))
+                            .spawn();
+                    }
+                    #[cfg(target_os = "macos")]
+                    {
+                        let _ = std::process::Command::new("open")
+                            .arg("-R")
+                            .arg(&t.path)
+                            .spawn();
+                    }
+                    #[cfg(all(unix, not(target_os = "macos"), not(target_os = "android")))]
+                    {
+                        if let Some(parent) = t.path.parent() {
+                            open_path(parent);
+                        }
+                    }
+                }
+            }
+            MediaAction::Fullscreen => {
+                if self.media_kind == crate::media::Kind::Video {
+                    if let Some(m) = self.media_mpv.as_mut() {
+                        let _ = m.toggle_fullscreen();
+                        return;
+                    }
+                }
+                let id = self
+                    .media_selected
+                    .get(crate::media::Kind::Video)
+                    .or_else(|| {
+                        self.media_lib
+                            .as_ref()
+                            .and_then(|lib| lib.video.first().map(|t| t.id))
+                    });
+                if let Some(id) = id {
+                    // 没有视频播放器（或当前是音乐实例）：新建视频实例，就绪后全屏。
+                    if let Some(m) = self.media_mpv.take() {
+                        drop(m);
+                    }
+                    self.media_start_rx = None;
+                    self.media_pending = None;
+                    self.media_start_fullscreen = true;
+                    self.media_play(ctx, crate::media::Kind::Video, id);
+                } else {
+                    self.media_error = Some("请先添加视频文件夹并选择要播放的视频".to_string());
+                }
+            }
+        }
+    }
+
+    fn scan_media(&mut self, _kind: crate::media::Kind) {
+        self.media_scanned = true;
+        let audio = self.cfg.media.music_dirs.clone();
+        let video = self.cfg.media.video_dirs.clone();
+        if audio.is_empty() && video.is_empty() {
+            self.media_lib = Some(crate::media::Library::default());
+            self.media_scan_rx = None;
+            self.media_error = None;
+            return;
+        }
+        self.media_scan_rx = Some(crate::media::scan_libraries_async(audio, video));
+        self.media_error = None;
+    }
+
+    fn media_track(&self, kind: crate::media::Kind, id: u64) -> Option<crate::media::Track> {
+        self.media_lib
+            .as_ref()?
+            .tracks(kind)
+            .iter()
+            .find(|t| t.id == id)
+            .cloned()
+    }
+
+    fn media_play(&mut self, ctx: &egui::Context, kind: crate::media::Kind, id: u64) {
+        let Some(track) = self.media_track(kind, id) else {
+            self.media_error = Some("媒体文件已不在列表中，请重新扫描".to_string());
+            return;
+        };
+        self.media_selected.set(kind, Some(id));
+        if self.media_mpv.is_none() || self.media_kind != kind {
+            if self.media_start_rx.is_none() {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let volume = self.cfg.media.volume;
+                let video = kind == crate::media::Kind::Video;
+                std::thread::spawn(move || {
+                    let mut result = crate::media::Mpv::start(video);
+                    if let Ok(m) = result.as_mut() {
+                        let _ = m.set_volume(volume);
+                    }
+                    let _ = tx.send(result);
+                });
+                self.media_start_rx = Some(rx);
+                self.media_pending = Some((kind, id));
+                self.media_kind = kind;
+                self.media_error = None;
+                self.status = "正在准备播放器…".to_string();
+                ctx.request_repaint();
+            }
+            return;
+        }
+        if let Some(m) = self.media_mpv.as_mut() {
+            if let Err(e) = m.play(&track.path) {
+                self.media_error = Some(e);
+                return;
+            }
+        }
+        self.media_playing = Some(id);
+        self.media_error = None;
+        self.status = format!("正在播放：{}", track.title);
+        self.sync_media_state();
+        ctx.request_repaint();
+    }
+
+    fn media_step(&mut self, ctx: &egui::Context, step: isize) {
+        let kind = self.media_kind;
+        let list = self
+            .media_lib
+            .as_ref()
+            .map(|l| l.tracks(kind).to_vec())
+            .unwrap_or_default();
+        let cur = self
+            .media_playing
+            .and_then(|id| list.iter().position(|t| t.id == id));
+        if let Some(i) = crate::media::next_index(list.len(), cur, step, self.cfg.media.repeat) {
+            self.media_play(ctx, kind, list[i].id);
+        }
+    }
+
+    /// 媒体页首次打开时自动扫描；之后的扫描由按钮触发。
+    fn ensure_media_scanned(&mut self, kind: crate::media::Kind) {
+        if self.media_scanned || self.media_scan_rx.is_some() {
+            return;
+        }
+        self.media_scanned = true;
+        self.scan_media(kind);
+    }
+
+    fn sync_media_state(&mut self) {
+        if let Some(m) = self.media_mpv.as_mut() {
+            m.poll();
+            self.media_state = m.state.clone();
+        }
+    }
+
+    /// 每帧消费后台扫描 / mpv 启动结果；播放器结束后自动切下一项。
+    fn tick_media(&mut self, ctx: &egui::Context) {
+        if let Some(lib) = self
+            .media_scan_rx
+            .as_ref()
+            .and_then(|rx| rx.try_recv().ok())
+        {
+            self.media_scan_rx = None;
+            self.media_selected.audio = self
+                .media_selected
+                .audio
+                .filter(|id| lib.audio.iter().any(|t| t.id == *id))
+                .or_else(|| lib.audio.first().map(|t| t.id));
+            self.media_selected.video = self
+                .media_selected
+                .video
+                .filter(|id| lib.video.iter().any(|t| t.id == *id))
+                .or_else(|| lib.video.first().map(|t| t.id));
+            self.status = format!(
+                "媒体库已更新：音乐 {} · 视频 {}",
+                lib.audio.len(),
+                lib.video.len()
+            );
+            self.media_lib = Some(lib);
+        }
+
+        if let Some(res) = self
+            .media_start_rx
+            .as_ref()
+            .and_then(|rx| rx.try_recv().ok())
+        {
+            self.media_start_rx = None;
+            match res {
+                Ok(m) => {
+                    self.media_mpv = Some(m);
+                    self.sync_media_state();
+                    if let Some((kind, id)) = self.media_pending.take() {
+                        self.media_play(ctx, kind, id);
+                        if self.media_start_fullscreen && kind == crate::media::Kind::Video {
+                            self.media_start_fullscreen = false;
+                            if let Some(m) = self.media_mpv.as_mut() {
+                                let _ = m.toggle_fullscreen();
+                            }
+                        } else {
+                            self.media_start_fullscreen = false;
+                        }
+                    }
+                    // 让隐藏到托盘时也能继续播放 / 更新进度。
+                    ctx.request_repaint();
+                }
+                Err(e) => {
+                    self.media_pending = None;
+                    self.media_start_fullscreen = false;
+                    self.media_error = Some(e.clone());
+                    self.status = format!("播放器不可用：{e}");
+                }
+            }
+        }
+
+        self.sync_media_state();
+        let ended = self
+            .media_mpv
+            .as_mut()
+            .map(|m| m.take_ended())
+            .unwrap_or(false);
+        let running = self
+            .media_mpv
+            .as_mut()
+            .map(|m| m.is_running())
+            .unwrap_or(false);
+        if ended {
+            self.media_step(ctx, 1);
+        } else if !running {
+            self.media_mpv = None;
+            self.media_playing = None;
+            self.media_state = crate::media::State::default();
+        }
+    }
+
+    /// 页面只发「意图」，真正涉及硬件 / 线程 / 系统调用的动作在这里做。
+    fn run_page_actions(&mut self, page: Vec<PageAction>, actions: &mut Vec<Action>) {
+        for a in page {
+            match a {
+                PageAction::SetDark(dark) => {
+                    self.cfg.theme = if dark { 1 } else { 0 };
+                }
+                PageAction::Save => {
+                    self.cfg.save();
+                    self.status = "配置已保存".to_string();
+                }
+                PageAction::ApplyAura => {
+                    if self.aura_apply_rx.is_none() {
+                        let cfg = self.cfg.armoury.clone();
+                        self.aura_apply_rx = Some(crate::armoury::aura::apply_async(cfg));
+                        self.aura_apply_msg = None;
+                        self.status = "正在下发灯效（Aura 提交约 10 秒）".to_string();
+                    }
+                }
+                PageAction::RefreshHardware => {
+                    if let Some(w) = self.armoury.as_ref() {
+                        w.request_refresh();
+                    }
+                }
+                PageAction::LockNow => {
+                    let now = Instant::now();
+                    let effects = self.sense.step(
+                        now,
+                        &crate::sense::SenseEvent::ManualLock,
+                        &self.cfg.sense,
+                    );
+                    self.handle_sense_effects(effects);
+                }
+                PageAction::StillHere => {
+                    let now = Instant::now();
+                    let effects = self.sense.step(
+                        now,
+                        &crate::sense::SenseEvent::ManualPresent,
+                        &self.cfg.sense,
+                    );
+                    self.handle_sense_effects(effects);
+                }
+                PageAction::WakeScreen => match crate::sense::wake_screen() {
+                    Ok(()) => self.status = "已唤醒屏幕".to_string(),
+                    Err(e) => self.status = e,
+                },
+                PageAction::ManageFaces => {
+                    self.status =
+                        "授权人脸需要先接入摄像头采集与特征库（里程碑 M2 / M3）".to_string();
+                }
+                PageAction::OpenLockSettings => {
+                    #[cfg(windows)]
+                    open_url("ms-settings:signinoptions");
+                    self.status = "已打开「登录选项」设置".to_string();
+                }
+            }
+        }
+        let _ = actions;
+    }
+
+    /// 消化状态机副作用：锁屏 / 提示 / 日志 / 虚化。
+    fn handle_sense_effects(&mut self, effects: Vec<crate::sense::SenseEffect>) {
+        for e in effects {
+            match e {
+                crate::sense::SenseEffect::Lock => {
+                    // 截图模式绝不能真的锁屏：`--shots` 是在用户桌面上跑的。
+                    let results = if self.shot.is_some() {
+                        self.cfg
+                            .sense
+                            .lock_actions
+                            .iter()
+                            .map(|a| (*a, Ok(())))
+                            .collect()
+                    } else {
+                        crate::sense::run_lock_actions(&self.cfg.sense.lock_actions)
+                    };
+                    let mut ok = Vec::new();
+                    let mut err = Vec::new();
+                    for (act, res) in results {
+                        match res {
+                            Ok(()) => ok.push(act.label()),
+                            Err(m) => err.push(format!("{}：{m}", act.label())),
+                        }
+                    }
+                    self.sense_stats.bump_lock();
+                    self.push_sense_event(if err.is_empty() {
+                        format!("已锁定（{}）", ok.join(" → "))
+                    } else {
+                        format!("锁定部分失败：{}", err.join("；"))
+                    });
+                    self.sense_lock_result = Some(if self.shot.is_some() {
+                        "截图模式：已跳过实际锁屏".to_string()
+                    } else if err.is_empty() {
+                        format!("已执行：{}", ok.join(" → "))
+                    } else {
+                        err.join("；")
+                    });
+                    if self
+                        .cfg
+                        .sense
+                        .lock_actions
+                        .contains(&crate::config::LockAction::Blur)
+                    {
+                        self.set_sense_blur(true);
+                    }
+                }
+                crate::sense::SenseEffect::EnterCountdown(secs) => {
+                    self.sense_stats.bump_away();
+                    self.push_sense_event(format!("离开判定，{secs} 秒后锁定"));
+                }
+                crate::sense::SenseEffect::CancelCountdown => {
+                    self.push_sense_event("取消离开倒计时".to_string());
+                    self.set_sense_blur(false);
+                }
+                crate::sense::SenseEffect::UnlockHint => {
+                    self.sense_stats.bump_unlock_hint();
+                    self.sense_unlock_hint = true;
+                    let _ = crate::sense::wake_screen();
+                    self.push_sense_event("检测到授权人脸：已唤醒并提示解锁".to_string());
+                }
+                crate::sense::SenseEffect::BlurWallpaper(on) => {
+                    self.set_sense_blur(on);
+                }
+                crate::sense::SenseEffect::Log(text) => {
+                    if text.contains("陌生人") {
+                        self.sense_stats.bump_stranger();
+                    }
+                    self.push_sense_event(text);
+                }
+            }
+        }
+    }
+
+    fn push_sense_event(&mut self, text: String) {
+        self.sense_events
+            .insert(0, (crate::sense::stats::clock(), text));
+        self.sense_events.truncate(40);
+    }
+
+    /// 虚化 / 还原壁纸。图片处理在后台线程，UI 线程不阻塞。
+    fn set_sense_blur(&mut self, on: bool) {
+        if on == self.sense_blurred || self.sense_blur_rx.is_some() {
+            return;
+        }
+        if on {
+            let Some(cur) = wallpaper::current_wallpaper().filter(|p| p.is_file()) else {
+                self.push_sense_event("找不到当前壁纸文件，跳过虚化".to_string());
+                return;
+            };
+            self.sense_blur_restore = Some(cur.clone());
+            self.sense_blur_rx = Some(crate::sense::blur::apply_async(cur));
+            self.sense_blurred = true;
+        } else {
+            let Some(orig) = self.sense_blur_restore.take() else {
+                self.sense_blurred = false;
+                return;
+            };
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let r = crate::sense::blur::restore_async(orig);
+                if let Ok(res) = r.recv() {
+                    let _ = tx.send(res.map(|()| PathBuf::new()));
+                }
+            });
+            self.sense_blur_rx = Some(rx);
+            self.sense_blurred = false;
+        }
+    }
+
+    fn poll_sense_blur(&mut self) {
+        let Some(rx) = self.sense_blur_rx.as_ref() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(Ok(_)) => {
+                self.sense_blur_rx = None;
+                self.push_sense_event(if self.sense_blurred {
+                    "壁纸已虚化".to_string()
+                } else {
+                    "壁纸已还原".to_string()
+                });
+            }
+            Ok(Err(e)) => {
+                self.sense_blur_rx = None;
+                self.push_sense_event(format!("壁纸虚化失败：{e}"));
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.sense_blur_rx = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+    }
+
+    /// 每帧推进感知：轮询采集线程、喂状态机、按现实情况补充「输入活动」。
+    fn tick_sense(&mut self, ctx: &egui::Context) {
+        let now = Instant::now();
+        self.poll_sense_blur();
+        if !self.cfg.sense.enable {
+            return;
+        }
+        // 键鼠输入：用户正在操作本窗口 → 直接续期，取消倒计时。
+        let interacting = ctx.input(|i| {
+            i.pointer.any_down()
+                || i.pointer.is_moving()
+                || !i.events.is_empty()
+                || i.key_down(egui::Key::Space)
+        });
+        // 系统空闲：真实的退化通道。空闲达到阈值 → 视为离开（摄像头未接入时）。
+        let idle = crate::sense::idle_seconds();
+        let camera_live = self.sense_cam.as_ref().map(|_| false).unwrap_or(false);
+
+        let ev = if interacting {
+            Some(crate::sense::SenseEvent::InputActivity)
+        } else if let Some(cam) = self.sense_cam.as_ref() {
+            match cam.poll() {
+                Some(crate::sense::camera::CamMsg::Hit(d)) => {
+                    Some(crate::sense::SenseEvent::Face(crate::sense::FaceHit {
+                        name: d.name,
+                        similarity: d.similarity,
+                        authorized: d.authorized,
+                    }))
+                }
+                Some(crate::sense::camera::CamMsg::Empty) => Some(crate::sense::SenseEvent::NoFace),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if let Some(ev) = ev {
+            let effects = self.sense.step(now, &ev, &self.cfg.sense);
+            self.handle_sense_effects(effects);
+        }
+
+        // 没有摄像头时，用「系统空闲 ≥ away_secs」驱动离开判定。
+        if !camera_live {
+            if let Some(idle) = idle {
+                let away = self.cfg.sense.away_secs.max(5) as u64;
+                let presence = self.sense.presence();
+                match presence {
+                    crate::sense::Presence::Unknown => {
+                        // 首帧一律先记为「在场」：绝不因为启动时机而立刻锁屏。
+                        // 之后若 continue 无人，再按 away_secs 走倒计时——
+                        // 这样「开着程序就离开」也能被保护到。
+                        let effects = self.sense.step(
+                            now,
+                            &crate::sense::SenseEvent::Face(crate::sense::FaceHit {
+                                name: "本机用户".to_string(),
+                                similarity: 1.0,
+                                authorized: true,
+                            }),
+                            &self.cfg.sense,
+                        );
+                        self.handle_sense_effects(effects);
+                    }
+                    crate::sense::Presence::Present if idle >= away => {
+                        let effects = self.sense.step(
+                            now,
+                            &crate::sense::SenseEvent::NoFace,
+                            &self.cfg.sense,
+                        );
+                        self.handle_sense_effects(effects);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let effects = self
+            .sense
+            .step(now, &crate::sense::SenseEvent::Tick, &self.cfg.sense);
+        self.handle_sense_effects(effects);
+    }
+
+    /// 硬件后台采样：仅硬件页可见时激活，离开就停（跨进程 COM 不该常驻）。
+    fn tick_hardware(&mut self) {
+        if !self.cfg.armoury.enabled {
+            if let Some(w) = self.armoury.as_ref() {
+                w.set_active(false);
+            }
+            return;
+        }
+        if self.armoury.is_none() {
+            let w = crate::armoury::ArmouryWorker::start(self.cfg.armoury.clone());
+            w.set_active(self.tab.is_hardware());
+            w.request_refresh();
+            self.armoury = Some(w);
+            if self.tab.is_hardware() {
+                self.armoury_active = true;
+            }
+            return;
+        }
+        let want = self.tab.is_hardware();
+        if want != self.armoury_active {
+            self.armoury_active = want;
+            if let Some(w) = self.armoury.as_ref() {
+                w.set_active(want);
+                if want {
+                    w.request_refresh();
+                }
+            }
+        }
+        if let Some(w) = self.armoury.as_mut() {
+            w.poll();
+        }
+        if let Some(rx) = self.aura_apply_rx.as_ref() {
+            match rx.try_recv() {
+                Ok(Ok(())) => {
+                    self.aura_apply_rx = None;
+                    self.aura_apply_msg = Some((true, "灯效已下发到全部设备".to_string()));
+                    self.status = "灯效已下发".to_string();
+                }
+                Ok(Err(e)) => {
+                    self.aura_apply_rx = None;
+                    self.aura_apply_msg = Some((false, e.clone()));
+                    self.status = format!("灯效下发失败：{e}");
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.aura_apply_rx = None;
+                    self.aura_apply_msg = Some((false, "下发线程异常退出".to_string()));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+    }
+
     fn ui_web4k(&mut self, ui: &mut egui::Ui) {
         // 函数 ui_web4k
         // 「预览 + 操作」常驻：点开大图后固定成独立区域（宽屏在右侧、窄屏在底部），
@@ -3329,88 +4286,188 @@ impl App {
                         ui.allocate_exact_size(egui::vec2(logo_size, logo_size), egui::Sense::hover()); // 语句
                     ui.painter()
                         .rect_filled(logo, Rounding::same(12.0), theme::accent()); // 语句
-                    ui.painter().text(
-                        // 语句
-                        logo.center(),               // 语句
-                        egui::Align2::CENTER_CENTER, // 字段 egui
-                        "🖼",                         // 语句
-                        egui::FontId::proportional(if self.compact { 16.0 } else { 20.0 }), // 字段 egui
-                        Color32::WHITE, // 字段 Color32
-                    ); // 块结束
-                    ui.add_space(if self.compact { 8.0 } else { 2.0 }); // 语句
-                    ui.vertical(|ui| {
-                        // 语句
-                        ui.label(
-                            // 语句
-                            RichText::new("Wallpaper Studio") // 调用 new
-                                .size(if self.compact { 14.5 } else { 18.0 }) // 语句
-                                .strong() // 语句
-                                .color(theme::text()), // 语句
-                        ); // 块结束
-                        if !self.compact {
-                            // 条件分支
+                    paint_brand(ui.painter(), logo);
+                    if self.compact {
+                        // 手机 / 窄窗：品牌文字会把页面名和主题按钮挤出屏幕，
+                        // 这里只保留品牌图标，后面直接接当前页名。
+                        ui.add_space(8.0);
+                    } else {
+                        ui.add_space(2.0);
+                        ui.vertical(|ui| {
                             ui.label(
-                                // 语句
-                                RichText::new("桌面壁纸 · 固定与轮播") // 调用 new
-                                    .size(11.0) // 语句
-                                    .color(theme::subtext()), // 语句
-                            ); // 块结束
-                        } // 块结束
-                    }); // 语句
-                    ui.add_space(if self.compact { 6.0 } else { 10.0 }); // 语句
-                    let mode = if self.cfg.mode == Mode::Slideshow {
-                        "轮播"
-                    } else {
-                        "固定"
-                    }; // 变量 mode
-                    let mode_chip = ui.add(
-                        egui::Button::new(
-                            RichText::new(mode)
-                                .size(11.5)
-                                .strong()
-                                .color(theme::accent()),
-                        )
-                        .fill(theme::accent_soft())
-                        .rounding(Rounding::same(20.0))
-                        .min_size(egui::vec2(0.0, 22.0)),
-                    ); // 调用 add
-                    if mode_chip.clicked() {
-                        actions.push(Action::ToggleMode);
+                                RichText::new("Wallpaper Studio")
+                                    .size(18.0)
+                                    .strong()
+                                    .color(theme::text()),
+                            );
+                            ui.label(
+                                RichText::new("桌面壁纸 · 固定与轮播")
+                                    .size(11.0)
+                                    .color(theme::subtext()),
+                            );
+                        });
+                        ui.add_space(10.0);
                     }
-                    mode_chip.on_hover_text(if self.cfg.mode == Mode::Slideshow {
-                        "点击切换为固定壁纸"
-                    } else {
-                        "点击切换为轮播"
+                    // v3：顶栏主体是「一级分区 › 当前页」面包屑 + 本页说明。
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 5.0;
+                            // 窄窗顶部空间紧张，只留页名；面包屑只在桌面上出现。
+                            if !self.compact {
+                                let crumb = if self.tab == Tab::Settings || self.tab == Tab::About {
+                                    "工具"
+                                } else {
+                                    self.tab.section().label()
+                                };
+                                ui.label(RichText::new(crumb).size(13.5).color(theme::faint()));
+                                ui.label(RichText::new("›").size(13.5).color(theme::faint()));
+                            }
+                            ui.label(
+                                RichText::new(self.tab.mobile_title())
+                                    .size(if self.compact { 14.5 } else { 16.0 })
+                                    .strong()
+                                    .color(theme::text()),
+                            );
+                        });
+                        if !self.compact {
+                            ui.label(
+                                RichText::new(tab_subtitle(self.tab))
+                                    .size(10.5)
+                                    .color(theme::faint()),
+                            );
+                        }
                     });
-                    if !self.compact && self.cfg.mode == Mode::Slideshow {
-                        // 条件分支
-                        if self.cfg.running {
-                            // 条件分支
-                            chip(ui, "● 运行中", theme::accent_soft(), theme::ok());
-                        // 调用 chip
-                        } else {
-                            // 语句
-                            chip(ui, "已暂停", theme::extreme(), theme::subtext());
-                            // 调用 chip
-                        } // 块结束
-                    } // 块结束
+                    if !self.compact {
+                        ui.add_space(8.0);
+                        // 按一级分区给对应的状态胶囊（下面是二级页的细分状态）。
+                        match self.tab.section() {
+                            Section::Sense => {
+                                let st = self.sense.status(Instant::now());
+                                let (text, color) = match st.presence {
+                                    crate::sense::Presence::Present => {
+                                        ("保护中 · 在场", theme::mint())
+                                    }
+                                    crate::sense::Presence::Countdown => {
+                                        ("倒计时中", theme::amber())
+                                    }
+                                    crate::sense::Presence::Locked => ("已锁定", theme::subtext()),
+                                    crate::sense::Presence::Stranger => {
+                                        ("陌生人锁定", theme::danger())
+                                    }
+                                    crate::sense::Presence::Unknown => ("等待首帧", theme::faint()),
+                                };
+                                ui_kit::status_pill(ui, text, color);
+                                if let Some(idle) = crate::sense::idle_seconds() {
+                                    ui_kit::badge(
+                                        ui,
+                                        &format!("系统空闲 {}s", idle),
+                                        theme::extreme(),
+                                        theme::subtext(),
+                                    );
+                                }
+                                ui_kit::badge(
+                                    ui,
+                                    &format!("今日已锁 {}", self.sense_stats.locked),
+                                    theme::extreme(),
+                                    theme::subtext(),
+                                );
+                            }
+                            Section::Hardware => {
+                                let ready = self
+                                    .armoury
+                                    .as_ref()
+                                    .map(|w| {
+                                        w.snap_aura.health.as_ref().map(|h| h.ok()).unwrap_or(false)
+                                    })
+                                    .unwrap_or(false);
+                                ui_kit::status_pill(
+                                    ui,
+                                    if ready {
+                                        "Aura 在线"
+                                    } else {
+                                        "Aura 不可用"
+                                    },
+                                    if ready { theme::mint() } else { theme::amber() },
+                                );
+                            }
+                            Section::Wallpaper => {
+                                let mode = if self.cfg.mode == Mode::Slideshow {
+                                    "轮播"
+                                } else {
+                                    "固定"
+                                };
+                                let mode_chip = ui.add(
+                                    egui::Button::new(
+                                        RichText::new(mode)
+                                            .size(11.5)
+                                            .strong()
+                                            .color(theme::accent()),
+                                    )
+                                    .fill(theme::accent_soft())
+                                    .rounding(Rounding::same(20.0))
+                                    .min_size(egui::vec2(0.0, 22.0)),
+                                );
+                                if mode_chip.clicked() {
+                                    actions.push(Action::ToggleMode);
+                                }
+                                mode_chip.on_hover_text(if self.cfg.mode == Mode::Slideshow {
+                                    "点击切换为固定壁纸"
+                                } else {
+                                    "点击切换为轮播"
+                                });
+                                if self.cfg.mode == Mode::Slideshow {
+                                    if self.cfg.running {
+                                        chip(ui, "● 运行中", theme::accent_soft(), theme::ok());
+                                    } else {
+                                        chip(ui, "已暂停", theme::extreme(), theme::subtext());
+                                    }
+                                }
+                            }
+                            Section::Music | Section::Video => {
+                                if self.media_state.active {
+                                    let label = if self.media_state.paused {
+                                        "已暂停"
+                                    } else {
+                                        "正在播放"
+                                    };
+                                    ui_kit::status_pill(
+                                        ui,
+                                        label,
+                                        if self.media_state.paused {
+                                            theme::amber()
+                                        } else {
+                                            theme::mint()
+                                        },
+                                    );
+                                    ui_kit::badge(
+                                        ui,
+                                        &format!(
+                                            "{} / {}",
+                                            crate::media::format_time(self.media_state.time),
+                                            crate::media::format_time(self.media_state.duration)
+                                        ),
+                                        theme::extreme(),
+                                        theme::subtext(),
+                                    );
+                                } else {
+                                    ui_kit::status_pill(ui, "待播放", theme::faint());
+                                }
+                            }
+                        }
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // 语句
                         if self.compact {
                             // 条件分支
                             // Theme toggle lives in the header on mobile (the
                             // sidebar, where it normally sits, is hidden).
-                            let dark = self.cfg.theme == 1; // 变量 dark
-                            let lbl = if dark { "☀" } else { "🌙" }; // 变量 lbl
-                            let btn = ui.add( // 变量 btn
-                                egui::Button::new(RichText::new(lbl).size(16.0)) // 调用 new
-                                    .frame(false) // 语句
-                                    .min_size(egui::vec2(38.0, 34.0)), // 语句
-                            ); // 块结束
-                            if btn.on_hover_text("切换浅色 / 深色主题").clicked() {
-                                // 条件分支
-                                actions.push(Action::ToggleTheme); // 语句
-                            } // 块结束
+                            let dark = self.cfg.theme == 1;
+                            let (br, resp) = ui
+                                .allocate_exact_size(egui::vec2(38.0, 34.0), egui::Sense::click());
+                            paint_theme_icon(ui.painter(), br, dark, theme::subtext());
+                            if resp.on_hover_text("切换浅色 / 深色主题").clicked() {
+                                actions.push(Action::ToggleTheme);
+                            }
                         } else if let Some(p) = self.current_path() {
                             // 条件分支
                             let name = p // 变量 name
@@ -3617,84 +4674,152 @@ impl App {
         false
     }
 
+    /// 左侧两级导航：72px 一级分区栏 + 152px 二级子页栏。
+    ///
+    /// 一级只放「壁纸 / 硬件 / 人脸识别」这类大块，二级放该块下的具体页面。
+    /// 一级栏底部固定「设置 / 关于 / 主题」，它们不属于任何业务分区。
     fn draw_sidebar(&mut self, ctx: &egui::Context) {
-        // 函数 draw_sidebar
         if self.cfg.sidebar_hidden {
-            // 条件分支
-            return; // 返回
-        } // 块结束
-        egui::SidePanel::left("nav") // 调用 left
-            .resizable(false) // 语句
-            .exact_width(if is_narrow(ctx) { 188.0 } else { 214.0 }) // 语句
+            return;
+        }
+        let section = self.tab.section();
+        // 设置 / 关于不属于任何业务分区，打开时一级栏不高亮任何分区。
+        let on_global = self.tab == Tab::Settings || self.tab == Tab::About;
+        let mut goto: Option<Tab> = None;
+        let mut new_section: Option<Section> = None;
+
+        // ---- 一级：分区栏 -------------------------------------------------
+        egui::SidePanel::left("nav_sections")
+            .resizable(false)
+            .exact_width(76.0)
             .frame(
-                // 语句
-                egui::Frame::none() // 调用 none
-                    .fill(theme::surface()) // 语句
-                    .inner_margin(egui::Margin::symmetric(12.0, 14.0)), // 语句
-            ) // 块结束
+                egui::Frame::none()
+                    .fill(theme::surface())
+                    .inner_margin(egui::Margin::symmetric(0.0, 12.0)),
+            )
             .show(ctx, |ui| {
-                // 语句
-                ui.add_space(2.0); // 语句
-                ui.label(RichText::new("工作区").size(10.5).color(theme::subtext())); // 语句
-                ui.add_space(6.0); // 语句
-                if nav_button(ui, "🌉", "网上壁纸库", self.tab == Tab::Web4k) {
-                    // 条件分支
-                    self.tab = Tab::Web4k; // 语句
-                } // 块结束
-                ui.add_space(3.0); // 语句
-                if nav_button(ui, "🖼", "本地壁纸库", self.tab == Tab::Library) {
-                    // 条件分支
-                    self.tab = Tab::Library; // 语句
-                } // 块结束
-                ui.add_space(3.0); // 语句
-                if nav_button(ui, "🎞", "轮播", self.tab == Tab::Slideshow) {
-                    // 条件分支
-                    self.tab = Tab::Slideshow; // 语句
-                } // 块结束
-                ui.add_space(3.0); // 语句
-                if nav_button(ui, "🌐", "每日壁纸", self.tab == Tab::Online) {
-                    // 条件分支
-                    self.tab = Tab::Online; // 语句
-                } // 块结束
-                ui.add_space(3.0); // 语句
-                if nav_button(ui, "⚙", "设置", self.tab == Tab::Settings) {
-                    // 条件分支
-                    self.tab = Tab::Settings; // 语句
-                } // 块结束
-                ui.add_space(3.0); // 语句
-                if nav_button(ui, "ℹ", "关于", self.tab == Tab::About) {
-                    // 条件分支
-                    self.tab = Tab::About; // 语句
-                } // 块结束
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    // 语句
-                    ui.add_space(4.0); // 语句
+                let r = ui.max_rect();
+                ui.painter().line_segment(
+                    [r.right_top(), r.right_bottom()],
+                    Stroke::new(1.0_f32, theme::border()),
+                );
+                ui.vertical_centered(|ui| {
+                    let (logo, _) = ui.allocate_exact_size(Vec2::splat(36.0), egui::Sense::hover());
+                    ui.painter()
+                        .rect_filled(logo, Rounding::same(11.0), theme::accent());
+                    paint_brand(ui.painter(), logo);
+                });
+                ui.add_space(12.0);
+                for s in Section::ALL {
+                    if section_button(ui, s, !on_global && section == s) {
+                        new_section = Some(s);
+                    }
+                    ui.add_space(3.0);
+                }
+                // 底部：全局工具页 + 主题 + 版本。
+                egui::TopBottomPanel::bottom("nav_rail_foot")
+                    .frame(egui::Frame::none().fill(Color32::TRANSPARENT))
+                    .show_inside(ui, |ui| {
+                        ui.vertical_centered(|ui| {
+                            let dark = self.cfg.theme == 1;
+                            if theme_rail_button(ui, dark) {
+                                self.cfg.theme = if dark { 0 } else { 1 };
+                            }
+                            ui.add_space(2.0);
+                            ui.label(
+                                RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                                    .size(8.0)
+                                    .color(theme::faint()),
+                            );
+                        });
+                    });
+            });
+
+        // ---- 二级：子页栏 -------------------------------------------------
+        egui::SidePanel::left("nav_pages")
+            .resizable(false)
+            .exact_width(152.0)
+            .frame(
+                egui::Frame::none()
+                    .fill(theme::surface())
+                    .inner_margin(egui::Margin::symmetric(10.0, 12.0)),
+            )
+            .show(ctx, |ui| {
+                let r = ui.max_rect();
+                ui.painter().line_segment(
+                    [r.right_top(), r.right_bottom()],
+                    Stroke::new(1.0_f32, theme::border()),
+                );
+                if on_global {
                     ui.label(
-                        // 语句
-                        RichText::new(format!(
-                            "v{} · {}",
-                            env!("CARGO_PKG_VERSION"),
-                            std::env::consts::OS
-                        )) // 调用 new
-                        .size(10.0) // 语句
-                        .color(theme::subtext()), // 语句
-                    ); // 块结束
-                    ui.add_space(4.0); // 语句
-                    ui.separator(); // 语句
-                    ui.add_space(6.0); // 语句
-                    let dark = self.cfg.theme == 1; // 变量 dark
-                    let label = if dark {
-                        "☀  浅色主题"
-                    } else {
-                        "🌙  深色主题"
-                    }; // 变量 label
-                    if theme_toggle(ui, label) {
-                        // 条件分支
-                        self.cfg.theme = if dark { 0 } else { 1 }; // 语句
-                    } // 块结束
-                }); // 语句
-            }); // 语句
-    } // 块结束
+                        RichText::new("工具")
+                            .size(13.0)
+                            .strong()
+                            .color(theme::text()),
+                    );
+                    ui.label(
+                        RichText::new("全局设置 · 关于本程序")
+                            .size(9.5)
+                            .color(theme::faint()),
+                    );
+                    ui.add_space(10.0);
+                } else {
+                    ui.label(
+                        RichText::new(section.label())
+                            .size(13.0)
+                            .strong()
+                            .color(theme::text()),
+                    );
+                    ui.label(
+                        RichText::new(section_hint(section))
+                            .size(9.5)
+                            .color(theme::faint()),
+                    );
+                    ui.add_space(10.0);
+                    for t in section.children() {
+                        if subpage_button(ui, *t, self.tab == *t) {
+                            goto = Some(*t);
+                        }
+                        ui.add_space(2.0);
+                    }
+                }
+                // 全局工具页常驻在二级栏底部，任何分区都能一键到。
+                egui::TopBottomPanel::bottom("nav_pages_foot")
+                    .frame(egui::Frame::none().fill(Color32::TRANSPARENT))
+                    .show_inside(ui, |ui| {
+                        // 工具页已经在正文里时不重复列一遍。
+                        if !on_global {
+                            ui.add_space(4.0);
+                            let (sep, _) = ui.allocate_exact_size(
+                                Vec2::new(ui.available_width(), 1.0),
+                                egui::Sense::hover(),
+                            );
+                            ui.painter()
+                                .rect_filled(sep, Rounding::ZERO, theme::border());
+                            ui.add_space(6.0);
+                        }
+                        for t in [Tab::Settings, Tab::About] {
+                            if subpage_button(ui, t, self.tab == t) {
+                                goto = Some(t);
+                            }
+                            ui.add_space(2.0);
+                        }
+                    });
+            });
+
+        if let Some(s) = new_section {
+            if s != section || self.tab == Tab::Settings || self.tab == Tab::About {
+                goto = Some(s.default_tab());
+            }
+        }
+        if let Some(t) = goto {
+            self.tab = t;
+            self.detail_path = None;
+            self.web_preview_id = None;
+            self.web_preview_tex = None;
+            self.web_preview_want = None;
+        }
+    }
 
     /// Compact bottom navigation bar (phones/tablets, narrow windows).
     fn draw_bottom_nav(&mut self, ctx: &egui::Context) {
@@ -3726,24 +4851,30 @@ impl App {
                     [r.left_top(), r.right_top()],         // 语句
                     Stroke::new(1.0_f32, theme::border()), // 字段 Stroke
                 ); // 块结束
-                let items: [(Tab, &str, &str); 6] = [
-                    // 变量 items
-                    (Tab::Web4k, "🌉", "网上"),    // 语句
-                    (Tab::Library, "🖼", "本地"),   // 语句
-                    (Tab::Slideshow, "🎞", "轮播"), // 语句
-                    (Tab::Online, "🌐", "每日"),   // 语句
-                    (Tab::Settings, "⚙", "设置"),  // 语句
-                    (Tab::About, "ℹ", "关于"),     // 语句
-                ]; // 语句
-                let w = ui.available_width() / items.len() as f32; // 变量 w
+                   // 移动端底部是一级菜单：与桌面侧栏共用 Section::ALL，
+                   // 这样以后加音乐 / 视频等分区时，手机端不会漏项。
+                   // 「设置」是全局工具页，在底栏最右侧保留一个紧凑入口，
+                   // 不占一级菜单的位数，也不把音乐 / 视频挤出去。
+                let items = Section::ALL;
+                let slots = items.len() as f32; // 变量 slots
+                                                // 最右侧留一个紧凑工具位给「设置」，5 个一级菜单平分其余宽度。
+                let tool_w = (ui.available_width() * 0.15).clamp(42.0, 54.0);
+                let w = (ui.available_width() - tool_w) / slots; // 变量 w
                 ui.horizontal(|ui| {
                     // 语句
                     ui.spacing_mut().item_spacing.x = 0.0; // 语句
-                    for (tab, icon, label) in items {
+                                                           // 全局工具页打开时，一级菜单一个都不高亮。
+                    let cur_section = if self.tab == Tab::Settings || self.tab == Tab::About {
+                        None
+                    } else {
+                        Some(self.tab.section())
+                    };
+                    for sec in items {
                         // 循环
-                        if bottom_nav_button(ui, icon, label, self.tab == tab, w) {
+                        let selected = cur_section == Some(sec);
+                        if bottom_nav_section_button(ui, sec, selected, w) {
                             // 条件分支
-                            self.tab = tab; // 语句
+                            self.tab = sec.default_tab(); // 语句
                             self.nav_from_mobile = true;
                             self.detail_path = None;
                             self.web_preview_id = None;
@@ -3751,6 +4882,20 @@ impl App {
                             self.web_preview_want = None;
                         } // 块结束
                     } // 块结束
+                    if bottom_nav_button(
+                        ui,
+                        Tab::Settings,
+                        "设置",
+                        self.tab == Tab::Settings,
+                        tool_w,
+                    ) {
+                        self.tab = Tab::Settings;
+                        self.nav_from_mobile = true;
+                        self.detail_path = None;
+                        self.web_preview_id = None;
+                        self.web_preview_tex = None;
+                        self.web_preview_want = None;
+                    }
                 }); // 语句
             }); // 语句
     } // 块结束
@@ -3813,11 +4958,10 @@ impl App {
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let dark = self.cfg.theme == 1;
-                        let theme_icon = if dark { "☀" } else { "🌙" };
-                        if ghost_button(ui, theme_icon)
-                            .on_hover_text("切换浅色 / 深色主题")
-                            .clicked()
-                        {
+                        let (br, resp) =
+                            ui.allocate_exact_size(egui::vec2(34.0, 32.0), egui::Sense::click());
+                        paint_theme_icon(ui.painter(), br, dark, theme::subtext());
+                        if resp.on_hover_text("切换浅色 / 深色主题").clicked() {
                             actions.push(Action::ToggleTheme);
                         }
                         ui.label(
@@ -3849,6 +4993,30 @@ impl App {
                     // 手机端功能页：底部已有留白，让最后一项不被贴边。
                     ui.add_space(4.0);
                 }
+                // 移动端：分区内多于一个子页时，内容区顶部给一条二级页签。
+                // 桌面端由左侧二级栏承担，这里不重复。
+                if self.compact {
+                    let sec = self.tab.section();
+                    let kids = sec.children();
+                    // 设置 / 关于是全局页，不在任何分区的子页列表里，没有页签。
+                    if kids.len() > 1 && kids.contains(&self.tab) {
+                        if let Some(t) = mobile_subtabs(ui, kids, self.tab) {
+                            self.tab = t;
+                            self.detail_path = None;
+                            self.web_preview_id = None;
+                            self.web_preview_tex = None;
+                            self.web_preview_want = None;
+                        }
+                        ui.add_space(10.0);
+                    }
+                }
+                match self.tab {
+                    Tab::Music => self.ensure_media_scanned(crate::media::Kind::Audio),
+                    Tab::Video => {
+                        self.ensure_media_scanned(crate::media::Kind::Video);
+                    }
+                    _ => {}
+                }
                 match self.tab {
                     // 分支匹配
                     // 「网上壁纸库」页面自带滚动区域，单独渲染，避免嵌套滚动。
@@ -3871,6 +5039,29 @@ impl App {
                             self.ui_web4k(ui);
                         }
                     }
+                    Tab::Music => {
+                        vscroll().show(ui, |ui| {
+                            self.ui_media(ui, actions, crate::media::Kind::Audio);
+                            ui.add_space(24.0);
+                        });
+                    }
+                    Tab::Video => {
+                        vscroll().show(ui, |ui| {
+                            self.ui_media(ui, actions, crate::media::Kind::Video);
+                            ui.add_space(24.0);
+                        });
+                    }
+                    // 移动端 / 窄窗：硬件四页不在移动端实现（没有 Aura COM 与设备
+                    // 通道）。这里给一张说明卡，而不是灰掉假装存在。
+                    Tab::Dashboard | Tab::Devices | Tab::Lighting | Tab::Fan
+                        if crate::platform::is_mobile() =>
+                    {
+                        vscroll().show(ui, |ui| {
+                            ui.add_space(8.0);
+                            crate::pages::hardware::mobile_notice(ui, self.tab);
+                            ui.add_space(24.0);
+                        });
+                    }
                     // 其余页面统一包一层可垂直滚动区域，并在底部补留白。
                     _ => {
                         // 语句
@@ -3887,9 +5078,16 @@ impl App {
                                 } else {
                                     match self.tab {
                                         // 分支匹配
+                                        Tab::Sense => self.ui_sense(ui, actions), // 智能感知
+                                        Tab::Policy => self.ui_sense(ui, actions), // 锁屏策略
+                                        Tab::Dashboard => self.ui_hardware(ui, actions), // 控制面板
+                                        Tab::Devices => self.ui_hardware(ui, actions), // 设备
+                                        Tab::Lighting => self.ui_hardware(ui, actions), // 灯效
+                                        Tab::Fan => self.ui_hardware(ui, actions), // Fan Xpert
                                         Tab::Library => self.ui_library(ui, actions), // 匹配分支
                                         Tab::Slideshow => self.ui_slideshow(ui, actions), // 匹配分支
                                         Tab::Online => self.ui_online(ui), // 匹配分支
+                                        Tab::Music | Tab::Video => {}      // 已在上方单独渲染
                                         Tab::Settings => self.ui_settings(ui, actions), // 匹配分支
                                         Tab::About => self.ui_about(ui),   // 匹配分支
                                         Tab::Web4k => {}                   // 已在上面单独渲染
@@ -4358,25 +5556,31 @@ impl App {
         // 函数 empty_state
         ui.vertical_centered(|ui| {
             // 语句
-            ui.add_space(70.0); // 语句
-            let (r, _) = ui.allocate_exact_size(Vec2::new(104.0, 104.0), egui::Sense::hover()); // 调用 let
+            // 手机 / 窄窗上状态栏会占掉一截高度，空状态顶部留白收紧，
+            // 保证标题与按钮完整可见、不被滚到边界外。
+            ui.add_space(if self.compact { 10.0 } else { 70.0 });
+            let icon = if self.compact { 72.0 } else { 104.0 };
+            let (r, _) = ui.allocate_exact_size(Vec2::splat(icon), egui::Sense::hover());
             ui.painter()
-                .circle_filled(r.center(), 52.0, theme::accent_soft()); // 语句
-            ui.painter()
-                .circle_stroke(r.center(), 51.0, Stroke::new(1.0_f32, theme::accent())); // 语句
+                .circle_filled(r.center(), icon * 0.5, theme::accent_soft());
+            ui.painter().circle_stroke(
+                r.center(),
+                icon * 0.5 - 1.0,
+                Stroke::new(1.0_f32, theme::accent()),
+            );
             ui.painter().text(
                 // 语句
-                r.center(),                       // 语句
-                egui::Align2::CENTER_CENTER,      // 字段 egui
-                "🖼",                              // 语句
-                egui::FontId::proportional(42.0), // 字段 egui
-                theme::accent(),                  // 字段 theme
+                r.center(),                  // 语句
+                egui::Align2::CENTER_CENTER, // 字段 egui
+                "🖼",                         // 语句
+                egui::FontId::proportional(icon * 0.4),
+                theme::accent(), // 字段 theme
             ); // 块结束
-            ui.add_space(16.0); // 语句
+            ui.add_space(if self.compact { 8.0 } else { 16.0 });
             ui.label(
                 // 语句
                 RichText::new("还没有壁纸") // 调用 new
-                    .size(20.0) // 语句
+                    .size(if self.compact { 18.0 } else { 20.0 })
                     .strong() // 语句
                     .color(theme::text()), // 语句
             ); // 块结束
@@ -4386,10 +5590,10 @@ impl App {
                 RichText::new(
                     "选择一个包含图片（或动态壁纸视频）的文件夹，即可开始使用固定壁纸或轮播",
                 ) // 调用 new
-                .size(13.0) // 语句
+                .size(if self.compact { 12.0 } else { 13.0 })
                 .color(theme::subtext()), // 语句
             ); // 块结束
-            ui.add_space(18.0); // 语句
+            ui.add_space(if self.compact { 8.0 } else { 18.0 });
             if primary_button(ui, "选择壁纸文件夹…").clicked() {
                 // 条件分支
                 actions.push(Action::PickFolder); // 语句
@@ -5450,6 +6654,61 @@ impl App {
         page_title(ui, "设置", "个性化壁纸的显示与启动方式"); // 调用 page_title
         ui.add_space(14.0); // 语句
 
+        // v2：智能感知与硬件域的入口（完整配置在各自主页，这里只放总开关）。
+        egui::Frame::none()
+            .fill(theme::card())
+            .stroke(Stroke::new(1.0_f32, theme::border()))
+            .rounding(Rounding::same(14.0))
+            .shadow(egui::epaint::Shadow {
+                offset: egui::vec2(0.0, 3.0),
+                blur: 12.0,
+                spread: 0.0,
+                color: theme::shadow(),
+            })
+            .inner_margin(egui::Margin::symmetric(18.0, 16.0))
+            .show(ui, |ui| {
+                section_header(ui, "智能感知与硬件");
+                ui.add_space(10.0);
+                let compact = self.compact;
+                let _ = setting_row(
+                    ui,
+                    compact,
+                    "智能感知",
+                    "在场检测 · 人走自动锁屏 · 人回唤醒提示",
+                    |ui| {
+                        let mut on = self.cfg.sense.enable;
+                        if ui_kit::switch(ui, &mut on).changed() {
+                            self.cfg.sense.enable = on;
+                        }
+                    },
+                );
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(8.0);
+                let _ = setting_row(
+                    ui,
+                    compact,
+                    "华硕硬件控制",
+                    "Aura 灯效 / 设备 / 控制面板 / Fan Xpert（仅 Windows）",
+                    |ui| {
+                        let mut on = self.cfg.armoury.enabled;
+                        if ui_kit::switch(ui, &mut on).changed() {
+                            self.cfg.armoury.enabled = on;
+                        }
+                    },
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(
+                        "提示：Fan Xpert 首版只读（曲线编辑仅写入本地配置）；Aura 下发约需 10 秒，\
+                         期间界面会显示「下发中」。",
+                    )
+                    .size(10.5)
+                    .color(theme::faint()),
+                );
+            });
+        ui.add_space(12.0);
+
         // Appearance & display ---------------------------------------------
         egui::Frame::none() // 调用 none
             .fill(theme::card()) // 语句
@@ -5956,14 +7215,7 @@ impl App {
             let (r, _) = ui.allocate_exact_size(Vec2::new(84.0, 84.0), egui::Sense::hover()); // 调用 let
             ui.painter()
                 .rect_filled(r, Rounding::same(22.0), theme::accent()); // 语句
-            ui.painter().text(
-                // 语句
-                r.center(),                       // 语句
-                egui::Align2::CENTER_CENTER,      // 字段 egui
-                "🖼",                              // 语句
-                egui::FontId::proportional(40.0), // 字段 egui
-                Color32::WHITE,                   // 字段 Color32
-            ); // 块结束
+            paint_brand(ui.painter(), r);
             ui.add_space(12.0); // 语句
             ui.label(
                 // 语句
@@ -6905,6 +8157,9 @@ impl eframe::App for App {
         }); // 语句
 
         let mut actions: Vec<Action> = Vec::new(); // 变量 actions
+        self.tick_sense(ctx);
+        self.tick_hardware();
+        self.tick_media(ctx);
         self.draw_header(ctx, &mut actions); // 语句
         if self.compact {
             // 条件分支
@@ -6931,11 +8186,16 @@ impl eframe::App for App {
         } // 块结束
 
         self.shot_post(ctx); // 语句
+                             // 感知倒计时 / 在场时长需要每秒重绘一次；硬件页在下发中也需要刷新。
+        if self.cfg.sense.enable || self.aura_apply_rx.is_some() || self.tab.is_hardware() {
+            ctx.request_repaint_after(Duration::from_millis(500));
+        }
     } // 块结束
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         // 函数 on_exit
         self.cfg.save(); // 语句
+        self.media_mpv = None;
     } // 块结束
 } // 块结束
 
@@ -6954,14 +8214,25 @@ const PRESETS: &[(&str, u64)] = &[
 
 fn chip(ui: &mut egui::Ui, text: &str, fill: Color32, color: Color32) {
     // 函数 chip
-    egui::Frame::none() // 调用 none
-        .fill(fill) // 语句
-        .rounding(Rounding::same(20.0)) // 语句
-        .inner_margin(egui::Margin::symmetric(10.0, 3.0)) // 语句
-        .show(ui, |ui| {
-            // 语句
-            ui.label(RichText::new(text).size(11.5).color(color).strong()); // 语句
-        }); // 语句
+    let compact = ui.ctx().screen_rect().width() < COMPACT_BREAK;
+    // 标签始终保持单行：窄屏上的「动态壁纸 MP4」一旦逐字换行，
+    // 会把右侧工具栏撑成竖排。宽度不够时应整体换到下一行。
+    let font = egui::FontId::proportional(if compact { 10.5 } else { 11.5 });
+    let galley = ui.painter().layout_no_wrap(text.to_owned(), font, color);
+    let pad_x = if compact { 7.0 } else { 10.0 };
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(galley.size().x + pad_x * 2.0, galley.size().y + 6.0),
+        egui::Sense::hover(),
+    );
+    ui.painter().rect_filled(rect, Rounding::same(20.0), fill);
+    ui.painter().galley(
+        egui::pos2(
+            rect.center().x - galley.size().x * 0.5,
+            rect.center().y - galley.size().y * 0.5,
+        ),
+        galley,
+        color,
+    );
 } // 块结束
 
 /// Rounded chip used for the selected folder path.
@@ -7001,11 +8272,21 @@ fn tab_from_index(i: usize) -> Tab {
     // 函数 tab_from_index
     match i {
         // 分支匹配
-        0 => Tab::Library,   // 匹配分支
-        1 => Tab::Slideshow, // 匹配分支
-        2 => Tab::Online,    // 匹配分支
-        3 => Tab::Settings,  // 匹配分支
-        4 => Tab::About,     // 匹配分支
+        0 => Tab::Sense,     // 匹配分支
+        1 => Tab::Policy,    // 匹配分支
+        2 => Tab::Dashboard, // 匹配分支
+        3 => Tab::Devices,   // 匹配分支
+        4 => Tab::Lighting,  // 匹配分支
+        5 => Tab::Fan,       // 匹配分支
+        6 => Tab::Library,   // 匹配分支
+        7 => Tab::Slideshow, // 匹配分支
+        8 => Tab::Online,    // 匹配分支
+        9 => Tab::Settings,  // 匹配分支
+        10 => Tab::About,    // 匹配分支
+        11 => Tab::Music,    // 匹配分支
+        12 => Tab::Video,    // 匹配分支
+        13 => Tab::Online,   // 匹配分支
+        14 => Tab::Web4k,    // 匹配分支
         _ => Tab::Web4k,     // 匹配分支
     } // 块结束
 } // 块结束
@@ -7085,90 +8366,683 @@ fn setting_row<R>(
     out
 }
 
-fn nav_button(ui: &mut egui::Ui, icon: &str, label: &str, selected: bool) -> bool {
-    // 函数 nav_button
-    let height = 42.0; // 变量 height
-    let (rect, resp) = // 调用 let
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::click()); // 语句
-    let hovered = resp.hovered(); // 变量 hovered
-    let t = ui.ctx().animate_bool(resp.id, hovered); // 变量 t
-    let painter = ui.painter(); // 变量 painter
+/// 顶栏副标题：每个页面回答一句「这页干什么」。
+fn tab_subtitle(tab: Tab) -> &'static str {
+    match tab {
+        Tab::Sense => "在场检测 · 人走自动锁屏 / 人回唤醒提示",
+        Tab::Policy => "离开多久锁 · 谁能解锁 · 安全兜底",
+        Tab::Dashboard => "整机状态 · 一键切换场景",
+        Tab::Devices => "本机灯效设备 · 风扇通道 · 接口",
+        Tab::Lighting => "官方 Aura COM · 分区开关与实时预览",
+        Tab::Fan => "曲线编辑 · 实时转速需管理员",
+        Tab::Web4k => "多站点在线壁纸库",
+        Tab::Library => "本地图库 · 一键设为壁纸",
+        Tab::Slideshow => "定时轮播 · 播放清单",
+        Tab::Online => "每日一图 · 自动更换",
+        Tab::Music => "本地音乐库 · 后台播放",
+        Tab::Video => "本地视频库 · 独立播放窗口",
+        Tab::Settings => "个性化壁纸的显示与启动方式",
+        Tab::About => "版本 · 平台能力 · 反馈",
+    }
+}
+
+/// 矢量图标：不依赖字体里的几何字形（本机 msyh 缺 `◱ ⬒ ▦` 等，会渲染成豆腐块）。
+fn paint_brand(p: &egui::Painter, rect: egui::Rect) {
+    // 品牌标记：框 + 山（与「本地图库」图标同源，放大版）。
+    let c = rect.center();
+    let r = rect.width() * 0.5;
+    let inner = egui::Rect::from_center_size(c, Vec2::splat(r * 1.1));
+    p.rect_stroke(
+        inner,
+        Rounding::same(r * 0.14),
+        Stroke::new(1.9_f32, Color32::WHITE),
+    );
+    p.add(egui::Shape::line(
+        vec![
+            egui::pos2(inner.left() + r * 0.06, inner.bottom() - r * 0.16),
+            egui::pos2(c.x - r * 0.1, inner.top() + r * 0.28),
+            egui::pos2(c.x + r * 0.06, inner.top() + r * 0.52),
+            egui::pos2(inner.right() - r * 0.06, inner.top() + r * 0.28),
+        ],
+        Stroke::new(1.8_f32, Color32::WHITE),
+    ));
+}
+
+fn paint_tab_icon(p: &egui::Painter, rect: egui::Rect, tab: Tab, color: Color32) {
+    let c = rect.center();
+    let r = rect.width().min(rect.height()) * 0.5;
+    let s = Stroke::new(1.55_f32, color);
+    let line = |a: egui::Pos2, b: egui::Pos2| p.line_segment([a, b], s);
+    // `k` 是半径系数（0–1），保留参数让调用处读起来直观。
+    let polar = |deg: f32, k: f32| {
+        let rad = deg.to_radians();
+        egui::pos2(c.x + rad.cos() * r * k, c.y + rad.sin() * r * k)
+    };
+    match tab {
+        // 眼睛：在场检测。
+        Tab::Sense => {
+            p.circle_stroke(c, r * 0.62, s);
+            p.circle_filled(c, r * 0.22, color);
+            line(polar(200.0, 0.78), polar(200.0, 1.05));
+            line(polar(340.0, 0.78), polar(340.0, 1.05));
+        }
+        // 盾牌：锁屏策略。
+        Tab::Policy => {
+            let pts = vec![
+                egui::pos2(c.x - r * 0.6, c.y - r * 0.75),
+                egui::pos2(c.x + r * 0.6, c.y - r * 0.75),
+                egui::pos2(c.x + r * 0.55, c.y + r * 0.15),
+                egui::pos2(c.x, c.y + r * 0.9),
+                egui::pos2(c.x - r * 0.55, c.y + r * 0.15),
+            ];
+            p.add(egui::Shape::closed_line(pts, s));
+        }
+        // 三条横杠 + 指针：控制面板。
+        Tab::Dashboard => {
+            for (i, w) in [0.75_f32, 1.0, 0.55].iter().enumerate() {
+                let y = c.y - r * 0.5 + i as f32 * r * 0.5;
+                line(
+                    egui::pos2(c.x - r * 0.8, y),
+                    egui::pos2(c.x - r * 0.8 + r * 1.6 * w, y),
+                );
+            }
+            p.circle_filled(egui::pos2(c.x + r * 0.55, c.y - r * 0.5), 1.9, color);
+        }
+        // 四宫格：设备。
+        Tab::Devices => {
+            let k = r * 0.44;
+            for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                let rr = egui::Rect::from_center_size(
+                    egui::pos2(c.x + dx * k * 1.15, c.y + dy * k * 1.15),
+                    Vec2::splat(k * 1.5),
+                );
+                p.rect_stroke(rr, Rounding::same(1.5), Stroke::new(1.4_f32, color));
+            }
+        }
+        // 灯泡：灯效。
+        Tab::Lighting => {
+            p.circle_stroke(c + Vec2::new(0.0, -r * 0.2), r * 0.5, s);
+            for i in 0..6 {
+                let a = i as f32 * 60.0 - 90.0;
+                line(polar(a, 0.72), polar(a, 1.0));
+            }
+            line(
+                egui::pos2(c.x - r * 0.3, c.y + r * 0.45),
+                egui::pos2(c.x + r * 0.3, c.y + r * 0.45),
+            );
+        }
+        // 三叶风扇：散热。
+        Tab::Fan => {
+            p.circle_stroke(c, r * 0.16, Stroke::new(1.4_f32, color));
+            for i in 0..3 {
+                let a0 = i as f32 * 120.0 - 90.0;
+                let a1 = a0 + 62.0;
+                let mut pts = Vec::new();
+                for k in 0..7 {
+                    let t = k as f32 / 6.0;
+                    let a = a0 + (a1 - a0) * t;
+                    let rad = r * (0.42 + 0.5 * t);
+                    let ang = a.to_radians();
+                    pts.push(egui::pos2(c.x + ang.cos() * rad, c.y + ang.sin() * rad));
+                }
+                p.add(egui::Shape::line(pts, Stroke::new(1.4_f32, color)));
+            }
+        }
+        // 地球：网上壁纸库。
+        Tab::Web4k => {
+            p.circle_stroke(c, r * 0.72, s);
+            line(
+                egui::pos2(c.x - r * 0.72, c.y),
+                egui::pos2(c.x + r * 0.72, c.y),
+            );
+            line(
+                egui::pos2(c.x, c.y - r * 0.72),
+                egui::pos2(c.x, c.y + r * 0.72),
+            );
+        }
+        // 相框 + 山：本地图库。
+        Tab::Library => {
+            p.rect_stroke(
+                egui::Rect::from_center_size(c, Vec2::splat(r * 1.6)),
+                Rounding::same(2.0),
+                s,
+            );
+            p.add(egui::Shape::line(
+                vec![
+                    egui::pos2(c.x - r * 0.72, c.y + r * 0.62),
+                    egui::pos2(c.x - r * 0.16, c.y - r * 0.2),
+                    egui::pos2(c.x + r * 0.12, c.y + r * 0.18),
+                    egui::pos2(c.x + r * 0.42, c.y - r * 0.32),
+                    egui::pos2(c.x + r * 0.72, c.y + r * 0.62),
+                ],
+                Stroke::new(1.35_f32, color),
+            ));
+        }
+        // 播放三角：轮播。
+        Tab::Slideshow => {
+            p.rect_stroke(
+                egui::Rect::from_center_size(c, Vec2::new(r * 1.7, r * 1.4)),
+                Rounding::same(3.0),
+                s,
+            );
+            p.add(egui::Shape::convex_polygon(
+                vec![
+                    egui::pos2(c.x - r * 0.22, c.y - r * 0.38),
+                    egui::pos2(c.x + r * 0.38, c.y),
+                    egui::pos2(c.x - r * 0.22, c.y + r * 0.38),
+                ],
+                color,
+                Stroke::NONE,
+            ));
+        }
+        // 音符：音乐播放器。
+        Tab::Music => {
+            p.circle_stroke(
+                egui::pos2(c.x - r * 0.38, c.y + r * 0.38),
+                r * 0.26,
+                Stroke::new(1.5_f32, color),
+            );
+            line(
+                egui::pos2(c.x - r * 0.14, c.y + r * 0.38),
+                egui::pos2(c.x - r * 0.14, c.y - r * 0.62),
+            );
+            line(
+                egui::pos2(c.x - r * 0.14, c.y - r * 0.62),
+                egui::pos2(c.x + r * 0.48, c.y - r * 0.48),
+            );
+            line(
+                egui::pos2(c.x + r * 0.48, c.y - r * 0.48),
+                egui::pos2(c.x + r * 0.48, c.y + r * 0.28),
+            );
+            p.circle_stroke(
+                egui::pos2(c.x + r * 0.26, c.y + r * 0.48),
+                r * 0.22,
+                Stroke::new(1.5_f32, color),
+            );
+        }
+        // 胶片 + 播放三角：视频播放器。
+        Tab::Video => {
+            let frame = egui::Rect::from_center_size(c, Vec2::new(r * 1.75, r * 1.3));
+            p.rect_stroke(frame, Rounding::same(2.5), s);
+            for i in 0..3 {
+                let x = frame.left() + r * 0.22 + i as f32 * r * 0.56;
+                p.rect_filled(
+                    egui::Rect::from_center_size(
+                        egui::pos2(x, frame.top() + r * 0.12),
+                        Vec2::new(r * 0.16, r * 0.12),
+                    ),
+                    Rounding::ZERO,
+                    color,
+                );
+                p.rect_filled(
+                    egui::Rect::from_center_size(
+                        egui::pos2(x, frame.bottom() - r * 0.12),
+                        Vec2::new(r * 0.16, r * 0.12),
+                    ),
+                    Rounding::ZERO,
+                    color,
+                );
+            }
+            p.add(egui::Shape::convex_polygon(
+                vec![
+                    egui::pos2(c.x - r * 0.22, c.y - r * 0.3),
+                    egui::pos2(c.x + r * 0.3, c.y),
+                    egui::pos2(c.x - r * 0.22, c.y + r * 0.3),
+                ],
+                color,
+                Stroke::NONE,
+            ));
+        }
+        // 日历：每日壁纸。
+        Tab::Online => {
+            let rr = egui::Rect::from_center_size(c, Vec2::new(r * 1.6, r * 1.5));
+            p.rect_stroke(rr, Rounding::same(2.0), s);
+            line(
+                egui::pos2(rr.left(), rr.top() + r * 0.42),
+                egui::pos2(rr.right(), rr.top() + r * 0.42),
+            );
+            for i in 0..2 {
+                for j in 0..2 {
+                    p.circle_filled(
+                        egui::pos2(
+                            c.x - r * 0.32 + j as f32 * r * 0.64,
+                            c.y + r * 0.02 + i as f32 * r * 0.4,
+                        ),
+                        1.5,
+                        color,
+                    );
+                }
+            }
+        }
+        // 齿轮：设置。
+        Tab::Settings => {
+            p.circle_stroke(c, r * 0.42, s);
+            p.circle_stroke(c, r * 0.78, Stroke::new(1.3_f32, color));
+            for i in 0..8 {
+                let a = i as f32 * 45.0;
+                line(polar(a, 0.78), polar(a, 0.98));
+            }
+        }
+        // 信息：关于。
+        Tab::About => {
+            p.circle_stroke(c, r * 0.8, s);
+            p.circle_filled(egui::pos2(c.x, c.y - r * 0.36), 1.9, color);
+            line(
+                egui::pos2(c.x, c.y - r * 0.06),
+                egui::pos2(c.x, c.y + r * 0.42),
+            );
+        }
+    }
+}
+
+/// 一级分区图标：壁纸 / 硬件 / 人脸。全部矢量绘制，不依赖图标字体。
+fn paint_section_icon(p: &egui::Painter, rect: egui::Rect, s: Section, color: Color32) {
+    let c = rect.center();
+    let r = rect.width().min(rect.height()) * 0.5;
+    let stroke = Stroke::new(1.55_f32, color);
+    match s {
+        // 相框 + 山与太阳：壁纸。
+        Section::Wallpaper => {
+            let frame = egui::Rect::from_center_size(c, Vec2::splat(r * 1.7));
+            p.rect_stroke(frame, Rounding::same(2.0), stroke);
+            p.circle_stroke(
+                egui::pos2(frame.left() + r * 0.45, frame.top() + r * 0.42),
+                r * 0.16,
+                Stroke::new(1.3_f32, color),
+            );
+            p.add(egui::Shape::line(
+                vec![
+                    egui::pos2(frame.left() + r * 0.12, frame.bottom() - r * 0.16),
+                    egui::pos2(frame.left() + r * 0.52, frame.center().y + r * 0.1),
+                    egui::pos2(frame.left() + r * 0.78, frame.bottom() - r * 0.34),
+                    egui::pos2(frame.right() - r * 0.12, frame.bottom() - r * 0.16),
+                ],
+                stroke,
+            ));
+        }
+        // 芯片 + 引脚：硬件。
+        Section::Hardware => {
+            let chip = egui::Rect::from_center_size(c, Vec2::splat(r * 1.15));
+            p.rect_stroke(chip, Rounding::same(2.0), stroke);
+            p.rect_stroke(
+                egui::Rect::from_center_size(c, Vec2::splat(r * 0.5)),
+                Rounding::same(1.0),
+                Stroke::new(1.2_f32, color),
+            );
+            for k in [-0.5_f32, 0.0, 0.5] {
+                let d = r * 0.575 * k;
+                p.line_segment(
+                    [
+                        egui::pos2(chip.left(), c.y + d),
+                        egui::pos2(chip.left() - r * 0.28, c.y + d),
+                    ],
+                    Stroke::new(1.2_f32, color),
+                );
+                p.line_segment(
+                    [
+                        egui::pos2(chip.right(), c.y + d),
+                        egui::pos2(chip.right() + r * 0.28, c.y + d),
+                    ],
+                    Stroke::new(1.2_f32, color),
+                );
+                p.line_segment(
+                    [
+                        egui::pos2(c.x + d, chip.top()),
+                        egui::pos2(c.x + d, chip.top() - r * 0.28),
+                    ],
+                    Stroke::new(1.2_f32, color),
+                );
+            }
+        }
+        // 取景框 + 人像：人脸识别。
+        Section::Sense => {
+            let f = egui::Rect::from_center_size(c, Vec2::splat(r * 1.7));
+            let k = r * 0.42;
+            for (pt, dx, dy) in [
+                (f.left_top(), 1.0, 1.0),
+                (f.right_top(), -1.0, 1.0),
+                (f.left_bottom(), 1.0, -1.0),
+                (f.right_bottom(), -1.0, -1.0),
+            ] {
+                p.line_segment(
+                    [pt, pt + Vec2::new(dx * k, 0.0)],
+                    Stroke::new(1.6_f32, color),
+                );
+                p.line_segment(
+                    [pt, pt + Vec2::new(0.0, dy * k)],
+                    Stroke::new(1.6_f32, color),
+                );
+            }
+            p.circle_stroke(egui::pos2(c.x, c.y - r * 0.3), r * 0.26, stroke);
+            p.add(egui::Shape::line(
+                vec![
+                    egui::pos2(c.x - r * 0.42, c.y + r * 0.62),
+                    egui::pos2(c.x - r * 0.26, c.y + r * 0.18),
+                    egui::pos2(c.x + r * 0.26, c.y + r * 0.18),
+                    egui::pos2(c.x + r * 0.42, c.y + r * 0.62),
+                ],
+                stroke,
+            ));
+        }
+        // 黑胶唱片：音乐。
+        Section::Music => {
+            let disc = egui::Rect::from_center_size(c, Vec2::splat(r * 1.6));
+            p.circle_stroke(disc.center(), r * 0.78, stroke);
+            p.circle_stroke(disc.center(), r * 0.5, Stroke::new(1.2_f32, color));
+            p.circle_filled(disc.center(), r * 0.12, color);
+            p.line_segment(
+                [
+                    egui::pos2(c.x + r * 0.18, c.y - r * 0.16),
+                    egui::pos2(c.x + r * 0.62, c.y - r * 0.62),
+                ],
+                Stroke::new(1.4_f32, color),
+            );
+        }
+        // 显示器 + 播放三角：视频。
+        Section::Video => {
+            let screen = egui::Rect::from_center_size(
+                egui::pos2(c.x, c.y - r * 0.12),
+                Vec2::new(r * 1.65, r * 1.15),
+            );
+            p.rect_stroke(screen, Rounding::same(2.5), stroke);
+            p.add(egui::Shape::convex_polygon(
+                vec![
+                    egui::pos2(screen.center().x - r * 0.2, screen.center().y - r * 0.3),
+                    egui::pos2(screen.center().x + r * 0.34, screen.center().y),
+                    egui::pos2(screen.center().x - r * 0.2, screen.center().y + r * 0.3),
+                ],
+                color,
+                Stroke::NONE,
+            ));
+            p.line_segment(
+                [
+                    egui::pos2(c.x - r * 0.55, c.y + r * 0.64),
+                    egui::pos2(c.x + r * 0.55, c.y + r * 0.64),
+                ],
+                Stroke::new(1.4_f32, color),
+            );
+            p.line_segment(
+                [
+                    egui::pos2(c.x, screen.bottom()),
+                    egui::pos2(c.x, c.y + r * 0.64),
+                ],
+                Stroke::new(1.3_f32, color),
+            );
+        }
+    }
+}
+
+/// 一级分区按钮：56px 图标 + 10px 名称。选中时整块强调底 + 左侧竖条。
+fn section_button(ui: &mut egui::Ui, section: Section, selected: bool) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(60.0, 58.0), egui::Sense::click());
+    let hovered = resp.hovered();
+    let t = ui.ctx().animate_bool(resp.id, hovered);
     if selected {
-        // 条件分支
-        painter.rect_filled(rect, Rounding::same(11.0), theme::accent_soft()); // 语句
-        let bar = egui::Rect::from_min_size(
-            // 变量 bar
-            egui::pos2(rect.left(), rect.top() + 9.0), // 字段 egui
-            egui::vec2(3.0, height - 18.0),            // 字段 egui
-        ); // 块结束
-        painter.rect_filled(bar, Rounding::same(2.0), theme::accent()); // 语句
+        ui.painter().rect_filled(
+            rect.shrink2(Vec2::new(2.0, 2.0)),
+            Rounding::same(12.0),
+            theme::accent_soft(),
+        );
+        ui.painter().rect_filled(
+            egui::Rect::from_min_size(
+                egui::pos2(rect.left() + 1.0, rect.center().y - 11.0),
+                egui::vec2(3.0, 22.0),
+            ),
+            Rounding::same(2.0),
+            theme::accent(),
+        );
     } else if t > 0.01 {
-        // 条件分支
-        let base = theme::accent_soft(); // 变量 base
-        let c = Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), (60.0 * t) as u8); // 变量 c
-        painter.rect_filled(rect, Rounding::same(11.0), c); // 语句
-    } // 块结束
-    let icon_rect = egui::Rect::from_center_size(
-        // 变量 icon_rect
-        egui::pos2(rect.left() + 28.0, rect.center().y), // 字段 egui
-        egui::vec2(26.0, 26.0),                          // 字段 egui
-    ); // 块结束
-    let icon_bg = if selected {
+        let base = theme::accent_soft();
+        let c = Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), (70.0 * t) as u8);
+        ui.painter()
+            .rect_filled(rect.shrink2(Vec2::new(2.0, 2.0)), Rounding::same(12.0), c);
+    }
+    let color = if selected {
         theme::accent()
-    } else {
-        theme::extreme()
-    }; // 变量 icon_bg
-    painter.rect_filled(icon_rect, Rounding::same(8.0), icon_bg); // 语句
-    let icon_color = if selected {
-        Color32::WHITE
+    } else if hovered {
+        theme::text()
     } else {
         theme::subtext()
-    }; // 变量 icon_color
-    painter.text(
-        // 语句
-        icon_rect.center(),               // 语句
-        egui::Align2::CENTER_CENTER,      // 字段 egui
-        icon,                             // 语句
-        egui::FontId::proportional(14.0), // 字段 egui
-        icon_color,                       // 语句
-    ); // 块结束
-    let txt_color = if selected {
-        // 变量 txt_color
-        theme::accent() // 调用 accent
-    } else if hovered {
-        // 条件分支
-        theme::text() // 调用 text
-    } else {
-        // 语句
-        theme::subtext() // 调用 subtext
-    }; // 块结束
-    let galley = painter.layout_no_wrap(
-        // 变量 galley
-        label.to_string(),                // 语句
-        egui::FontId::proportional(14.0), // 字段 egui
-        txt_color,                        // 语句
-    ); // 块结束
-    painter.galley(
-        // 语句
-        egui::pos2(rect.left() + 50.0, rect.center().y - galley.size().y * 0.5), // 字段 egui
-        galley,                                                                  // 语句
-        txt_color,                                                               // 语句
-    ); // 块结束
+    };
+    let icon_y = rect.center().y - 9.0;
+    paint_section_icon(
+        ui.painter(),
+        egui::Rect::from_center_size(egui::pos2(rect.center().x, icon_y), Vec2::splat(18.0)),
+        section,
+        color,
+    );
+    ui.painter().text(
+        egui::pos2(rect.center().x, icon_y + 19.0),
+        egui::Align2::CENTER_CENTER,
+        section.label(),
+        egui::FontId::proportional(9.0),
+        color,
+    );
     if hovered {
-        // 条件分支
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand); // 语句
-    } // 块结束
-    resp.clicked() // 语句
-} // 块结束
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp.clicked()
+}
 
-/// A single bottom-nav item: stacked icon + label with a soft selected pill.
-fn bottom_nav_button(
+/// 二级子页按钮：整行 32px，图标 + 名称，选中时浅底 + 左侧色条。
+fn subpage_button(ui: &mut egui::Ui, tab: Tab, selected: bool) -> bool {
+    let w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 32.0), egui::Sense::click());
+    let hovered = resp.hovered();
+    if selected {
+        ui.painter()
+            .rect_filled(rect, Rounding::same(8.0), theme::accent_soft());
+        ui.painter().rect_filled(
+            egui::Rect::from_min_size(
+                egui::pos2(rect.left() + 1.0, rect.center().y - 7.0),
+                egui::vec2(3.0, 14.0),
+            ),
+            Rounding::same(2.0),
+            theme::accent(),
+        );
+    } else if hovered {
+        ui.painter()
+            .rect_filled(rect, Rounding::same(8.0), theme::extreme());
+    }
+    let color = if selected {
+        theme::accent()
+    } else if hovered {
+        theme::text()
+    } else {
+        theme::subtext()
+    };
+    let icon_center = egui::pos2(rect.left() + 20.0, rect.center().y);
+    paint_tab_icon(
+        ui.painter(),
+        egui::Rect::from_center_size(icon_center, Vec2::splat(14.0)),
+        tab,
+        color,
+    );
+    ui.painter().text(
+        egui::pos2(icon_center.x + 15.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        tab.short_page(),
+        egui::FontId::proportional(11.5),
+        color,
+    );
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp.clicked()
+}
+
+/// 二级栏顶部的一句话说明（一级菜单的定位）。
+fn section_hint(s: Section) -> &'static str {
+    match s {
+        Section::Wallpaper => "图库 · 轮播 · 每日一图",
+        Section::Music => "本地音乐 · 后台播放",
+        Section::Video => "本地视频 · 独立窗口",
+        Section::Hardware => "Aura 灯效 · 风扇 · 整机",
+        Section::Sense => "人走锁屏 · 人回提示",
+    }
+}
+
+/// 移动端内容区顶部的二级页签：可横向滚动的一排胶囊。
+fn mobile_subtabs(ui: &mut egui::Ui, kids: &'static [Tab], current: Tab) -> Option<Tab> {
+    let mut hit = None;
+    // `scroll_bar_visibility(AlwaysHidden)` + 明确的滚动条占位：窄屏上 4 个
+    // 中文页签放不下，靠横滑而不是挤压字距（之前字会贴到一起）。
+    egui::ScrollArea::horizontal()
+        .id_salt("mobile_subtabs")
+        .auto_shrink([false, true])
+        .scroll_bar_visibility(egui::containers::scroll_area::ScrollBarVisibility::AlwaysHidden)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                for t in kids {
+                    let selected = *t == current;
+                    let text = t.short_page();
+                    let galley = ui.painter().layout_no_wrap(
+                        text.to_string(),
+                        egui::FontId::proportional(11.5),
+                        if selected {
+                            theme::accent()
+                        } else {
+                            theme::subtext()
+                        },
+                    );
+                    let w = galley.size().x + 26.0;
+                    let (rect, resp) =
+                        ui.allocate_exact_size(Vec2::new(w, 28.0), egui::Sense::click());
+                    if selected {
+                        ui.painter()
+                            .rect_filled(rect, Rounding::same(14.0), theme::accent_soft());
+                    } else if resp.hovered() {
+                        ui.painter()
+                            .rect_filled(rect, Rounding::same(14.0), theme::extreme());
+                    }
+                    ui.painter().galley(
+                        egui::pos2(
+                            rect.center().x - galley.size().x * 0.5,
+                            rect.center().y - galley.size().y * 0.5,
+                        ),
+                        galley,
+                        if selected {
+                            theme::accent()
+                        } else {
+                            theme::subtext()
+                        },
+                    );
+                    if resp.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    if resp.clicked() {
+                        hit = Some(*t);
+                    }
+                }
+            });
+        });
+    hit
+}
+
+/// 太阳 / 月亮：主题切换（同样是矢量，避免字形缺失）。
+fn paint_theme_icon(p: &egui::Painter, rect: egui::Rect, dark: bool, color: Color32) {
+    let c = rect.center();
+    let s = Stroke::new(1.5_f32, color);
+    if dark {
+        // 当前是深色 → 显示太阳（点了会变浅色）。
+        p.circle_stroke(c, rect.width() * 0.24, s);
+        for i in 0..8 {
+            let a = (i as f32 * 45.0).to_radians();
+            let (x, y) = (a.cos(), a.sin());
+            let r = rect.width() * 0.5;
+            p.line_segment(
+                [
+                    egui::pos2(c.x + x * r * 0.6, c.y + y * r * 0.6),
+                    egui::pos2(c.x + x * r * 0.9, c.y + y * r * 0.9),
+                ],
+                Stroke::new(1.3_f32, color),
+            );
+        }
+    } else {
+        // 当前是浅色 → 显示月亮（点了会变深色）。
+        p.circle_stroke(c, rect.width() * 0.36, s);
+        p.circle_filled(
+            c + Vec2::new(rect.width() * 0.16, -rect.width() * 0.14),
+            rect.width() * 0.34,
+            theme::surface(),
+        );
+    }
+}
+
+fn theme_rail_button(ui: &mut egui::Ui, dark: bool) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(56.0, 34.0), egui::Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(
+            rect.shrink2(Vec2::new(2.0, 2.0)),
+            Rounding::same(11.0),
+            theme::accent_soft(),
+        );
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    paint_theme_icon(
+        ui.painter(),
+        egui::Rect::from_center_size(rect.center(), Vec2::splat(16.0)),
+        dark,
+        if resp.hovered() {
+            theme::text()
+        } else {
+            theme::subtext()
+        },
+    );
+    resp.clicked()
+}
+
+/// A single bottom-nav item: stacked section icon + label with a soft selected pill.
+fn bottom_nav_section_button(
     ui: &mut egui::Ui,
-    icon: &str,
-    label: &str,
+    section: Section,
     selected: bool,
     width: f32,
 ) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 54.0), egui::Sense::click());
+    let hovered = resp.hovered();
+    if selected {
+        ui.painter().rect_filled(
+            rect.shrink2(egui::vec2(6.0, 4.0)),
+            Rounding::same(12.0),
+            theme::accent_soft(),
+        );
+    } else if hovered {
+        ui.painter().rect_filled(
+            rect.shrink2(egui::vec2(6.0, 4.0)),
+            Rounding::same(12.0),
+            theme::extreme(),
+        );
+    }
+    let color = if selected {
+        theme::accent()
+    } else {
+        theme::subtext()
+    };
+    let center = rect.center();
+    paint_section_icon(
+        ui.painter(),
+        egui::Rect::from_center_size(egui::pos2(center.x, center.y - 11.0), Vec2::splat(17.0)),
+        section,
+        color,
+    );
+    ui.painter().text(
+        egui::pos2(center.x, center.y + 12.0),
+        egui::Align2::CENTER_CENTER,
+        section.label(),
+        egui::FontId::proportional(11.0),
+        color,
+    );
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp.clicked()
+}
+
+/// A single bottom-nav item for a concrete page (kept for global tools).
+#[allow(dead_code)]
+fn bottom_nav_button(ui: &mut egui::Ui, tab: Tab, label: &str, selected: bool, width: f32) -> bool {
     // 函数 bottom_nav_button
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 54.0), egui::Sense::click()); // 调用 let
     let hovered = resp.hovered(); // 变量 hovered
@@ -7195,14 +9069,12 @@ fn bottom_nav_button(
         theme::subtext()
     }; // 变量 color
     let center = rect.center(); // 变量 center
-    ui.painter().text(
-        // 语句
-        egui::pos2(center.x, center.y - 10.0), // 字段 egui
-        egui::Align2::CENTER_CENTER,           // 字段 egui
-        icon,                                  // 语句
-        egui::FontId::proportional(18.0),      // 字段 egui
-        color,                                 // 语句
-    ); // 块结束
+    paint_tab_icon(
+        ui.painter(),
+        egui::Rect::from_center_size(egui::pos2(center.x, center.y - 11.0), Vec2::splat(17.0)),
+        tab,
+        color,
+    );
     ui.painter().text(
         // 语句
         egui::pos2(center.x, center.y + 12.0), // 字段 egui
@@ -7243,38 +9115,6 @@ fn ghost_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
             .rounding(Rounding::same(9.0)) // 语句
             .min_size(Vec2::new(0.0, 30.0)), // 语句
     ) // 块结束
-} // 块结束
-
-fn theme_toggle(ui: &mut egui::Ui, label: &str) -> bool {
-    // 函数 theme_toggle
-    let (rect, resp) = // 调用 let
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 34.0), egui::Sense::click()); // 语句
-    let hovered = resp.hovered(); // 变量 hovered
-    let fill = if hovered {
-        theme::accent_soft()
-    } else {
-        theme::extreme()
-    }; // 变量 fill
-    ui.painter().rect_filled(rect, Rounding::same(9.0), fill); // 语句
-    let color = if hovered {
-        theme::accent()
-    } else {
-        theme::text()
-    }; // 变量 color
-    let galley = // 变量 galley
-        ui.painter() // 语句
-            .layout_no_wrap(label.to_string(), egui::FontId::proportional(12.5), color); // 语句
-    ui.painter().galley(
-        // 语句
-        egui::pos2(rect.left() + 12.0, rect.center().y - galley.size().y * 0.5), // 字段 egui
-        galley,                                                                  // 语句
-        color,                                                                   // 语句
-    ); // 块结束
-    if hovered {
-        // 条件分支
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand); // 语句
-    } // 块结束
-    resp.clicked() // 语句
 } // 块结束
 
 /// A small pill-style segmented option (e.g. 浅色 / 深色), themed to the palette.
@@ -7537,6 +9377,16 @@ fn grid_cols(avail: f32, compact: bool) -> usize {
     } else {
         let item_w = CELL_W + CARD_PAD * 2.0;
         (((avail + GAP) / (item_w + GAP)).floor() as usize).max(1)
+    }
+}
+
+fn media_dirs_mut(
+    cfg: &mut crate::config::MediaCfg,
+    kind: crate::media::Kind,
+) -> &mut Vec<PathBuf> {
+    match kind {
+        crate::media::Kind::Audio => &mut cfg.music_dirs,
+        crate::media::Kind::Video => &mut cfg.video_dirs,
     }
 }
 

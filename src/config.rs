@@ -41,6 +41,217 @@ impl Default for Mode {
     } // 块结束
 } // 块结束
 
+/// 离开时依次执行的动作。顺序即执行顺序（先软动作再硬动作，避免直接黑屏看不到提示）。
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum LockAction {
+    /// 壁纸模糊 / 暂停动态壁纸。
+    Blur,
+    /// 息屏（显示器休眠）。
+    MonitorOff,
+    /// 静音。
+    Mute,
+    /// `LockWorkStation()`。
+    #[default]
+    Lock,
+}
+
+impl LockAction {
+    pub fn label(self) -> &'static str {
+        match self {
+            LockAction::Blur => "虚化壁纸",
+            LockAction::MonitorOff => "息屏",
+            LockAction::Mute => "静音",
+            LockAction::Lock => "Win+L 锁屏",
+        }
+    }
+}
+
+/// 人脸感知配置。默认值与设计稿一致，老配置缺这一节时自动补齐。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct SenseCfg {
+    /// 总开关：关闭后不启动采集线程，感知页显示说明卡。
+    pub enable: bool,
+    /// 首选摄像头（`"auto"` = 第一个可用设备）。
+    pub camera_id: String,
+    /// 离开判定阈值（秒）：连续这么久检测不到人脸才进入倒计时。
+    pub away_secs: u32,
+    /// 单帧丢失宽限（秒），避免 30fps 下抖动即触发。
+    pub grace_secs: u32,
+    /// 倒计时结束前的二次宽松确认，防止转头误判。
+    pub confirm_second_pass: bool,
+    /// 全屏（视频 / 游戏 / 演示）时不判定离开。
+    pub exempt_fullscreen: bool,
+    /// 键鼠活动续期（秒）：有输入就把离开计时清零。
+    pub input_reset_secs: u32,
+    /// 离开后按序执行的动作。
+    pub lock_actions: Vec<LockAction>,
+    /// 回到座位自动解锁（普通用户态只能做到「唤醒 + 提示」）。
+    pub auto_unlock: bool,
+    /// 人脸之外是否还要求 PIN / 密码。
+    pub require_pin: bool,
+    /// 检测到未授权人脸立即锁定，且本次会话禁止自动解锁。
+    pub stranger_lock: bool,
+    /// 陌生人脸是否存一帧快照（隐私敏感，默认关）。
+    pub stranger_snapshot: bool,
+    /// 相似度阈值（余弦距离，0–1）。
+    pub threshold: f32,
+    /// 活体检测：`auto` | `ir` | `motion` | `off`。
+    pub liveness: String,
+    /// 预览画面是否给人脸打码。
+    pub privacy_mask: bool,
+    /// 授权人脸（目前只存姓名与相似度占位，特征库后续里程碑落地）。
+    pub authorized_faces: Vec<String>,
+}
+
+impl Default for SenseCfg {
+    fn default() -> Self {
+        Self {
+            enable: true,
+            camera_id: "auto".to_string(),
+            away_secs: 30,
+            grace_secs: 3,
+            confirm_second_pass: true,
+            exempt_fullscreen: true,
+            input_reset_secs: 180,
+            lock_actions: vec![LockAction::Lock],
+            auto_unlock: true,
+            require_pin: false,
+            stranger_lock: true,
+            stranger_snapshot: false,
+            threshold: 0.55,
+            liveness: "auto".to_string(),
+            privacy_mask: true,
+            authorized_faces: Vec::new(),
+        }
+    }
+}
+
+/// 灯效（Aura）配置。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct LightingCfg {
+    /// 效果模式 key（对应 `get_QueryAllDeviceCap` 的 `mode key`）。
+    pub mode: u32,
+    /// 颜色 `#RRGGBB`。
+    pub color: String,
+    /// 亮度 0–100。
+    pub brightness: u8,
+    /// 速度 0–100。
+    pub speed: u8,
+    /// 写入前是否先解除独占。
+    pub exclusive_on_write: bool,
+    /// 跟随壁纸取色（里程碑）。
+    pub sync_with_wallpaper: bool,
+}
+
+impl Default for LightingCfg {
+    fn default() -> Self {
+        Self {
+            mode: 1,
+            color: "#2F4BFF".to_string(),
+            brightness: 82,
+            speed: 46,
+            exclusive_on_write: true,
+            sync_with_wallpaper: false,
+        }
+    }
+}
+
+/// 风扇曲线上的一个点（温度 °C, 占空比 %）。
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct CurvePoint {
+    pub temp: u8,
+    pub duty: u8,
+}
+
+/// Fan Xpert 配置。首版只读：读标定表 + 曲线，编辑只改本地配置。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct FansCfg {
+    /// 预设名：`silent` | `standard` | `turbo` | `custom`。
+    pub preset: String,
+    /// 曲线拐点温度滞回（°C）。
+    pub hysteresis_c: u8,
+    /// 是否接管控制（需要管理员，默认关）。
+    pub takeover: bool,
+    /// 自定义曲线（温度升序）。
+    pub curve: Vec<CurvePoint>,
+}
+
+impl Default for FansCfg {
+    fn default() -> Self {
+        Self {
+            preset: "standard".to_string(),
+            hysteresis_c: 3,
+            takeover: false,
+            curve: vec![
+                CurvePoint { temp: 20, duty: 22 },
+                CurvePoint { temp: 40, duty: 30 },
+                CurvePoint { temp: 52, duty: 44 },
+                CurvePoint { temp: 64, duty: 62 },
+                CurvePoint { temp: 74, duty: 82 },
+                CurvePoint { temp: 84, duty: 95 },
+                CurvePoint {
+                    temp: 95,
+                    duty: 100,
+                },
+            ],
+        }
+    }
+}
+
+/// 华硕硬件域配置。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ArmouryCfg {
+    /// 总开关：未检测到 Aura 服务时页面显示说明卡而不是报错。
+    pub enabled: bool,
+    /// 轮询间隔（毫秒）。硬件 IO 只在后台线程按此频率采样。
+    pub poll_ms: u64,
+    pub lighting: LightingCfg,
+    pub fans: FansCfg,
+}
+
+impl Default for ArmouryCfg {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            poll_ms: 1000,
+            lighting: LightingCfg::default(),
+            fans: FansCfg::default(),
+        }
+    }
+}
+
+/// 音乐 / 视频播放器的持久化设置。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct MediaCfg {
+    /// 音乐库扫描目录（可多个，递归）。
+    #[serde(default)]
+    pub music_dirs: Vec<PathBuf>,
+    /// 视频库扫描目录（可多个，递归）。
+    #[serde(default)]
+    pub video_dirs: Vec<PathBuf>,
+    /// 播放器音量 0–130，默认 80。
+    #[serde(default = "default_volume")]
+    pub volume: f64,
+    /// 列表循环：播完最后一首回到第一首。
+    #[serde(default = "default_true")]
+    pub repeat: bool,
+}
+
+impl Default for MediaCfg {
+    fn default() -> Self {
+        Self {
+            music_dirs: Vec::new(),
+            video_dirs: Vec::new(),
+            volume: 80.0,
+            repeat: true,
+        }
+    }
+}
+
+fn default_volume() -> f64 {
+    80.0
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)] // 语句
 pub struct Config {
     // 结构体 Config
@@ -112,6 +323,15 @@ pub struct Config {
     /// 可选的 GitHub token：填了就直接调用 API 静默建 issue；留空则打开预填页面。
     #[serde(default)] // 语句
     pub report_token: String, // 字段 report_token
+    /// 摄像头人脸感知（在场 / 离开 / 陌生人 → 自动锁屏）。
+    #[serde(default)]
+    pub sense: SenseCfg,
+    /// 华硕硬件（Aura 灯效 / Fan Xpert / 设备与控制面板）。
+    #[serde(default)]
+    pub armoury: ArmouryCfg,
+    /// 音乐 / 视频播放器（媒体库目录、音量、循环）。
+    #[serde(default)]
+    pub media: MediaCfg,
 } // 块结束
 
 fn default_true() -> bool {
@@ -154,6 +374,9 @@ impl Default for Config {
             web_favorites: Vec::new(),          // 字段 web_favorites
             report_enabled: true,               // 字段 report_enabled
             report_token: String::new(),        // 字段 report_token
+            sense: SenseCfg::default(),
+            armoury: ArmouryCfg::default(),
+            media: MediaCfg::default(),
         } // 块结束
     } // 块结束
 } // 块结束
@@ -306,6 +529,40 @@ mod tests {
         let c: Config = serde_json::from_str(with_extra).expect("unknown fields tolerated"); // 变量 c
         assert_eq!(c.mode, Mode::Fixed); // 语句
     } // 块结束
+
+    /// 老配置没有 `sense` / `armoury` 节：必须补默认值，且默认值与设计稿一致。
+    #[test]
+    fn sense_and_armoury_defaults_for_legacy_config() {
+        let legacy = r#"{"folder":null,"recursive":true,"mode":"Fixed",
+            "interval_secs":60,"shuffle":false,"fit":"Fill","theme":0,
+            "last_path":null,"running":false,"search":""}"#;
+        let c: Config = serde_json::from_str(legacy).expect("legacy config should parse");
+        assert!(c.sense.enable);
+        assert_eq!(c.sense.away_secs, 30);
+        assert_eq!(c.sense.lock_actions, vec![LockAction::Lock]);
+        assert!(!c.sense.require_pin);
+        assert!(c.armoury.enabled);
+        assert_eq!(c.armoury.poll_ms, 1000);
+        assert_eq!(c.armoury.fans.curve.len(), 7);
+        assert_eq!(c.armoury.lighting.mode, 1);
+        assert!(c.armoury.lighting.exclusive_on_write);
+    }
+
+    /// 新增的节必须能原样往返，避免 UI 改了却不落盘。
+    #[test]
+    fn sense_and_armoury_roundtrip() {
+        let mut c = Config::default();
+        c.sense.away_secs = 180;
+        c.sense.lock_actions = vec![LockAction::MonitorOff, LockAction::Lock];
+        c.armoury.lighting.color = "#F2557A".to_string();
+        c.armoury.fans.preset = "turbo".to_string();
+        let s = serde_json::to_string(&c).expect("serialize");
+        let back: Config = serde_json::from_str(&s).expect("deserialize");
+        assert_eq!(back.sense.away_secs, 180);
+        assert_eq!(back.sense.lock_actions.len(), 2);
+        assert_eq!(back.armoury.lighting.color, "#F2557A");
+        assert_eq!(back.armoury.fans.preset, "turbo");
+    }
 
     /// Atomic save writes config.json; reloading it preserves values; a second
     /// save rolls the previous file to `.bak`. Uses a temp APPDATA so the real

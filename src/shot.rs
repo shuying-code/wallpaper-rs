@@ -41,13 +41,43 @@ impl Shooter {
         // 函数 new
         // 覆盖手机 / 平板 / 常见笔记本（1366×768、1536×864）与桌面尺寸，便于核对
         // 「不同尺寸屏幕」下的自适应布局（笔记本逻辑分辨率可能因缩放而更小）。
-        let sizes: [(&str, f32, f32); 5] = // 变量 sizes
-            [("phone", 390.0, 844.0), ("tablet", 834.0, 1112.0), ("laptop", 1366.0, 768.0), ("laptop-hd", 1536.0, 864.0), ("desktop", 1440.0, 900.0)]; // 语句
-        let tabs: [(&str, usize); 5] = // 变量 tabs
-            [("library", 0), ("web", 5), ("slideshow", 1), ("settings", 3), ("about", 4)]; // 语句
-        let mut items = Vec::new(); // 变量 items
+        let sizes: [(&str, f32, f32); 6] = [
+            ("phone", 390.0, 844.0),
+            ("phone-420", 420.0, 900.0),
+            ("tablet", 834.0, 1112.0),
+            ("laptop", 1366.0, 768.0),
+            ("laptop-hd", 1536.0, 864.0),
+            ("desktop", 1440.0, 900.0),
+        ];
+        // 顺序与 `app::tab_from_index` 一致：0 感知 1 策略 2 面板 3 设备 4 灯效
+        // 5 散热 6 本地库 7 轮播 8 每日 9 设置 10 关于 11 音乐 12 视频，
+        // 默认（超出范围）为网上壁纸库。
+        let tabs: [(&str, usize); 13] = [
+            ("sense", 0),
+            ("policy", 1),
+            ("dashboard", 2),
+            ("devices", 3),
+            ("lighting", 4),
+            ("fan", 5),
+            ("library", 6),
+            ("slideshow", 7),
+            ("online", 13),
+            ("web4k", 14),
+            ("music", 11),
+            ("video", 12),
+            ("settings", 9),
+        ];
+        let mut items = Vec::new();
+        // 可选过滤：`WP_SHOT_SIZES=desktop,laptop` 只截这些尺寸，便于单独核对
+        // 某页而不必跑完整组合（默认全跑）。
+        let only = std::env::var("WP_SHOT_SIZES").ok();
         for (sname, w, h) in sizes {
             // 循环
+            if let Some(f) = only.as_deref() {
+                if !f.split(',').any(|s| s.trim() == sname) {
+                    continue;
+                }
+            }
             for (tname, tab) in tabs.iter().copied() {
                 // 循环
                 items.push(ShotItem {
